@@ -1,0 +1,21 @@
+# Winnow configuration
+accounts:
+  - you@example.com
+
+# Gmail adapter: "gog" (default) or "google-workspace" (future)
+adapter: gog
+
+# Slack notifications
+slack:
+  # Set SLACK_BOT_TOKEN env var (preferred) or put token here
+  bot_token: ""
+  channel_id: "YOUR_CHANNEL_ID"
+
+# AI model configuration (uses GEMINI_API_KEY env var)
+model:
+  name: gemini-2.5-flash
+
+# Scan settings
+scan:
+  max_messages: 50
+  search_query: "in:inbox is:unread newer_than:1d"

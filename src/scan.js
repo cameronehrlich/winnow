@@ -1,7 +1,7 @@
 import { GogAdapter } from './adapters/gog.js';
 import { classifyEmail } from './classify.js';
-import { loadConfig } from './config.js';
-import { isProcessed, markProcessed } from './state.js';
+import { loadConfig, getAdapter } from './config.js';
+import { loadState, saveState, isProcessed, markProcessed, pruneOldResults } from './state.js';
 import { sendUrgentAlert } from './notify.js';
 
 const LABEL_MAP = {
@@ -10,8 +10,13 @@ const LABEL_MAP = {
   urgent: 'winnow/urgent',
 };
 
+const ADAPTERS = { gog: GogAdapter };
+
 function createAdapter() {
-  return new GogAdapter();
+  const name = getAdapter();
+  const Cls = ADAPTERS[name];
+  if (!Cls) throw new Error(`Unknown adapter: ${name}`);
+  return new Cls();
 }
 
 function extractUnsubscribeLink(headers) {
@@ -27,74 +32,82 @@ export async function scan(account, opts = {}) {
   const searchQuery = opts.searchQuery || config.scan?.search_query || 'in:inbox is:unread newer_than:1d';
   const maxMessages = config.scan?.max_messages || 50;
   const dryRun = opts.dryRun || false;
-  const accounts = [account];
+  const skipProcessedCheck = opts.skipProcessedCheck || false;
 
   let totalProcessed = 0;
   let results = [];
 
-  for (const account of accounts) {
-    console.log(`[winnow] Scanning ${account}...`);
+  console.log(`[winnow] Scanning ${account}...`);
 
-    // Ensure labels exist
-    if (!dryRun) {
+  // Ensure labels exist (skip if already verified in state)
+  if (!dryRun) {
+    const state = loadState();
+    if (!state.labelsVerified?.[account]) {
       for (const label of Object.values(LABEL_MAP)) {
         await adapter.ensureLabel(account, label);
       }
+      if (!state.labelsVerified) state.labelsVerified = {};
+      state.labelsVerified[account] = true;
+      saveState(state);
+    }
+  }
+
+  const messages = await adapter.fetchUnread(account, searchQuery, maxMessages);
+  console.log(`[winnow] Found ${messages.length} unread messages`);
+
+  for (const msg of messages) {
+    if (!skipProcessedCheck && isProcessed(msg.id)) {
+      continue;
     }
 
-    const messages = await adapter.fetchUnread(account, searchQuery, maxMessages);
-    console.log(`[winnow] Found ${messages.length} unread messages`);
+    console.log(`[winnow] Classifying: ${msg.subject || '(no subject)'}`);
 
-    for (const msg of messages) {
-      if (isProcessed(msg.id)) {
-        continue;
+    const classification = await classifyEmail(msg);
+    const unsubscribeLink = extractUnsubscribeLink(msg.headers);
+
+    const result = {
+      ...classification,
+      from: msg.from,
+      subject: msg.subject,
+      snippet: msg.snippet,
+      threadId: msg.threadId,
+      unsubscribeLink,
+      account,
+    };
+
+    if (dryRun) {
+      console.log(`  → ${result.priority.toUpperCase()} (${result.confidence}%) — ${result.summary}`);
+      if (result.bumped) {
+        console.log(`    ⚠️ Bumped from ${result.originalPriority} (low confidence)`);
+      }
+    } else {
+      // Apply Gmail actions based on priority
+      const label = LABEL_MAP[result.priority];
+      await applyActions(adapter, account, msg.threadId, result.priority, label);
+
+      // Send urgent alert immediately
+      if (result.priority === 'urgent') {
+        await sendUrgentAlert(result, account);
       }
 
-      console.log(`[winnow] Classifying: ${msg.subject || '(no subject)'}`);
-
-      const classification = await classifyEmail(msg);
-      const unsubscribeLink = extractUnsubscribeLink(msg.headers);
-
-      const result = {
-        ...classification,
-        from: msg.from,
-        subject: msg.subject,
-        snippet: msg.snippet,
-        threadId: msg.threadId,
-        unsubscribeLink,
-        account,
-      };
-
-      if (dryRun) {
-        console.log(`  → ${result.priority.toUpperCase()} (${result.confidence}%) — ${result.summary}`);
-        if (result.bumped) {
-          console.log(`    ⚠️ Bumped from ${result.originalPriority} (low confidence)`);
-        }
-      } else {
-        // Apply Gmail actions based on priority
-        const label = LABEL_MAP[result.priority];
-        await applyActions(adapter, account, msg.threadId, result.priority, label);
-
-        // Send urgent alert immediately
-        if (result.priority === 'urgent') {
-          await sendUrgentAlert(result, account);
-        }
-
-        // Ephemeral emails (OTP/2FA codes): auto-archive after alerting
-        if (result.ephemeral) {
-          console.log(`[winnow] Ephemeral email detected — auto-archiving after alert`);
-          await adapter.modifyLabels(account, msg.threadId, {
-            add: ['winnow/low'],
-            remove: ['INBOX', 'UNREAD', 'winnow/urgent'],
-          });
-        }
-
-        markProcessed(msg.id, result);
+      // Ephemeral emails (OTP/2FA codes): auto-archive after alerting
+      if (result.ephemeral) {
+        console.log(`[winnow] Ephemeral email detected — auto-archiving after alert`);
+        await adapter.modifyLabels(account, msg.threadId, {
+          add: ['winnow/low'],
+          remove: ['INBOX', 'UNREAD', 'winnow/urgent'],
+        });
       }
 
-      results.push(result);
-      totalProcessed++;
+      markProcessed(msg.id, result);
     }
+
+    results.push(result);
+    totalProcessed++;
+  }
+
+  if (!dryRun) {
+    pruneOldResults();
   }
 
   console.log(`[winnow] Scan complete. Processed ${totalProcessed} new emails.`);

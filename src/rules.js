@@ -48,7 +48,9 @@ export function formatRulesForPrompt(rules) {
 export function addRule(description, priority) {
   const custom = loadCustomRules();
   const rules = custom.rules || [];
-  const id = description.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+  const slug = description.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+  const suffix = Date.now().toString(36).slice(-4);
+  const id = `${slug}-${suffix}`;
 
   rules.push({
     id,

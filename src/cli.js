@@ -43,6 +43,36 @@ program
   });
 
 program
+  .command('rescan')
+  .description('Re-classify all processed emails with current rules and correct labels')
+  .option('-a, --account <email>', 'Specific account to rescan')
+  .option('--since <duration>', 'Re-scan emails from last duration (e.g., 7d, 24h)', '7d')
+  .option('--dry-run', 'Show new classifications without applying changes')
+  .action(async (opts) => {
+    try {
+      const config = loadConfig();
+      const accounts = opts.account ? [opts.account] : config.accounts;
+      for (const account of accounts) {
+        console.log(`\n🔄 Rescanning ${account} (since ${opts.since})...`);
+        const searchQuery = `newer_than:${opts.since}`;
+        const results = await scan(account, {
+          dryRun: opts.dryRun,
+          searchQuery,
+          skipProcessedCheck: true,
+        });
+        console.log(`✅ Re-classified ${results.length} emails`);
+        const urgent = results.filter(r => r.priority === 'urgent').length;
+        const normal = results.filter(r => r.priority === 'normal').length;
+        const low = results.filter(r => r.priority === 'low').length;
+        console.log(`   🔴 ${urgent} urgent  🟡 ${normal} normal  🟢 ${low} low`);
+      }
+    } catch (err) {
+      console.error('❌ Rescan failed:', err.message);
+      process.exit(1);
+    }
+  });
+
+program
   .command('digest')
   .description('Generate and post daily digest')
   .option('--preview', 'Preview digest without posting to Slack')

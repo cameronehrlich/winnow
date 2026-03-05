@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,7 +28,9 @@ export function loadState() {
 
 export function saveState(state) {
   mkdirSync(dirname(STATE_PATH), { recursive: true });
-  writeFileSync(STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
+  const tmpPath = STATE_PATH + '.tmp';
+  writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf8');
+  renameSync(tmpPath, STATE_PATH);
 }
 
 export function isProcessed(messageId) {

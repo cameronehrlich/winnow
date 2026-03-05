@@ -5,11 +5,16 @@ import { GmailAdapter } from './gmail.js';
 const exec = promisify(execFile);
 const GOG_FLAGS = ['--json', '--no-input'];
 
-function gogExec(args) {
-  return exec('gog', [...args, ...GOG_FLAGS], {
-    timeout: 30000,
-    maxBuffer: 10 * 1024 * 1024,
-  });
+async function gogExec(args) {
+  try {
+    return await exec('gog', [...args, ...GOG_FLAGS], {
+      timeout: 30000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch (e) {
+    if (e.code === 'ENOENT') throw new Error('gog CLI not found. Install it: https://github.com/cameronehrlich/gog');
+    throw e;
+  }
 }
 
 function gogExecForce(args) {
@@ -22,7 +27,8 @@ function gogExecForce(args) {
 function parseJson(stdout) {
   try {
     return JSON.parse(stdout);
-  } catch {
+  } catch (e) {
+    console.error(`[winnow] Failed to parse gog output: ${stdout.slice(0, 200)}`);
     return null;
   }
 }
