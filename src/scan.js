@@ -124,7 +124,7 @@ export async function scan(account, opts = {}) {
 async function copyToClipboardAndNotify(code, from, subject) {
   try {
     // Copy code to clipboard via pbcopy (macOS)
-    await execAsync('sh', ['-c', `echo -n "${code}" | pbcopy`]);
+    await execAsync('sh', ['-c', `printf '%s' "${code}" | pbcopy`]);
 
     // Send macOS notification
     const sender = (from || '').replace(/"/g, '\\"').replace(/<.*>/, '').trim();
