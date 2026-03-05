@@ -1,6 +1,10 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { GogAdapter } from './adapters/gog.js';
 import { classifyEmail } from './classify.js';
 import { loadConfig, getAdapter } from './config.js';
+
+const execAsync = promisify(execFile);
 import { loadState, saveState, isProcessed, markProcessed, pruneOldResults } from './state.js';
 import { sendUrgentAlert } from './notify.js';
 
@@ -90,8 +94,11 @@ export async function scan(account, opts = {}) {
         await sendUrgentAlert(result, account);
       }
 
-      // Ephemeral emails (OTP/2FA codes): auto-archive after alerting
+      // Ephemeral emails (OTP/2FA codes): copy code, notify, auto-archive
       if (result.ephemeral) {
+        if (result.extractedCode) {
+          await copyToClipboardAndNotify(result.extractedCode, result.from, result.subject);
+        }
         console.log(`[winnow] Ephemeral email detected — auto-archiving after alert`);
         await adapter.modifyLabels(account, msg.threadId, {
           add: ['winnow/low'],
@@ -112,6 +119,26 @@ export async function scan(account, opts = {}) {
 
   console.log(`[winnow] Scan complete. Processed ${totalProcessed} new emails.`);
   return results;
+}
+
+async function copyToClipboardAndNotify(code, from, subject) {
+  try {
+    // Copy code to clipboard via pbcopy (macOS)
+    await execAsync('sh', ['-c', `echo -n "${code}" | pbcopy`]);
+
+    // Send macOS notification
+    const sender = (from || '').replace(/"/g, '\\"').replace(/<.*>/, '').trim();
+    const title = `🔑 Code copied: ${code}`;
+    const body = `From: ${sender}`;
+    await execAsync('osascript', [
+      '-e', `display notification "${body}" with title "${title}" sound name "Glass"`,
+    ]);
+
+    console.log(`[winnow] 📋 Code "${code}" copied to clipboard + notification sent`);
+  } catch (err) {
+    // Non-fatal — clipboard/notification are nice-to-have
+    console.log(`[winnow] ⚠️ Could not copy to clipboard: ${err.message}`);
+  }
 }
 
 async function applyActions(adapter, account, threadId, priority, label) {
