@@ -5,6 +5,7 @@ import { loadConfig } from './config.js';
 import { addRule, removeRule, listRules } from './rules.js';
 import { getStats } from './state.js';
 import { muteAlerts, unmuteAlerts, getAlertStatus } from './notify.js';
+import { runCheck, autoFix } from './check.js';
 
 const program = new Command();
 
@@ -214,6 +215,28 @@ program
 
     } catch (err) {
       console.error('❌ Failed to get stats:', err.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('check')
+  .description('Sanity check — verify winnow is working correctly')
+  .option('-a, --account <email>', 'Specific account to check')
+  .option('--fix', 'Auto-fix any repairable issues')
+  .action(async (opts) => {
+    try {
+      const config = loadConfig();
+      const accounts = opts.account ? [opts.account] : config.accounts;
+      for (const account of accounts) {
+        const result = await runCheck(account);
+        if (opts.fix && result.issues.some(i => i.autoFix)) {
+          console.log('\n  🔧 Running auto-fix...');
+          await autoFix(account);
+        }
+      }
+    } catch (err) {
+      console.error('❌ Check failed:', err.message);
       process.exit(1);
     }
   });
