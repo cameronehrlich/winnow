@@ -3,10 +3,10 @@ import { promisify } from 'node:util';
 import { GogAdapter } from './adapters/gog.js';
 import { classifyEmail } from './classify.js';
 import { loadConfig, getAdapter } from './config.js';
-
-const execAsync = promisify(execFile);
 import { loadState, saveState, isProcessed, markProcessed, pruneOldResults } from './state.js';
 import { sendUrgentAlert } from './notify.js';
+
+const execAsync = promisify(execFile);
 
 const LABEL_MAP = {
   low: 'winnow/low',
