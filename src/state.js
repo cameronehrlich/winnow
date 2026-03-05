@@ -1,0 +1,95 @@
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const STATE_PATH = join(__dirname, '..', 'data', 'state.json');
+
+const DEFAULT_STATE = {
+  processedIds: [],
+  lastScanTime: null,
+  lastDigestTime: null,
+  scanResults: [],
+  stats: {
+    totalProcessed: 0,
+    byPriority: { low: 0, normal: 0, urgent: 0 },
+    lowConfidenceBumps: 0,
+  },
+};
+
+export function loadState() {
+  try {
+    const raw = readFileSync(STATE_PATH, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return { ...DEFAULT_STATE };
+  }
+}
+
+export function saveState(state) {
+  mkdirSync(dirname(STATE_PATH), { recursive: true });
+  writeFileSync(STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
+}
+
+export function isProcessed(messageId) {
+  const state = loadState();
+  return state.processedIds.includes(messageId);
+}
+
+export function markProcessed(messageId, result) {
+  const state = loadState();
+
+  if (!state.processedIds.includes(messageId)) {
+    state.processedIds.push(messageId);
+  }
+
+  if (result) {
+    state.scanResults.push({
+      ...result,
+      messageId,
+      processedAt: new Date().toISOString(),
+    });
+
+    state.stats.totalProcessed++;
+    state.stats.byPriority[result.priority] = (state.stats.byPriority[result.priority] || 0) + 1;
+    if (result.bumped) state.stats.lowConfidenceBumps++;
+  }
+
+  state.lastScanTime = new Date().toISOString();
+  saveState(state);
+}
+
+export function getResultsSinceLastDigest() {
+  const state = loadState();
+  const since = state.lastDigestTime;
+  if (!since) return state.scanResults;
+  return state.scanResults.filter(r => r.processedAt > since);
+}
+
+export function markDigestSent() {
+  const state = loadState();
+  state.lastDigestTime = new Date().toISOString();
+  saveState(state);
+}
+
+export function getStats() {
+  const state = loadState();
+  return {
+    ...state.stats,
+    lastScanTime: state.lastScanTime,
+    lastDigestTime: state.lastDigestTime,
+  };
+}
+
+export function pruneOldResults(daysToKeep = 7) {
+  const state = loadState();
+  const cutoff = new Date(Date.now() - daysToKeep * 86400000).toISOString();
+  state.scanResults = state.scanResults.filter(r => r.processedAt > cutoff);
+
+  // Also prune processedIds to prevent unbounded growth — keep last 5000
+  if (state.processedIds.length > 5000) {
+    state.processedIds = state.processedIds.slice(-5000);
+  }
+
+  saveState(state);
+}

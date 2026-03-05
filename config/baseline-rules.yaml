@@ -1,0 +1,64 @@
+# Baseline triage rules — ships with Winnow
+# These provide sensible defaults. Custom rules in rules.yaml take precedence.
+
+rules:
+  # --- Always Low ---
+  - id: marketing-promo
+    match: "Marketing, promotional, or sales emails"
+    priority: low
+
+  - id: social-notifications
+    match: "Social media notifications from LinkedIn, Facebook, Twitter/X, Instagram, TikTok, etc."
+    priority: low
+
+  - id: ci-build-notifications
+    match: "Automated build, CI/CD, or deployment notifications"
+    priority: low
+
+  - id: newsletter-digests
+    match: "Newsletter digests and mailing list roundups"
+    priority: low
+
+  - id: shipping-tracking
+    match: "Shipping and delivery tracking updates (unless delivery is today)"
+    priority: low
+
+  - id: app-update-notifications
+    match: "App update or new version available notifications"
+    priority: low
+
+  - id: survey-feedback
+    match: "Survey requests, feedback forms, NPS scores, review requests"
+    priority: low
+
+  # --- Always Urgent ---
+  - id: security-alerts
+    match: "Security alerts, fraud warnings, unusual sign-in activity, or account compromise notices"
+    priority: urgent
+
+  - id: thread-replies
+    match: "Replies to email threads you have previously participated in or sent messages to"
+    priority: urgent
+
+  - id: calendar-invites-soon
+    match: "Calendar invitations or event updates for today or tomorrow"
+    priority: urgent
+
+  - id: 2fa-codes
+    match: "Two-factor authentication codes, verification codes, or one-time passwords"
+    priority: urgent
+
+  - id: payment-billing-issues
+    match: "Payment failures, billing issues, declined cards, overdue invoices"
+    priority: urgent
+
+  - id: time-sensitive
+    match: "Emails mentioning deadlines, expiring offers, 'by end of day', or events within 24 hours"
+    priority: urgent
+
+# Never-archive patterns (hardcoded safety net, overrides classification)
+never_archive:
+  - "Contains 2FA or one-time verification codes"
+  - "Calendar invitations or event updates"
+  - "Payment, invoice, or billing emails"
+  - "Threads the user has previously replied to"

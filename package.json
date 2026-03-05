@@ -1,0 +1,19 @@
+{
+  "name": "winnow",
+  "version": "1.0.0",
+  "description": "AI email triage CLI — separate the grain from the chaff",
+  "type": "module",
+  "bin": {
+    "winnow": "./bin/winnow"
+  },
+  "scripts": {
+    "start": "node bin/winnow"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@google/generative-ai": "^0.24.1",
+    "commander": "^13.1.0",
+    "js-yaml": "^4.1.0"
+  },
+  "license": "MIT"
+}
