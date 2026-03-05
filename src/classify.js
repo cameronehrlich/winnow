@@ -116,11 +116,16 @@ ${emailText}`;
     result.reason = `${result.reason} (bumped: matches never-archive rule)`;
   }
 
-  // Fallback: try to extract OTP code from snippet if classifier flagged ephemeral but missed the code
+  // Fallback: try to extract OTP code from snippet — only if classifier explicitly flagged extractedCode
+  // Don't blindly grab random numbers, as that catches years and other false positives
   let extractedCode = result.extractedCode || null;
   if (result.ephemeral && !extractedCode) {
-    const codeMatch = (email.snippet + ' ' + email.subject).match(/\b(\d{4,8})\b/);
-    if (codeMatch) extractedCode = codeMatch[1];
+    // Only try regex if subject/snippet strongly suggests a verification code
+    const otpHints = /verif|code|otp|one.time|2fa|passcode|pin|token/i;
+    if (otpHints.test(email.subject) || otpHints.test(email.snippet)) {
+      const codeMatch = (email.snippet + ' ' + email.subject).match(/\b(\d{4,8})\b/);
+      if (codeMatch) extractedCode = codeMatch[1];
+    }
   }
 
   return {
