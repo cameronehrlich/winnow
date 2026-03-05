@@ -119,6 +119,14 @@ export async function scan(account, opts = {}) {
 
   if (!dryRun) {
     pruneOldResults();
+    // Track scan count for daily stats
+    const state = loadState();
+    const today = new Date().toISOString().split('T')[0];
+    if (!state.stats.daily) state.stats.daily = {};
+    if (state.stats.daily[today]) {
+      state.stats.daily[today].scansRun = (state.stats.daily[today].scansRun || 0) + 1;
+    }
+    saveState(state);
   }
 
   console.log(`[winnow] Scan complete. Processed ${totalProcessed} new emails.`);

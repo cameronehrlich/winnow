@@ -55,6 +55,26 @@ export function markProcessed(messageId, result) {
     state.stats.totalProcessed++;
     state.stats.byPriority[result.priority] = (state.stats.byPriority[result.priority] || 0) + 1;
     if (result.bumped) state.stats.lowConfidenceBumps++;
+    if (result.ephemeral) state.stats.ephemeralCount = (state.stats.ephemeralCount || 0) + 1;
+
+    // Daily stats tracking
+    const today = new Date().toISOString().split('T')[0];
+    if (!state.stats.daily) state.stats.daily = {};
+    if (!state.stats.daily[today]) {
+      state.stats.daily[today] = {
+        processed: 0,
+        byPriority: { low: 0, normal: 0, urgent: 0 },
+        ephemeral: 0,
+        bumped: 0,
+        scansRun: 0,
+        rulesTriggered: {},
+      };
+    }
+    const day = state.stats.daily[today];
+    day.processed++;
+    day.byPriority[result.priority] = (day.byPriority[result.priority] || 0) + 1;
+    if (result.ephemeral) day.ephemeral++;
+    if (result.bumped) day.bumped++;
   }
 
   state.lastScanTime = new Date().toISOString();

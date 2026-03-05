@@ -165,17 +165,53 @@ program
 program
   .command('stats')
   .description('Show processing statistics')
-  .action(async () => {
+  .option('--json', 'Output as JSON')
+  .action(async (opts) => {
     try {
       const stats = getStats();
-      console.log('\n📊 Winnow Stats:\n');
-      console.log(`  Last scan: ${stats.lastScanTime || 'never'}`);
-      console.log(`  Last digest: ${stats.lastDigestTime || 'never'}`);
-      console.log(`  Total processed: ${stats.totalProcessed}`);
+
+      if (opts.json) {
+        console.log(JSON.stringify(stats, null, 2));
+        return;
+      }
+
+      console.log('\n📊 Winnow Stats\n');
+      console.log(`  Last scan:    ${stats.lastScanTime || 'never'}`);
+      console.log(`  Last digest:  ${stats.lastDigestTime || 'never'}`);
+      console.log(`  Total emails: ${stats.totalProcessed}`);
       console.log(`  Breakdown:`);
-      console.log(`    🔴 Urgent: ${stats.byPriority?.urgent || 0}`);
-      console.log(`    🟡 Normal: ${stats.byPriority?.normal || 0}`);
-      console.log(`    🟢 Low: ${stats.byPriority?.low || 0}`);
+      console.log(`    🔴 Urgent:    ${stats.byPriority?.urgent || 0}`);
+      console.log(`    🟡 Normal:    ${stats.byPriority?.normal || 0}`);
+      console.log(`    🟢 Low:       ${stats.byPriority?.low || 0}`);
+      console.log(`    📌 Ephemeral: ${stats.ephemeralCount || 0}`);
+      console.log(`    ⚠️  Bumped:    ${stats.lowConfidenceBumps || 0}`);
+
+      const pctArchived = stats.totalProcessed > 0
+        ? Math.round(((stats.byPriority?.low || 0) / stats.totalProcessed) * 100)
+        : 0;
+      console.log(`\n  📈 Inbox reduction: ${pctArchived}% of emails auto-archived`);
+      console.log(`  ⏱️  Est. time saved: ~${Math.round((stats.byPriority?.low || 0) * 0.5)} min (30s per email you didn't have to read)`);
+
+      // Daily breakdown
+      const daily = stats.daily || {};
+      const days = Object.keys(daily).sort().reverse().slice(0, 7);
+      if (days.length > 0) {
+        console.log('\n  📅 Daily Breakdown (last 7 days):');
+        console.log('  Date         Emails  Low  Normal  Urgent  Scans  Archived%');
+        console.log('  ' + '─'.repeat(60));
+        for (const day of days) {
+          const d = daily[day];
+          const pct = d.processed > 0 ? Math.round((d.byPriority.low / d.processed) * 100) : 0;
+          console.log(`  ${day}   ${String(d.processed).padStart(5)}  ${String(d.byPriority.low).padStart(3)}  ${String(d.byPriority.normal).padStart(6)}  ${String(d.byPriority.urgent).padStart(6)}  ${String(d.scansRun || 0).padStart(5)}  ${pct}%`);
+        }
+      }
+
+      // Custom rules count
+      const rules = await listRules();
+      const customRules = rules.filter(r => r.source !== 'baseline');
+      console.log(`\n  📋 Custom rules: ${customRules.length}`);
+      console.log(`  📋 Total rules:  ${rules.length}`);
+
     } catch (err) {
       console.error('❌ Failed to get stats:', err.message);
       process.exit(1);
