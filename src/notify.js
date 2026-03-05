@@ -99,6 +99,13 @@ export async function postToSlack(text) {
   return postToSlackAPI(text);
 }
 
+export async function sendEphemeralFyi(result, account) {
+  if (isAlertsMuted()) return false;
+
+  const text = `📌 ${result.summary}\n_From: ${result.from} — auto-archived_`;
+  return postToSlackAPI(text);
+}
+
 export async function sendUrgentAlert(result, account) {
   if (isAlertsMuted()) {
     console.log('[winnow] Alerts muted — skipping urgent notification');
@@ -119,7 +126,7 @@ export async function sendUrgentAlert(result, account) {
 
   if (result.ephemeral && result.extractedCode) {
     lines.push(`*🔑 Code:* \`${result.extractedCode}\``);
-    lines.push(`_This is an ephemeral email — auto-archived after delivering the code._`);
+    lines.push(`_Auto-archived after delivering the code._`);
   }
 
   lines.push(`_${confidence}_`);

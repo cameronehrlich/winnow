@@ -32,8 +32,13 @@ CONFIDENCE:
 - Flag low-confidence classifications with the reason
 
 EPHEMERAL EMAILS:
-- If the email contains a verification code, OTP, 2FA code, or one-time password, set "ephemeral": true and extract the code into "extractedCode"
-- These are time-sensitive but disposable after use
+- Set "ephemeral": true for emails that are briefly interesting but don't need to stay in the inbox:
+  - Verification codes, OTP, 2FA codes → also set "extractedCode" to the code string
+  - Daycare/school check-in/check-out notifications
+  - Delivery "out for delivery" or "delivered" updates
+  - Ride receipts (Uber, Lyft)
+  - Brief status updates that are nice to know but disposable
+- Ephemeral emails get a short Slack FYI and are auto-archived
 
 Respond with ONLY valid JSON, no markdown fences:
 {"priority": "low|normal|urgent", "confidence": 0-100, "reason": "brief reason", "summary": "one-line summary of email content", "neverArchive": false, "ephemeral": false, "extractedCode": null}

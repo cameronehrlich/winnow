@@ -4,7 +4,7 @@ import { GogAdapter } from './adapters/gog.js';
 import { classifyEmail } from './classify.js';
 import { loadConfig, getAdapter } from './config.js';
 import { loadState, saveState, isProcessed, markProcessed, pruneOldResults } from './state.js';
-import { sendUrgentAlert } from './notify.js';
+import { sendUrgentAlert, sendEphemeralFyi } from './notify.js';
 
 const execAsync = promisify(execFile);
 
@@ -94,15 +94,19 @@ export async function scan(account, opts = {}) {
         await sendUrgentAlert(result, account);
       }
 
-      // Ephemeral emails (OTP/2FA codes): copy code, notify, auto-archive
+      // Ephemeral emails: notify + auto-archive
       if (result.ephemeral) {
         if (result.extractedCode) {
+          // OTP/2FA: copy code to clipboard + macOS notification
           await copyToClipboardAndNotify(result.extractedCode, result.from, result.subject);
+        } else {
+          // FYI ephemeral: just post a quiet Slack summary
+          await sendEphemeralFyi(result, account);
         }
-        console.log(`[winnow] Ephemeral email detected — auto-archiving after alert`);
+        console.log(`[winnow] Ephemeral email — auto-archiving`);
         await adapter.modifyLabels(account, msg.threadId, {
           add: ['winnow/low'],
-          remove: ['INBOX', 'UNREAD', 'winnow/urgent'],
+          remove: ['INBOX', 'UNREAD', 'winnow/urgent', 'winnow/normal'],
         });
       }
 
