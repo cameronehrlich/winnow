@@ -64,8 +64,16 @@ export function markProcessed(messageId, result) {
 export function getResultsSinceLastDigest() {
   const state = loadState();
   const since = state.lastDigestTime;
-  if (!since) return state.scanResults;
-  return state.scanResults.filter(r => r.processedAt > since);
+  let results = since
+    ? state.scanResults.filter(r => r.processedAt > since)
+    : state.scanResults;
+
+  // Deduplicate by messageId — keep the latest entry (most recent classification)
+  const seen = new Map();
+  for (const r of results) {
+    seen.set(r.messageId, r);
+  }
+  return Array.from(seen.values());
 }
 
 export function markDigestSent() {
