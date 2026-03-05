@@ -110,15 +110,23 @@ export async function sendUrgentAlert(result, account) {
     ? `⚠️ ${result.confidence}% confidence (bumped from ${result.originalPriority})`
     : `${result.confidence}% confidence`;
 
-  const text = [
+  const lines = [
     `${emoji} *Urgent Email* — ${account}`,
     `*From:* ${result.from}`,
     `*Subject:* ${result.subject}`,
     `*Summary:* ${result.summary}`,
-    `_${confidence}_`,
-    '',
-    `💡 Reply here to adjust: _"make emails like this normal/low"_`,
-  ].join('\n');
+  ];
+
+  if (result.ephemeral && result.extractedCode) {
+    lines.push(`*🔑 Code:* \`${result.extractedCode}\``);
+    lines.push(`_This is an ephemeral email — auto-archived after delivering the code._`);
+  }
+
+  lines.push(`_${confidence}_`);
+  lines.push('');
+  lines.push(`💡 Reply here to adjust: _"make emails like this normal/low"_`);
+
+  const text = lines.join('\n');
 
   return postToSlackAPI(text);
 }

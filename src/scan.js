@@ -80,6 +80,15 @@ export async function scan(account, opts = {}) {
           await sendUrgentAlert(result, account);
         }
 
+        // Ephemeral emails (OTP/2FA codes): auto-archive after alerting
+        if (result.ephemeral) {
+          console.log(`[winnow] Ephemeral email detected — auto-archiving after alert`);
+          await adapter.modifyLabels(account, msg.threadId, {
+            add: ['winnow/low'],
+            remove: ['INBOX', 'UNREAD', 'winnow/urgent'],
+          });
+        }
+
         markProcessed(msg.id, result);
       }
 

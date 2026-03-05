@@ -31,10 +31,15 @@ CONFIDENCE:
 - If confidence is below 70, bump the priority UP one level (low→normal, normal→urgent)
 - Flag low-confidence classifications with the reason
 
-Respond with ONLY valid JSON, no markdown fences:
-{"priority": "low|normal|urgent", "confidence": 0-100, "reason": "brief reason", "summary": "one-line summary of email content", "neverArchive": false}
+EPHEMERAL EMAILS:
+- If the email contains a verification code, OTP, 2FA code, or one-time password, set "ephemeral": true and extract the code into "extractedCode"
+- These are time-sensitive but disposable after use
 
-Set neverArchive to true if the email matches any safety rule above.`;
+Respond with ONLY valid JSON, no markdown fences:
+{"priority": "low|normal|urgent", "confidence": 0-100, "reason": "brief reason", "summary": "one-line summary of email content", "neverArchive": false, "ephemeral": false, "extractedCode": null}
+
+Set neverArchive to true if the email matches any safety rule above.
+Set ephemeral to true and extractedCode to the code string if it's a verification/OTP email.`;
 
 export async function classifyEmail(email) {
   const config = loadConfig();
@@ -106,6 +111,13 @@ ${emailText}`;
     result.reason = `${result.reason} (bumped: matches never-archive rule)`;
   }
 
+  // Fallback: try to extract OTP code from snippet if classifier flagged ephemeral but missed the code
+  let extractedCode = result.extractedCode || null;
+  if (result.ephemeral && !extractedCode) {
+    const codeMatch = (email.snippet + ' ' + email.subject).match(/\b(\d{4,8})\b/);
+    if (codeMatch) extractedCode = codeMatch[1];
+  }
+
   return {
     priority: result.priority,
     confidence: result.confidence,
@@ -114,5 +126,7 @@ ${emailText}`;
     neverArchive: result.neverArchive || false,
     bumped: result.bumped || false,
     originalPriority: result.originalPriority || null,
+    ephemeral: result.ephemeral || false,
+    extractedCode,
   };
 }
