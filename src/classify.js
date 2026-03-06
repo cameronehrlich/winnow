@@ -41,7 +41,7 @@ EPHEMERAL EMAILS:
 - Ephemeral emails get a short Slack FYI and are auto-archived
 
 Respond with ONLY valid JSON, no markdown fences:
-{"priority": "low|normal|urgent", "confidence": 0-100, "reason": "brief reason", "summary": "one-line summary of email content", "neverArchive": false, "ephemeral": false, "extractedCode": null}
+{"priority": "low|normal|urgent", "confidence": 0-100, "reason": "brief reason", "summary": "1-2 sentence plain-English summary of what this email is about and any action needed", "neverArchive": false, "ephemeral": false, "extractedCode": null}
 
 Set neverArchive to true if the email matches any safety rule above.
 Set ephemeral to true and extractedCode to the code string if it's a verification/OTP email.`;

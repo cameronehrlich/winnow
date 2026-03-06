@@ -20,13 +20,26 @@ function cleanSender(from) {
   return from.slice(0, 30);
 }
 
+function gmailLink(threadId) {
+  if (!threadId) return null;
+  return `https://mail.google.com/mail/u/0/#all/${threadId}`;
+}
+
 function formatResultDetailed(r) {
   const sender = cleanSender(r.from);
+  const link = gmailLink(r.threadId);
   const lines = [];
-  lines.push(`  *${sender}*`);
-  lines.push(`  ${r.subject}`);
-  if (r.summary && r.summary !== r.subject) {
-    lines.push(`  _${r.summary}_`);
+  // Subject prominent + linked
+  if (link) {
+    lines.push(`  <${link}|*${r.subject}*>`);
+  } else {
+    lines.push(`  *${r.subject}*`);
+  }
+  // Sender on second line, smaller
+  lines.push(`  _from ${sender}_`);
+  // Summary
+  if (r.summary) {
+    lines.push(`  ${r.summary}`);
   }
   if (r.bumped) {
     lines.push(`  ⚠️ _${r.confidence}% confidence (bumped from ${r.originalPriority})_`);
@@ -39,7 +52,11 @@ function formatResultDetailed(r) {
 
 function formatResultCompact(r) {
   const sender = cleanSender(r.from);
-  return `  • *${sender}* — ${r.subject}`;
+  const link = gmailLink(r.threadId);
+  if (link) {
+    return `  • <${link}|${r.subject}> — _${sender}_`;
+  }
+  return `  • ${r.subject} — _${sender}_`;
 }
 
 export function formatDigest(results, account) {
