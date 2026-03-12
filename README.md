@@ -272,13 +272,32 @@ winnow/
     └── notify.test.js      # Notification tests
 ```
 
+### Gmail Adapters
+
+Winnow accesses Gmail through a pluggable adapter interface. All Gmail operations (fetch, archive, label) go through a base `GmailAdapter` class, so swapping backends is straightforward.
+
+| Adapter | Status | Description |
+|---------|--------|-------------|
+| **[gog](https://github.com/xlab-si/gog)** | ✅ Supported | Google CLI with OAuth. Current default. |
+| **[gws](https://github.com/googleworkspace/cli)** | 🔜 Planned | Google's official Workspace CLI (`@googleworkspace/cli`). Structured JSON output, 100+ agent skills. |
+| **Gmail API** | 🔜 Planned | Direct Gmail REST API — no CLI dependency. |
+| **IMAP** | 💡 Future | For non-Gmail providers (Outlook, Fastmail, etc.) |
+
+To set your adapter in `config.yaml`:
+
+```yaml
+adapter: gog  # or "gws" once supported
+```
+
+Want to add an adapter? Implement the `GmailAdapter` interface in `src/adapters/` — see `gog.js` for reference.
+
 ### Key Design Decisions
 
 - **Never delete** — Only archive. Everything is recoverable from Gmail's All Mail.
 - **Snippet-only classification** — Winnow sends sender + subject + snippet to the AI, never full email bodies. Faster, cheaper, and more private.
 - **Low-confidence = keep** — Below 70% confidence, emails stay in the inbox no matter what.
 - **Stateless scanning** — Each scan is independent. State tracks processed IDs to avoid re-processing, but a fresh scan works fine without it.
-- **Adapter pattern** — Gmail access goes through an adapter interface. Currently uses `gog`, but the pattern supports swapping in direct Gmail API, IMAP, or other providers.
+- **Pluggable adapters** — Gmail access goes through a clean adapter interface. Swap backends by implementing `GmailAdapter` and updating your config.
 
 ## Running with PM2
 
@@ -298,7 +317,7 @@ Winnow is young and opinionated — contributions are welcome.
 
 ### Good First Issues
 
-- **New adapters** — IMAP support, direct Gmail API (no gog dependency), Outlook/Exchange
+- **New adapters** — `gws` (Google Workspace CLI), direct Gmail API, IMAP, Outlook/Exchange
 - **Notification targets** — Discord, Telegram, email digest, desktop notifications
 - **Rule improvements** — Regex support, sender-based rules, time-based rules ("archive after 24h")
 - **Better classification** — Support for other LLMs (OpenAI, Claude, local models via Ollama)
