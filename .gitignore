@@ -3,3 +3,4 @@ data/state.json
 config/config.yaml
 firebase-debug.log
 *.log
+config/rules.yaml.bak

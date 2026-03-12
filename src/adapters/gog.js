@@ -94,15 +94,17 @@ export class GogAdapter extends GmailAdapter {
         l => (l.name || l.Name || '') === labelName
       );
       if (!exists) {
+        console.log(`[winnow] Creating Gmail label: ${labelName}`);
         await gogExec([
           'gmail', 'labels', 'create', labelName,
           '--account', account,
         ]);
+        console.log(`[winnow] ✅ Label created: ${labelName}`);
       }
       this.#labelCache.set(cacheKey, true);
-    } catch {
-      // Label might already exist, that's fine
-      this.#labelCache.set(cacheKey, true);
+    } catch (err) {
+      // Don't cache on failure — retry next scan
+      console.error(`[winnow] ⚠️ Failed to ensure label "${labelName}": ${err.message}`);
     }
   }
 

@@ -1,7 +1,8 @@
 import { Command } from 'commander';
 import { scan } from './scan.js';
+import { watch } from './watch.js';
 import { generateAndPostDigest } from './digest.js';
-import { loadConfig } from './config.js';
+import { loadConfig, setConfigField, getAccountEmails } from './config.js';
 import { addRule, removeRule, listRules } from './rules.js';
 import { getStats } from './state.js';
 import { muteAlerts, unmuteAlerts, getAlertStatus } from './notify.js';
@@ -24,7 +25,7 @@ program
   .action(async (opts) => {
     try {
       const config = loadConfig();
-      const accounts = opts.account ? [opts.account] : config.accounts;
+      const accounts = opts.account ? [opts.account] : getAccountEmails();
       for (const account of accounts) {
         console.log(`\n📬 Scanning ${account}...`);
         const scanOpts = { dryRun: opts.dryRun };
@@ -32,10 +33,9 @@ program
         else if (opts.since) scanOpts.searchQuery = `in:inbox newer_than:${opts.since}`;
         const results = await scan(account, scanOpts);
         console.log(`✅ Processed ${results.length} emails`);
-        const urgent = results.filter(r => r.priority === 'urgent').length;
-        const normal = results.filter(r => r.priority === 'normal').length;
-        const low = results.filter(r => r.priority === 'low').length;
-        console.log(`   🔴 ${urgent} urgent  🟡 ${normal} normal  🟢 ${low} low`);
+        const archived = results.filter(r => r.archive).length;
+        const kept = results.length - archived;
+        console.log(`   🗂️ ${archived} archived  📥 ${kept} kept in inbox`);
       }
     } catch (err) {
       console.error('❌ Scan failed:', err.message);
@@ -52,7 +52,7 @@ program
   .action(async (opts) => {
     try {
       const config = loadConfig();
-      const accounts = opts.account ? [opts.account] : config.accounts;
+      const accounts = opts.account ? [opts.account] : getAccountEmails();
       for (const account of accounts) {
         console.log(`\n🔄 Rescanning ${account} (since ${opts.since})...`);
         const searchQuery = `newer_than:${opts.since}`;
@@ -62,10 +62,9 @@ program
           skipProcessedCheck: true,
         });
         console.log(`✅ Re-classified ${results.length} emails`);
-        const urgent = results.filter(r => r.priority === 'urgent').length;
-        const normal = results.filter(r => r.priority === 'normal').length;
-        const low = results.filter(r => r.priority === 'low').length;
-        console.log(`   🔴 ${urgent} urgent  🟡 ${normal} normal  🟢 ${low} low`);
+        const archived = results.filter(r => r.archive).length;
+        const kept = results.length - archived;
+        console.log(`   🗂️ ${archived} archived  📥 ${kept} kept in inbox`);
       }
     } catch (err) {
       console.error('❌ Rescan failed:', err.message);
@@ -99,7 +98,7 @@ program
   .action(async (opts) => {
     try {
       const config = loadConfig();
-      for (const account of config.accounts) {
+      for (const account of getAccountEmails()) {
         console.log(`\n📬 Scanning ${account}...`);
         const results = await scan(account, { dryRun: opts.dryRun });
         console.log(`✅ Processed ${results.length} emails`);
@@ -113,6 +112,19 @@ program
     }
   });
 
+program
+  .command('watch')
+  .description('Watch inbox in real-time — poll every N seconds and triage immediately')
+  .option('-i, --interval <seconds>', 'Poll interval in seconds', '30')
+  .action(async (opts) => {
+    try {
+      await watch({ interval: parseInt(opts.interval) });
+    } catch (err) {
+      console.error('❌ Watch failed:', err.message);
+      process.exit(1);
+    }
+  });
+
 const rule = program
   .command('rule')
   .description('Manage custom rules');
@@ -120,11 +132,14 @@ const rule = program
 rule
   .command('add <description>')
   .description('Add a custom rule (plain English)')
-  .option('-p, --priority <level>', 'Priority: low, normal, or urgent', 'low')
+  .requiredOption('-a, --account <email>', 'Account to add the rule to')
+  .option('--archive', 'Auto-archive matching emails (default)')
+  .option('--keep', 'Keep matching emails in inbox')
   .action(async (description, opts) => {
     try {
-      const id = await addRule(description, opts.priority);
-      console.log(`✅ Rule added: ${id} → ${opts.priority}`);
+      const archive = opts.keep ? false : true;
+      const id = await addRule(description, archive, opts.account);
+      console.log(`✅ Rule added to ${opts.account}: ${id} → ${archive ? 'archive' : 'keep in inbox'}`);
     } catch (err) {
       console.error('❌ Failed to add rule:', err.message);
       process.exit(1);
@@ -134,10 +149,11 @@ rule
 rule
   .command('remove <id>')
   .description('Remove a custom rule by ID')
-  .action(async (id) => {
+  .requiredOption('-a, --account <email>', 'Account to remove the rule from')
+  .action(async (id, opts) => {
     try {
-      await removeRule(id);
-      console.log(`✅ Rule removed: ${id}`);
+      await removeRule(id, opts.account);
+      console.log(`✅ Rule removed from ${opts.account}: ${id}`);
     } catch (err) {
       console.error('❌ Failed to remove rule:', err.message);
       process.exit(1);
@@ -147,16 +163,20 @@ rule
 program
   .command('rules')
   .description('List all active rules')
-  .action(async () => {
+  .option('-a, --account <email>', 'Show rules for a specific account (omit for all accounts)')
+  .action(async (opts) => {
     try {
-      const rules = await listRules();
-      console.log('\n📋 Active Rules:\n');
-      for (const rule of rules) {
-        const emoji = rule.priority === 'urgent' ? '🔴' : rule.priority === 'normal' ? '🟡' : '🟢';
-        const source = rule.source === 'baseline' ? '(baseline)' : '(custom)';
-        console.log(`  ${emoji} ${rule.id} — ${rule.match} ${source}`);
+      const accounts = opts.account ? [opts.account] : getAccountEmails();
+      for (const account of accounts) {
+        const rules = await listRules(account);
+        console.log(`\n📋 Rules for ${account}:\n`);
+        for (const rule of rules) {
+          const action = rule.archive === true ? '🗂️ archive' : rule.archive === false ? '📥 keep' : (rule.priority === 'low' ? '🗂️ archive' : '📥 keep');
+          const source = rule.source === 'baseline' ? '(baseline)' : '(custom)';
+          console.log(`  ${action} — ${rule.id} — ${rule.match} ${source}`);
+        }
+        console.log(`\n  Total: ${rules.length} rules`);
       }
-      console.log(`\n  Total: ${rules.length} rules`);
     } catch (err) {
       console.error('❌ Failed to list rules:', err.message);
       process.exit(1);
@@ -180,38 +200,43 @@ program
       console.log(`  Last scan:    ${stats.lastScanTime || 'never'}`);
       console.log(`  Last digest:  ${stats.lastDigestTime || 'never'}`);
       console.log(`  Total emails: ${stats.totalProcessed}`);
+
+      const totalArchived = (stats.byPriority?.low || 0);
+      const totalKept = stats.totalProcessed - totalArchived;
       console.log(`  Breakdown:`);
-      console.log(`    🔴 Urgent:    ${stats.byPriority?.urgent || 0}`);
-      console.log(`    🟡 Normal:    ${stats.byPriority?.normal || 0}`);
-      console.log(`    🟢 Low:       ${stats.byPriority?.low || 0}`);
+      console.log(`    🗂️ Archived:  ${totalArchived}`);
+      console.log(`    📥 Kept:      ${totalKept}`);
       console.log(`    📌 Ephemeral: ${stats.ephemeralCount || 0}`);
-      console.log(`    ⚠️  Bumped:    ${stats.lowConfidenceBumps || 0}`);
 
       const pctArchived = stats.totalProcessed > 0
-        ? Math.round(((stats.byPriority?.low || 0) / stats.totalProcessed) * 100)
+        ? Math.round((totalArchived / stats.totalProcessed) * 100)
         : 0;
       console.log(`\n  📈 Inbox reduction: ${pctArchived}% of emails auto-archived`);
-      console.log(`  ⏱️  Est. time saved: ~${Math.round((stats.byPriority?.low || 0) * 0.5)} min (30s per email you didn't have to read)`);
+      console.log(`  ⏱️  Est. time saved: ~${Math.round(totalArchived * 0.5)} min (30s per email you didn't have to read)`);
 
       // Daily breakdown
       const daily = stats.daily || {};
       const days = Object.keys(daily).sort().reverse().slice(0, 7);
       if (days.length > 0) {
         console.log('\n  📅 Daily Breakdown (last 7 days):');
-        console.log('  Date         Emails  Low  Normal  Urgent  Scans  Archived%');
-        console.log('  ' + '─'.repeat(60));
+        console.log('  Date         Emails  Archived  Kept  Scans  Archived%');
+        console.log('  ' + '─'.repeat(55));
         for (const day of days) {
           const d = daily[day];
-          const pct = d.processed > 0 ? Math.round((d.byPriority.low / d.processed) * 100) : 0;
-          console.log(`  ${day}   ${String(d.processed).padStart(5)}  ${String(d.byPriority.low).padStart(3)}  ${String(d.byPriority.normal).padStart(6)}  ${String(d.byPriority.urgent).padStart(6)}  ${String(d.scansRun || 0).padStart(5)}  ${pct}%`);
+          const dayArchived = d.byPriority?.low || 0;
+          const dayKept = d.processed - dayArchived;
+          const pct = d.processed > 0 ? Math.round((dayArchived / d.processed) * 100) : 0;
+          console.log(`  ${day}   ${String(d.processed).padStart(5)}  ${String(dayArchived).padStart(8)}  ${String(dayKept).padStart(4)}  ${String(d.scansRun || 0).padStart(5)}  ${pct}%`);
         }
       }
 
-      // Custom rules count
-      const rules = await listRules();
-      const customRules = rules.filter(r => r.source !== 'baseline');
-      console.log(`\n  📋 Custom rules: ${customRules.length}`);
-      console.log(`  📋 Total rules:  ${rules.length}`);
+      // Custom rules count per account
+      const allAccounts = getAccountEmails();
+      for (const acct of allAccounts) {
+        const rules = await listRules(acct);
+        const customRules = rules.filter(r => r.source !== 'baseline');
+        console.log(`\n  📋 ${acct}: ${customRules.length} custom / ${rules.length} total rules`);
+      }
 
     } catch (err) {
       console.error('❌ Failed to get stats:', err.message);
@@ -227,7 +252,7 @@ program
   .action(async (opts) => {
     try {
       const config = loadConfig();
-      const accounts = opts.account ? [opts.account] : config.accounts;
+      const accounts = opts.account ? [opts.account] : getAccountEmails();
       for (const account of accounts) {
         const result = await runCheck(account);
         if (opts.fix && result.issues.some(i => i.autoFix)) {
@@ -288,6 +313,35 @@ alerts
     } else {
       console.log('🔇 Alerts muted permanently');
     }
+  });
+
+const feed = program
+  .command('feed')
+  .description('Toggle email feed — posts to Slack for every email processed');
+
+feed
+  .command('on')
+  .description('Enable email feed')
+  .action(() => {
+    setConfigField('feed', true);
+    console.log('📡 Email feed ON — every email will post to Slack');
+  });
+
+feed
+  .command('off')
+  .description('Disable email feed')
+  .action(() => {
+    setConfigField('feed', false);
+    console.log('📡 Email feed OFF');
+  });
+
+feed
+  .command('status')
+  .description('Check email feed status')
+  .action(() => {
+    const config = loadConfig();
+    const enabled = config.feed !== false; // on by default
+    console.log(enabled ? '📡 Email feed is ON' : '📡 Email feed is OFF');
   });
 
 program.parse();

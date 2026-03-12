@@ -1,10 +1,9 @@
-import { loadConfig } from './config.js';
+import { loadConfig, reloadConfig, getChannelForAccount } from './config.js';
 import { loadState, saveState } from './state.js';
 
 const SLACK_API_URL = 'https://slack.com/api/chat.postMessage';
 
 function getSlackToken() {
-  // Check env var first, then config
   if (process.env.SLACK_BOT_TOKEN) return process.env.SLACK_BOT_TOKEN;
   const config = loadConfig();
   return config.slack?.bot_token || null;
@@ -15,13 +14,13 @@ function getChannelId() {
   return config.slack?.channel_id || null;
 }
 
+// ── Alert muting ──────────────────────────────────────────────
+
 export function isAlertsMuted() {
   const state = loadState();
   if (!state.alertsMuted) return false;
-  // Check temporary mute expiry
   if (state.alertsMutedUntil) {
     if (new Date(state.alertsMutedUntil) < new Date()) {
-      // Mute expired — auto-unmute
       state.alertsMuted = false;
       state.alertsMutedUntil = null;
       saveState(state);
@@ -34,11 +33,9 @@ export function isAlertsMuted() {
 export function muteAlerts(durationMinutes = null) {
   const state = loadState();
   state.alertsMuted = true;
-  if (durationMinutes) {
-    state.alertsMutedUntil = new Date(Date.now() + durationMinutes * 60000).toISOString();
-  } else {
-    state.alertsMutedUntil = null; // permanent until manually turned on
-  }
+  state.alertsMutedUntil = durationMinutes
+    ? new Date(Date.now() + durationMinutes * 60000).toISOString()
+    : null;
   saveState(state);
 }
 
@@ -60,9 +57,11 @@ export function getAlertStatus() {
   return { muted: true, until: null };
 }
 
-async function postToSlackAPI(text) {
+// ── Low-level Slack poster ────────────────────────────────────
+
+async function postToSlackAPI(text, channelOverride = null) {
   const token = getSlackToken();
-  const channel = getChannelId();
+  const channel = channelOverride || getChannelId();
 
   if (!token || !channel) {
     console.log('[winnow] No Slack bot token or channel configured — skipping notification');
@@ -99,41 +98,65 @@ export async function postToSlack(text) {
   return postToSlackAPI(text);
 }
 
-export async function sendEphemeralFyi(result, account) {
-  if (isAlertsMuted()) return false;
+// ── Email feed ────────────────────────────────────────────────
 
-  const text = `📌 ${result.summary}\n_From: ${result.from} — auto-archived_`;
-  return postToSlackAPI(text);
+function cleanSender(from) {
+  if (!from) return 'Unknown';
+  const match = from.match(/^"?([^"<]+)"?\s*</);
+  if (match) return match[1].trim();
+  const emailMatch = from.match(/([^@]+)@/);
+  if (emailMatch) return emailMatch[1];
+  return from.slice(0, 30);
 }
 
-export async function sendUrgentAlert(result, account) {
-  if (isAlertsMuted()) {
-    console.log('[winnow] Alerts muted — skipping urgent notification');
-    return false;
-  }
+function gmailLink(threadId) {
+  if (!threadId) return null;
+  return `https://mail.google.com/mail/u/0/#all/${threadId}`;
+}
 
-  const emoji = '🔴';
-  const confidence = result.bumped
-    ? `⚠️ ${result.confidence}% confidence (bumped from ${result.originalPriority})`
-    : `${result.confidence}% confidence`;
-
-  const lines = [
-    `${emoji} *Urgent Email* — ${account}`,
-    `*From:* ${result.from}`,
-    `*Subject:* ${result.subject}`,
-    `*Summary:* ${result.summary}`,
-  ];
+/**
+ * Format a single email result into a Slack feed message.
+ * Four states:
+ *   🔑  OTP / verification code (ephemeral + extractedCode)
+ *   📌  Ephemeral FYI (ephemeral, no code)
+ *   🗂️  Archived (archive: true)
+ *   📥  Kept in inbox (archive: false)
+ */
+export function formatEmailFeedMessage(result) {
+  const sender = cleanSender(result.from);
+  const subject = result.subject || '(no subject)';
+  const link = gmailLink(result.threadId);
+  const subjectDisplay = link ? `<${link}|${subject}>` : subject;
 
   if (result.ephemeral && result.extractedCode) {
-    lines.push(`*🔑 Code:* \`${result.extractedCode}\``);
-    lines.push(`_Auto-archived after delivering the code._`);
+    return `🔑 *${sender}* — ${subjectDisplay}\n_Code \`${result.extractedCode}\` copied to clipboard · auto-archived_`;
   }
 
-  lines.push(`_${confidence}_`);
-  lines.push('');
-  lines.push(`💡 Reply here to adjust: _"make emails like this normal/low"_`);
+  if (result.ephemeral) {
+    return `📌 *${sender}* — ${subjectDisplay}\n_${result.summary} · auto-archived_`;
+  }
 
-  const text = lines.join('\n');
+  if (result.archive) {
+    const conf = result.confidence || '?';
+    return `🗂️ *${sender}* — ${subjectDisplay}\n_Archived (${conf}%): ${result.summary}_`;
+  }
 
-  return postToSlackAPI(text);
+  // Kept in inbox
+  return `📥 *${sender}* — ${subjectDisplay}`;
+}
+
+/**
+ * Post a single email result to the Slack feed channel.
+ * Respects: alerts mute, feed toggle (config.feed).
+ * Feed is ON by default — set `feed: false` in config to disable.
+ */
+export async function postEmailFeed(result) {
+  if (isAlertsMuted()) return false;
+
+  const config = reloadConfig(); // re-read so toggle works without restart
+  if (config.feed === false) return false;
+
+  const text = formatEmailFeedMessage(result);
+  const channel = result.account ? getChannelForAccount(result.account) : null;
+  return postToSlackAPI(text, channel);
 }

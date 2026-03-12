@@ -1,20 +1,10 @@
 import { getResultsSinceLastDigest, markDigestSent } from './state.js';
 import { postToSlack } from './notify.js';
 
-function groupByPriority(results) {
-  const groups = { urgent: [], normal: [], low: [] };
-  for (const r of results) {
-    groups[r.priority]?.push(r);
-  }
-  return groups;
-}
-
 function cleanSender(from) {
-  // Extract just the name, strip email address
   if (!from) return 'Unknown';
   const match = from.match(/^"?([^"<]+)"?\s*</);
   if (match) return match[1].trim();
-  // If it's just an email, use the part before @
   const emailMatch = from.match(/([^@]+)@/);
   if (emailMatch) return emailMatch[1];
   return from.slice(0, 30);
@@ -23,31 +13,6 @@ function cleanSender(from) {
 function gmailLink(threadId) {
   if (!threadId) return null;
   return `https://mail.google.com/mail/u/0/#all/${threadId}`;
-}
-
-function formatResultDetailed(r) {
-  const sender = cleanSender(r.from);
-  const link = gmailLink(r.threadId);
-  const lines = [];
-  // Subject prominent + linked
-  if (link) {
-    lines.push(`  <${link}|*${r.subject}*>`);
-  } else {
-    lines.push(`  *${r.subject}*`);
-  }
-  // Sender on second line, smaller
-  lines.push(`  _from ${sender}_`);
-  // Summary
-  if (r.summary) {
-    lines.push(`  ${r.summary}`);
-  }
-  if (r.bumped) {
-    lines.push(`  ⚠️ _${r.confidence}% confidence (bumped from ${r.originalPriority})_`);
-  }
-  if (r.unsubscribeLink) {
-    lines.push(`  📎 <${r.unsubscribeLink}|Unsubscribe>`);
-  }
-  return lines.join('\n');
 }
 
 function formatResultCompact(r) {
@@ -60,11 +25,13 @@ function formatResultCompact(r) {
 }
 
 export function formatDigest(results, account) {
-  if (results.length === 0) {
-    return `📬 *Winnow Digest* — No new emails since last digest.`;
+  // Only include archived emails in the report
+  const archived = results.filter(r => r.archive || r.priority === 'low');
+
+  if (archived.length === 0) {
+    return `📬 *Winnow Archive Report* — Nothing was auto-archived since last report.`;
   }
 
-  const groups = groupByPriority(results);
   const now = new Date().toLocaleString('en-US', {
     weekday: 'short',
     month: 'short',
@@ -75,64 +42,24 @@ export function formatDigest(results, account) {
     timeZone: 'America/Los_Angeles',
   });
 
-  const lowPct = results.length > 0
-    ? Math.round((groups.low.length / results.length) * 100)
-    : 0;
-
+  const totalScanned = results.length;
   const sections = [];
 
   // Header
-  sections.push(`📬 *Winnow Daily Digest*`);
-  sections.push(`${now} · ${results.length} emails · ${lowPct}% auto-archived`);
+  sections.push(`📬 *Winnow Archive Report*`);
+  sections.push(`${now} · ${totalScanned} emails scanned · ${archived.length} auto-archived`);
+  sections.push('');
+  sections.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  sections.push(`🗂️ *Auto-Archived* (${archived.length})`);
   sections.push('');
 
-  // Urgent — detailed format, each email clearly separated
-  if (groups.urgent.length > 0) {
-    sections.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    sections.push(`🔴 *URGENT* (${groups.urgent.length}) — _already alerted_`);
-    sections.push('');
-    for (const r of groups.urgent.slice(0, 10)) {
-      sections.push(formatResultDetailed(r));
-      sections.push('');
-    }
-    if (groups.urgent.length > 10) {
-      sections.push(`  _+${groups.urgent.length - 10} more_`);
-      sections.push('');
-    }
+  for (const r of archived) {
+    sections.push(formatResultCompact(r));
   }
 
-  // Normal — detailed format
-  if (groups.normal.length > 0) {
-    sections.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    sections.push(`🟡 *WORTH REVIEWING* (${groups.normal.length})`);
-    sections.push('');
-    for (const r of groups.normal.slice(0, 8)) {
-      sections.push(formatResultDetailed(r));
-      sections.push('');
-    }
-    if (groups.normal.length > 8) {
-      sections.push(`  _+${groups.normal.length - 8} more_`);
-      sections.push('');
-    }
-  }
-
-  // Low — compact format (these were already handled, just a recap)
-  if (groups.low.length > 0) {
-    sections.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    sections.push(`🟢 *ARCHIVED* (${groups.low.length})`);
-    sections.push('');
-    for (const r of groups.low.slice(0, 10)) {
-      sections.push(formatResultCompact(r));
-    }
-    if (groups.low.length > 10) {
-      sections.push(`  _+${groups.low.length - 10} more archived_`);
-    }
-    sections.push('');
-  }
-
-  // Footer
+  sections.push('');
   sections.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-  sections.push(`💡 _Reply to adjust: "make [sender] low/normal/urgent"_`);
+  sections.push(`💡 _Reply to adjust: "keep emails from [sender]" or "stop archiving [type]"_`);
 
   return sections.join('\n');
 }
@@ -149,7 +76,7 @@ export async function generateAndPostDigest(opts = {}) {
   const posted = await postToSlack(text);
   if (posted) {
     markDigestSent();
-    console.log(`[winnow] Digest posted to Slack (${results.length} emails)`);
+    console.log(`[winnow] Archive report posted to Slack (${results.length} emails)`);
   } else {
     console.log(text);
   }

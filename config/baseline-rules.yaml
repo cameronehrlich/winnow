@@ -1,60 +1,61 @@
 # Baseline triage rules — ships with Winnow
 # These provide sensible defaults. Custom rules in rules.yaml take precedence.
+# archive: true = auto-archive, archive: false = keep in inbox
 
 rules:
-  # --- Always Low ---
+  # --- Archive ---
   - id: marketing-promo
     match: "Marketing, promotional, or sales emails"
-    priority: low
+    archive: true
 
   - id: social-notifications
     match: "Social media notifications from LinkedIn, Facebook, Twitter/X, Instagram, TikTok, etc."
-    priority: low
+    archive: true
 
   - id: ci-build-notifications
     match: "Automated build, CI/CD, or deployment notifications"
-    priority: low
+    archive: true
 
   - id: newsletter-digests
     match: "Newsletter digests and mailing list roundups"
-    priority: low
+    archive: true
 
   - id: shipping-tracking
     match: "Shipping and delivery tracking updates (unless delivery is today)"
-    priority: low
+    archive: true
 
   - id: app-update-notifications
     match: "App update or new version available notifications"
-    priority: low
+    archive: true
 
   - id: survey-feedback
     match: "Survey requests, feedback forms, NPS scores, review requests"
-    priority: low
+    archive: true
 
-  # --- Always Urgent ---
+  # --- Keep in Inbox ---
   - id: security-alerts
     match: "Security alerts, fraud warnings, unusual sign-in activity, or account compromise notices"
-    priority: urgent
+    archive: false
 
   - id: thread-replies
     match: "Replies to email threads you have previously participated in or sent messages to"
-    priority: urgent
+    archive: false
 
-  - id: calendar-invites-soon
-    match: "Calendar invitations or event updates for today or tomorrow"
-    priority: urgent
+  - id: calendar-invites
+    match: "Calendar invitations or event updates"
+    archive: false
 
   - id: 2fa-codes
     match: "Two-factor authentication codes, verification codes, or one-time passwords"
-    priority: urgent
+    archive: false
 
   - id: payment-billing-issues
     match: "Payment failures, billing issues, declined cards, overdue invoices"
-    priority: urgent
+    archive: false
 
   - id: time-sensitive
     match: "Emails mentioning deadlines, expiring offers, 'by end of day', or events within 24 hours"
-    priority: urgent
+    archive: false
 
 # Never-archive patterns (hardcoded safety net, overrides classification)
 never_archive:

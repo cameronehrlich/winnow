@@ -4,14 +4,13 @@ import { GogAdapter } from './adapters/gog.js';
 import { classifyEmail } from './classify.js';
 import { loadConfig, getAdapter } from './config.js';
 import { loadState, saveState, isProcessed, markProcessed, pruneOldResults } from './state.js';
-import { sendUrgentAlert, sendEphemeralFyi } from './notify.js';
+import { postEmailFeed } from './notify.js';
 
 const execAsync = promisify(execFile);
 
 const LABEL_MAP = {
-  low: 'winnow/low',
-  normal: 'winnow/normal',
-  urgent: 'winnow/urgent',
+  archived: 'winnow/archived',
+  kept: 'winnow/kept',
 };
 
 const ADAPTERS = { gog: GogAdapter };
@@ -48,6 +47,7 @@ export async function scan(account, opts = {}) {
     const state = loadState();
     if (!state.labelsVerified?.[account]) {
       for (const label of Object.values(LABEL_MAP)) {
+
         await adapter.ensureLabel(account, label);
       }
       if (!state.labelsVerified) state.labelsVerified = {};
@@ -66,7 +66,7 @@ export async function scan(account, opts = {}) {
 
     console.log(`[winnow] Classifying: ${msg.subject || '(no subject)'}`);
 
-    const classification = await classifyEmail(msg);
+    const classification = await classifyEmail(msg, { account });
     const unsubscribeLink = extractUnsubscribeLink(msg.headers);
 
     const result = {
@@ -80,37 +80,39 @@ export async function scan(account, opts = {}) {
     };
 
     if (dryRun) {
-      console.log(`  → ${result.priority.toUpperCase()} (${result.confidence}%) — ${result.summary}`);
-      if (result.bumped) {
-        console.log(`    ⚠️ Bumped from ${result.originalPriority} (low confidence)`);
-      }
+      const action = result.archive ? 'ARCHIVE' : 'KEEP';
+      console.log(`  → ${action} (${result.confidence}%) — ${result.summary}`);
     } else {
-      // Apply Gmail actions based on priority
-      const label = LABEL_MAP[result.priority];
-      await applyActions(adapter, account, msg.threadId, result.priority, label);
-
-      // Send urgent alert immediately
-      if (result.priority === 'urgent') {
-        await sendUrgentAlert(result, account);
+      if (result.archive) {
+        // Archive + mark read + label
+        await adapter.modifyLabels(account, msg.threadId, {
+          add: [LABEL_MAP.archived],
+          remove: ['INBOX', 'UNREAD'],
+        });
       }
+      // Non-archived emails: leave completely untouched in inbox
 
-      // Ephemeral emails: notify + auto-archive
+      // Ephemeral emails: local actions + auto-archive
       if (result.ephemeral) {
         if (result.extractedCode) {
           // OTP/2FA: copy code to clipboard + macOS notification
           await copyToClipboardAndNotify(result.extractedCode, result.from, result.subject);
-        } else {
-          // FYI ephemeral: just post a quiet Slack summary
-          await sendEphemeralFyi(result, account);
         }
-        console.log(`[winnow] Ephemeral email — auto-archiving`);
-        await adapter.modifyLabels(account, msg.threadId, {
-          add: ['winnow/low'],
-          remove: ['INBOX', 'UNREAD', 'winnow/urgent', 'winnow/normal'],
-        });
+        // Ensure ephemeral emails are archived
+        if (!result.archive) {
+          console.log(`[winnow] Ephemeral email — auto-archiving`);
+          await adapter.modifyLabels(account, msg.threadId, {
+            add: [LABEL_MAP.archived],
+            remove: ['INBOX', 'UNREAD'],
+          });
+          result.archive = true;
+        }
       }
 
       markProcessed(msg.id, result);
+
+      // Post to Slack feed (every email, regardless of action)
+      await postEmailFeed(result);
     }
 
     results.push(result);
@@ -153,27 +155,4 @@ async function copyToClipboardAndNotify(code, from, subject) {
   }
 }
 
-async function applyActions(adapter, account, threadId, priority, label) {
-  switch (priority) {
-    case 'low':
-      // Archive + mark read + label
-      await adapter.modifyLabels(account, threadId, {
-        add: [label],
-        remove: ['INBOX', 'UNREAD'],
-      });
-      break;
 
-    case 'normal':
-      // Mark read + label (keep in inbox)
-      await adapter.modifyLabels(account, threadId, {
-        add: [label],
-        remove: ['UNREAD'],
-      });
-      break;
-
-    case 'urgent':
-      // Just label (keep in inbox, keep unread)
-      await adapter.addLabel(account, threadId, label);
-      break;
-  }
-}

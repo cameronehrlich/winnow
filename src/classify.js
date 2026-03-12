@@ -13,23 +13,21 @@ function getClient() {
   return geminiClient;
 }
 
-const SYSTEM_PROMPT = `You are an email triage assistant. Classify emails into exactly one priority level.
+const SYSTEM_PROMPT = `You are an email triage assistant. Decide whether each email should be archived or kept in the inbox.
 
-PRIORITY LEVELS:
-- "low" — Archive and mark read. Marketing, notifications, newsletters, automated messages.
-- "normal" — Mark as read, keep in inbox. Worth reviewing but not urgent.
-- "urgent" — Leave unread in inbox + alert. Security, time-sensitive, important people, billing issues.
+DECISION:
+- "archive": true — Auto-archive and mark read. Low-priority: marketing, notifications, newsletters, automated messages, anything the user doesn't need to act on.
+- "archive": false — Leave in inbox for the user to handle.
 
-SAFETY RULES (override all other rules):
-- 2FA/verification codes → ALWAYS urgent, never archive
-- Calendar invitations → ALWAYS at least normal, never archive
-- Payment/invoice/billing emails → ALWAYS at least normal, never archive
-- Threads the user has replied to → ALWAYS at least normal, never archive
+SAFETY RULES (override all other rules — these should NEVER be archived):
+- 2FA/verification codes → never archive
+- Calendar invitations → never archive
+- Payment/invoice/billing emails → never archive
+- Threads the user has replied to → never archive
 
 CONFIDENCE:
 - Report confidence as a number 0-100
-- If confidence is below 70, bump the priority UP one level (low→normal, normal→urgent)
-- Flag low-confidence classifications with the reason
+- If confidence is below 70, do NOT archive (err on the side of keeping in inbox)
 
 EPHEMERAL EMAILS:
 - Set "ephemeral": true for emails that are briefly interesting but don't need to stay in the inbox:
@@ -41,14 +39,14 @@ EPHEMERAL EMAILS:
 - Ephemeral emails get a short Slack FYI and are auto-archived
 
 Respond with ONLY valid JSON, no markdown fences:
-{"priority": "low|normal|urgent", "confidence": 0-100, "reason": "brief reason", "summary": "1-2 sentence plain-English summary of what this email is about and any action needed", "neverArchive": false, "ephemeral": false, "extractedCode": null}
+{"archive": true|false, "confidence": 0-100, "reason": "brief reason", "summary": "1-2 sentence plain-English summary of what this email is about and any action needed", "neverArchive": false, "ephemeral": false, "extractedCode": null}
 
 Set neverArchive to true if the email matches any safety rule above.
 Set ephemeral to true and extractedCode to the code string if it's a verification/OTP email.`;
 
-export async function classifyEmail(email) {
+export async function classifyEmail(email, { account } = {}) {
   const config = loadConfig();
-  const { rules, neverArchive } = loadAllRules();
+  const { rules, neverArchive } = loadAllRules(account);
   const rulesText = formatRulesForPrompt(rules);
 
   const emailText = [
@@ -62,7 +60,7 @@ export async function classifyEmail(email) {
   const userPrompt = `TRIAGE RULES (custom rules take precedence):
 ${rulesText}
 
-NEVER-ARCHIVE PATTERNS:
+NEVER-ARCHIVE PATTERNS (if an email matches any of these, set archive=false and neverArchive=true):
 ${neverArchive.map(p => `- ${p}`).join('\n')}
 
 EMAIL TO CLASSIFY:
@@ -85,7 +83,7 @@ ${emailText}`;
   } catch {
     const match = text.match(/\{[\s\S]*\}/);
     result = match ? JSON.parse(match[0]) : {
-      priority: 'normal',
+      archive: false,
       confidence: 50,
       reason: 'Failed to parse classification response',
       summary: email.subject,
@@ -93,27 +91,21 @@ ${emailText}`;
     };
   }
 
-  // Apply confidence bump rule
-  if (result.confidence < 70) {
-    const original = result.priority;
-    if (result.priority === 'low') {
-      result.priority = 'normal';
-    } else if (result.priority === 'normal') {
-      result.priority = 'urgent';
-    }
-    if (original !== result.priority) {
-      result.bumped = true;
-      result.originalPriority = original;
-      result.reason = `${result.reason} (bumped from ${original} due to ${result.confidence}% confidence)`;
-    }
+  // Backwards compat: convert old priority format to archive boolean
+  if ('priority' in result && !('archive' in result)) {
+    result.archive = result.priority === 'low';
+  }
+
+  // Safety: low confidence → don't archive
+  if (result.confidence < 70 && result.archive) {
+    result.archive = false;
+    result.reason = `${result.reason} (kept in inbox due to ${result.confidence}% confidence)`;
   }
 
   // Enforce never-archive
-  if (result.neverArchive && result.priority === 'low') {
-    result.priority = 'normal';
-    result.bumped = true;
-    result.originalPriority = 'low';
-    result.reason = `${result.reason} (bumped: matches never-archive rule)`;
+  if (result.neverArchive && result.archive) {
+    result.archive = false;
+    result.reason = `${result.reason} (kept: matches never-archive rule)`;
   }
 
   // Fallback: try to extract OTP code from snippet — only if classifier explicitly flagged extractedCode
@@ -128,14 +120,16 @@ ${emailText}`;
     }
   }
 
+  // Map archive boolean to legacy priority for state compat
+  const priority = result.archive ? 'low' : 'normal';
+
   return {
-    priority: result.priority,
+    archive: result.archive,
+    priority,
     confidence: result.confidence,
     reason: result.reason,
     summary: result.summary,
     neverArchive: result.neverArchive || false,
-    bumped: result.bumped || false,
-    originalPriority: result.originalPriority || null,
     ephemeral: result.ephemeral || false,
     extractedCode,
   };
