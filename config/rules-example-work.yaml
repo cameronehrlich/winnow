@@ -1,0 +1,30 @@
+rules:
+  - id: mercury-bank-ach-charges-and-payment-not
+    match: >-
+      Mercury bank ACH charges and payment notifications, unless they mention failed payment, insufficient funds, or
+      unauthorized transaction
+    archive: false
+    added: '2026-03-05'
+    source: user
+  - id: github-actions-minutes-quota-usage-warni
+    match: GitHub Actions minutes/quota usage warnings
+    archive: false
+    added: '2026-03-05'
+    source: user
+  - id: google-ads-marketing-emails-feature-anno
+    match: Google Ads marketing emails, feature announcements, and Ads Advisor promotions
+    archive: true
+    added: '2026-03-05'
+    source: user
+  - id: vercel-domain-configuration-warnings-and-in8n
+    match: Vercel domain configuration warnings and preview deployment notifications
+    archive: true
+    added: '2026-03-05'
+    source: user
+  - id: testflight-build-notifications-available-tcnq
+    match: >-
+      TestFlight build notifications (available to test, build succeeded, build failed, processing). But TestFlight
+      INVITATIONS to join a new app you haven't tested before should be kept in inbox
+    archive: true
+    added: '2026-03-05'
+    source: user

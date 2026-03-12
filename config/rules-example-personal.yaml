@@ -1,0 +1,75 @@
+rules:
+  - id: amazon-return-confirmations-dropoff-conf
+    match: >-
+      Amazon return confirmations, dropoff confirmations, and return request confirmations are low priority. Only keep
+      in inbox if something went wrong (return lost, waiting on action, deadline)
+    archive: true
+    added: '2026-03-05'
+    source: user
+  - id: robinhood-account-statements-crypto-summ
+    match: Robinhood account statements, crypto summaries, and regulatory document updates
+    archive: true
+    added: '2026-03-05'
+    source: user
+  - id: new-login-or-sign-in-alerts-from-x-twitt
+    match: >-
+      New login or sign-in alerts from X/Twitter, Google, and other services unless the login is from an unusual
+      location, unknown device, or unfamiliar browser
+    archive: true
+    added: '2026-03-05'
+    source: user
+  - id: healthequity-hsa-card-transaction-notifi
+    match: >-
+      HealthEquity HSA card transaction notifications. Only keep in inbox if the email mentions low balance,
+      insufficient funds, or account issues
+    archive: true
+    added: '2026-03-05'
+    source: user
+  - id: nextdoor-neighborhood-digest-emails-and-
+    match: Nextdoor neighborhood digest emails and popular posts notifications
+    archive: true
+    added: '2026-03-05'
+    source: user
+  - id: refund-confirmation-and-refund-processed-vdcy
+    match: >-
+      Refund confirmation and refund processed notifications. Only keep in inbox if the refund failed, was denied, or
+      there was an issue with the refund amount
+    archive: true
+    added: '2026-03-05'
+    source: user
+  - id: procare-daily-summaries-and-school-check-10da
+    match: >-
+      Procare daily summaries and school check-in/check-out notifications for Noa are ephemeral — send a Slack FYI with
+      the sign-in/sign-out times and archive
+    archive: true
+    added: '2026-03-05'
+    source: user
+  - id: warby-parker-order-confirmations-shippin-gdvu
+    match: Warby Parker order confirmations, shipping updates, and marketing emails
+    archive: true
+    added: '2026-03-05'
+    source: user
+  - id: experian-credit-alerts-and-monitoring-notif
+    match: >-
+      Experian credit file alerts, credit monitoring notifications, and credit score updates unless they mention fraud,
+      identity theft, or unauthorized accounts
+    archive: true
+    added: '2026-03-07'
+    source: user
+  - id: emails-from-richie-bonilla-or-anyone-at--tg0e
+    match: Emails from Richie Bonilla or anyone at foragemail.com are from a real person and should be kept in inbox
+    archive: false
+    added: '2026-03-05'
+    source: user
+  - id: archive-all-emails-from-aisecret-us-doma-zv5v
+    match: Archive all emails from aisecret.us domain (MyClaw Newsletter, AI Secret)
+    archive: true
+    added: '2026-03-09'
+    source: user
+  - id: mychart-messages-from-doctors-providers
+    match: >-
+      MyChart messages from doctors, providers, or care teams should NOT be archived. These are personal health
+      communications that need attention. Only archive MyChart marketing, surveys, or generic system notifications
+    archive: false
+    added: '2026-03-10'
+    source: user
