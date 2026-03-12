@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">🌾 Winnow</h1>
   <p align="center">
-    <strong>AI email triage for your terminal — separate the grain from the chaff</strong>
+    <strong>AI email triage that lives in Slack, Discord, or wherever you already hang out</strong>
   </p>
   <p align="center">
     <a href="#quickstart">Quickstart</a> •
@@ -14,26 +14,33 @@
 
 ---
 
-Winnow watches your Gmail inbox and uses AI to decide what matters and what doesn't. Marketing emails, automated notifications, newsletters — archived before you ever see them. Important stuff stays in your inbox untouched.
+Winnow brings your email into the tools you actually use. Every email posts to Slack (or your messaging platform of choice) as it arrives — triaged by AI, with the noise auto-archived so you only see what matters. It's also a full CLI for managing your inbox from the terminal.
 
-No cloud service. No subscription. Just a CLI that runs on your machine.
+Stop context-switching to Gmail. Let your inbox come to you.
 
 ```
+#work-email
 📥 Jane Smith — Meeting tomorrow at 3pm
 📥 Your Bank — Wire transfer received
 🗂️ LinkedIn — You appeared in 3 searches (archived, 92%)
-🗂️ Promo — 50% off everything! (archived, 95%)
 🔑 GitHub — Your verification code is 847291 (copied to clipboard)
+
+#personal-email
+📥 Dr. Smith — Appointment reminder for Friday
+🗂️ Promo — 50% off everything! (archived, 95%)
 📌 USPS — Package delivered to front door (archived)
+📌 Procare — Noa checked in at 8:15am (archived)
 ```
 
 ## Why Winnow?
 
-- **Private** — Runs locally. Your emails never leave your machine. Classification happens via Gemini API with just the sender, subject, and snippet — not full email bodies.
+- **Email → Messaging** — Every email appears in Slack, Discord, or your favorite platform. Multiple accounts route to separate channels. Your inbox becomes a feed you can glance at without opening Gmail.
+- **AI Triage** — Winnow uses Gemini to classify each email: archive it or keep it. Marketing, newsletters, and noise get auto-archived. Important emails stay in your inbox.
 - **Plain-English Rules** — No regex, no filters, no query syntax. Just write what you mean: *"Archive Robinhood statements unless something looks wrong."*
-- **Multi-Account** — Triage personal and work inboxes independently, each with their own rules and Slack channel.
-- **Real-Time** — Watch mode polls every 15 seconds. Emails get triaged before your phone even buzzes.
-- **Safe** — Never deletes anything. Only archives. Low-confidence classifications default to keeping emails in your inbox. Sensible baseline rules protect 2FA codes, calendar invites, and payment emails out of the box — but everything is configurable.
+- **CLI-First** — Scan, triage, add rules, check stats — all from the terminal. Run it as a one-shot command or a background daemon.
+- **Multi-Account** — Personal and work inboxes, each with their own rules and notification channel. One tool for all your email.
+- **Private** — Runs locally on your machine. Only sender, subject, and snippet go to the AI — never full email bodies. No cloud service, no subscription.
+- **Safe** — Never deletes anything. Only archives. Low-confidence classifications stay in your inbox. Everything is configurable.
 
 ## Quickstart
 
@@ -42,7 +49,7 @@ No cloud service. No subscription. Just a CLI that runs on your machine.
 - **Node.js** 18+
 - **[gog](https://github.com/xlab-si/gog)** — Gmail CLI adapter (handles OAuth)
 - **Gemini API key** — [Get one free](https://aistudio.google.com/apikey)
-- **Slack Bot Token** *(optional)* — For notifications and daily digest
+- **Slack Bot Token** *(optional but recommended)* — For the email feed
 
 ### Install
 
@@ -63,18 +70,18 @@ Edit `config/config.yaml`:
 ```yaml
 accounts:
   - email: you@gmail.com
-    channel: C0YOUR_CHANNEL  # optional: per-account Slack channel
+    channel: C0YOUR_CHANNEL  # Slack channel for this account's emails
 
 adapter: gog
 
 slack:
   bot_token: xoxb-your-token
-  channel_id: C0DEFAULT_CHANNEL
+  channel_id: C0DEFAULT_CHANNEL  # fallback channel
 
 model:
   name: gemini-2.5-flash
 
-feed: true  # post every email to Slack as it's processed
+feed: true  # post every email to your messaging platform
 
 scan:
   max_messages: 50
@@ -87,7 +94,7 @@ Set your Gemini API key:
 export GEMINI_API_KEY=your_key_here
 ```
 
-Authenticate your Gmail account(s) with gog:
+Authenticate your Gmail account(s):
 
 ```bash
 gog auth login you@gmail.com
@@ -96,57 +103,90 @@ gog auth login you@gmail.com
 ### Run
 
 ```bash
-# One-shot scan
+# One-shot scan — triage and notify
 ./bin/winnow scan
 
-# Watch mode (real-time triage)
+# Watch mode — real-time email feed (polls every 15s)
 ./bin/winnow watch
 
-# Or with PM2 for always-on
+# Always-on with PM2
 pm2 start ecosystem.config.cjs
 ```
+
+Once running, every email shows up in your Slack channel with an emoji indicating what happened:
+- 📥 Kept in inbox
+- 🗂️ Auto-archived (with confidence %)
+- 🔑 OTP code extracted and copied to clipboard
+- 📌 Ephemeral FYI (delivered, checked in, etc.)
 
 ## How It Works
 
 ```
 ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
 │  Gmail    │────▶│  Winnow  │────▶│  Gemini  │────▶│  Gmail   │
-│  (unread) │     │  (scan)  │     │  (classify)    │  (archive │
-│           │     │          │     │          │     │  + label) │
+│  (unread) │     │  (scan)  │     │ (classify)│    │ (archive) │
 └──────────┘     └────┬─────┘     └──────────┘     └──────────┘
                       │
                       ▼
-                ┌──────────┐
-                │  Slack   │
-                │  (feed)  │
-                └──────────┘
+              ┌───────────────┐
+              │ Slack/Discord │
+              │  (email feed) │
+              └───────────────┘
 ```
 
-1. **Scan** — Winnow polls Gmail for unread messages using `gog` (a local Gmail CLI). Only fetches sender, subject, snippet, and headers. Never reads full email bodies.
+1. **Scan** — Polls Gmail for unread messages. Only fetches sender, subject, snippet, and headers — never full email bodies.
 
-2. **Classify** — Each email is sent to Gemini with your custom rules + baseline rules. The AI returns a JSON decision: archive or keep, with a confidence score and summary.
+2. **Classify** — Each email is sent to Gemini with your rules. The AI returns: archive or keep, confidence score, and a summary.
 
-3. **Safety Net** — If confidence is below 70%, the email stays in your inbox regardless of classification. Baseline rules protect 2FA codes, calendar invites, payment emails, and threads you've replied to — all configurable.
+3. **Act** — Archived emails get removed from inbox and labeled. Kept emails are left untouched. OTP codes get copied to your clipboard.
 
-4. **Act** — Archived emails get removed from inbox, marked read, and labeled `winnow/archived`. Kept emails are left completely untouched. Ephemeral emails (OTPs, delivery updates) get a Slack notification and auto-archive.
-
-5. **Notify** — Every processed email posts to Slack in real-time. Daily archive reports summarize what was auto-archived.
+4. **Notify** — Every email posts to your messaging platform in real-time, routed to the right channel per account. Daily archive reports summarize what was handled.
 
 ### Ephemeral Emails
 
 Some emails are briefly useful but don't need to live in your inbox:
 
-- **🔑 OTP/2FA codes** — Extracted, copied to your clipboard via `pbcopy`, macOS notification sent, then archived
-- **📌 Delivery updates** — "Your package was delivered" → Slack FYI, archived
-- **📌 Daycare check-ins** — "Noa checked in at 8:15am" → Slack FYI, archived
+- **🔑 OTP/2FA codes** — Extracted, copied to clipboard, macOS notification, then archived
+- **📌 Delivery updates** — "Package delivered" → posted to your channel, archived
+- **📌 School check-ins** — "Noa checked in at 8:15am" → posted, archived
+
+## The Email Feed
+
+The core feature: **every email becomes a message in your channel.** You get a real-time stream of your inbox without ever opening Gmail.
+
+Each account routes to its own channel, so work and personal stay separate:
+
+```yaml
+accounts:
+  - email: personal@gmail.com
+    channel: C0PERSONAL    # → #personal-email
+  - email: work@company.com
+    channel: C0WORK        # → #work-email
+```
+
+Toggle the feed on or off anytime:
+
+```bash
+winnow feed on      # every email posts to your channel
+winnow feed off     # CLI-only mode, no notifications
+winnow feed status  # check current state
+```
+
+### Notification Platforms
+
+| Platform | Status | How |
+|----------|--------|-----|
+| **Slack** | ✅ Supported | Bot token + channel ID in config |
+| **Discord** | 🔜 Planned | Webhook URL |
+| **Telegram** | 🔜 Planned | Bot token + chat ID |
+| **Desktop** | ✅ Partial | macOS notifications for OTP codes |
+| **Custom** | 💡 Future | Webhook adapter for any platform |
 
 ## Rules
 
-Winnow uses a three-layer rule system:
+### Baseline Rules
 
-### 1. Baseline Rules (`config/baseline-rules.yaml`)
-
-Ship with Winnow. Sensible defaults that work for most people:
+Ship with Winnow. Sensible defaults:
 
 ```yaml
 rules:
@@ -163,15 +203,15 @@ rules:
     archive: false
 ```
 
-### 2. Per-Account Rules (`config/rules-<email>.yaml`)
+### Per-Account Rules
 
-Custom rules for each account. Written in plain English:
+Each account has its own rules file. Plain English, no regex:
 
 ```yaml
 # config/rules-you@gmail.com.yaml
 rules:
   - id: nextdoor-digest
-    match: "Nextdoor neighborhood digest emails and popular posts notifications"
+    match: "Nextdoor neighborhood digest emails"
     archive: true
 
   - id: mychart-messages
@@ -181,14 +221,10 @@ rules:
     archive: false
 ```
 
-### Confidence Threshold
-
-If the AI's confidence is below 70%, the email stays in your inbox no matter what the rules say. This is the only hardcoded behavior — everything else is configurable through rules.
-
 ### Managing Rules
 
 ```bash
-# List all rules for an account
+# List rules
 winnow rules -a you@gmail.com
 
 # Add a rule
@@ -200,6 +236,10 @@ winnow rule add "Emails from my doctor" -a you@gmail.com --keep
 # Remove a rule
 winnow rule remove nextdoor-digest -a you@gmail.com
 ```
+
+### Confidence Threshold
+
+If the AI's confidence is below 70%, the email stays in your inbox no matter what. This is the only hardcoded behavior — everything else is configurable through rules.
 
 ## Commands
 
@@ -216,8 +256,8 @@ winnow rule remove nextdoor-digest -a you@gmail.com
 | `winnow stats` | Processing statistics and daily breakdown |
 | `winnow check` | Health check — verify everything works |
 | `winnow check --fix` | Auto-fix issues (re-archive stuck emails) |
-| `winnow feed on/off/status` | Toggle real-time Slack feed |
-| `winnow alerts on/off/status` | Mute/unmute Slack notifications |
+| `winnow feed on/off/status` | Toggle the email feed |
+| `winnow alerts on/off/status` | Mute/unmute notifications |
 
 ### Common Options
 
@@ -225,22 +265,6 @@ winnow rule remove nextdoor-digest -a you@gmail.com
 --account, -a <email>   Target a specific account
 --dry-run               Classify without taking any Gmail actions
 --since <duration>      Time window (e.g., 7d, 24h)
-```
-
-## Multi-Account Setup
-
-Each account gets its own:
-- **Rules file** — `config/rules-<email>.yaml`
-- **Slack channel** — notifications route to the right place
-- **Independent scanning** — one account's rules don't affect another
-
-```yaml
-# config/config.yaml
-accounts:
-  - email: personal@gmail.com
-    channel: C0PERSONAL    # → #personal-email
-  - email: work@company.com
-    channel: C0WORK        # → #work-email
 ```
 
 ## Architecture
@@ -258,9 +282,9 @@ winnow/
 │   ├── scan.js             # Core scan loop
 │   ├── classify.js         # Gemini classification
 │   ├── rules.js            # Rule loading & merging
-│   ├── notify.js           # Slack notifications & feed
+│   ├── notify.js           # Notifications & email feed
 │   ├── digest.js           # Daily archive report
-│   ├── config.js           # Config loading & account routing
+│   ├── config.js           # Config & account routing
 │   ├── state.js            # Persistent state (processed IDs, stats)
 │   ├── check.js            # Health checks & auto-fix
 │   ├── watch.js            # Real-time watch mode
@@ -274,34 +298,27 @@ winnow/
 
 ### Gmail Adapters
 
-Winnow accesses Gmail through a pluggable adapter interface. All Gmail operations (fetch, archive, label) go through a base `GmailAdapter` class, so swapping backends is straightforward.
+Winnow accesses Gmail through a pluggable adapter interface. Swap backends without touching classification or notification logic.
 
 | Adapter | Status | Description |
 |---------|--------|-------------|
 | **[gog](https://github.com/xlab-si/gog)** | ✅ Supported | Google CLI with OAuth. Current default. |
-| **[gws](https://github.com/googleworkspace/cli)** | 🔜 Planned | Google's official Workspace CLI (`@googleworkspace/cli`). Structured JSON output, 100+ agent skills. |
+| **[gws](https://github.com/googleworkspace/cli)** | 🔜 Planned | Google's official Workspace CLI. Structured JSON output. |
 | **Gmail API** | 🔜 Planned | Direct Gmail REST API — no CLI dependency. |
 | **IMAP** | 💡 Future | For non-Gmail providers (Outlook, Fastmail, etc.) |
 
-To set your adapter in `config.yaml`:
-
-```yaml
-adapter: gog  # or "gws" once supported
-```
-
 Want to add an adapter? Implement the `GmailAdapter` interface in `src/adapters/` — see `gog.js` for reference.
 
-### Key Design Decisions
+### Design Decisions
 
 - **Never delete** — Only archive. Everything is recoverable from Gmail's All Mail.
-- **Snippet-only classification** — Winnow sends sender + subject + snippet to the AI, never full email bodies. Faster, cheaper, and more private.
-- **Low-confidence = keep** — Below 70% confidence, emails stay in the inbox no matter what.
-- **Stateless scanning** — Each scan is independent. State tracks processed IDs to avoid re-processing, but a fresh scan works fine without it.
-- **Pluggable adapters** — Gmail access goes through a clean adapter interface. Swap backends by implementing `GmailAdapter` and updating your config.
+- **Snippet-only** — Only sender + subject + snippet go to the AI. Never full email bodies. Faster, cheaper, more private.
+- **Low-confidence = keep** — Below 70% confidence, emails stay in the inbox.
+- **Pluggable everything** — Gmail adapters, notification targets, AI models — all swappable.
 
 ## Running with PM2
 
-For always-on triage:
+For always-on email feed:
 
 ```bash
 pm2 start ecosystem.config.cjs
@@ -309,7 +326,7 @@ pm2 save
 pm2 startup  # auto-start on boot
 ```
 
-This runs `winnow watch` as a background daemon, polling every 15 seconds.
+This runs `winnow watch` as a daemon, polling every 15 seconds and posting to your channels in real-time.
 
 ## Contributing
 
@@ -317,11 +334,11 @@ Winnow is young and opinionated — contributions are welcome.
 
 ### Good First Issues
 
-- **New adapters** — `gws` (Google Workspace CLI), direct Gmail API, IMAP, Outlook/Exchange
-- **Notification targets** — Discord, Telegram, email digest, desktop notifications
-- **Rule improvements** — Regex support, sender-based rules, time-based rules ("archive after 24h")
-- **Better classification** — Support for other LLMs (OpenAI, Claude, local models via Ollama)
-- **Tests** — More test coverage, especially for classification edge cases
+- **Notification targets** — Discord webhooks, Telegram bot, ntfy, Pushover, generic webhooks
+- **New Gmail adapters** — `gws` (Google Workspace CLI), direct Gmail API, IMAP, Outlook/Exchange
+- **AI models** — OpenAI, Claude, local models via Ollama
+- **Rule improvements** — Regex support, sender-based rules, time-based rules
+- **Tests** — More coverage, especially classification edge cases
 
 ### Development
 
