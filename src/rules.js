@@ -45,10 +45,7 @@ export function loadAllRules(account) {
     ...baselineRules.filter(r => !acctIds.has(r.id)),
   ];
 
-  return {
-    rules: merged,
-    neverArchive: baseline.never_archive || [],
-  };
+  return { rules: merged };
 }
 
 export function formatRulesForPrompt(rules) {

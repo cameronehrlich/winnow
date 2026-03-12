@@ -13,17 +13,13 @@ function getClient() {
   return geminiClient;
 }
 
-const SYSTEM_PROMPT = `You are an email triage assistant. Decide whether each email should be archived or kept in the inbox.
+const SYSTEM_PROMPT = `You are an email triage assistant. Decide whether each email should be archived or kept in the inbox based on the triage rules provided.
 
 DECISION:
 - "archive": true — Auto-archive and mark read. Low-priority: marketing, notifications, newsletters, automated messages, anything the user doesn't need to act on.
 - "archive": false — Leave in inbox for the user to handle.
 
-SAFETY RULES (override all other rules — these should NEVER be archived):
-- 2FA/verification codes → never archive
-- Calendar invitations → never archive
-- Payment/invoice/billing emails → never archive
-- Threads the user has replied to → never archive
+Follow the triage rules closely. Rules marked "keep in inbox" should override rules marked "archive" when both match.
 
 CONFIDENCE:
 - Report confidence as a number 0-100
@@ -39,14 +35,13 @@ EPHEMERAL EMAILS:
 - Ephemeral emails get a short Slack FYI and are auto-archived
 
 Respond with ONLY valid JSON, no markdown fences:
-{"archive": true|false, "confidence": 0-100, "reason": "brief reason", "summary": "1-2 sentence plain-English summary of what this email is about and any action needed", "neverArchive": false, "ephemeral": false, "extractedCode": null}
+{"archive": true|false, "confidence": 0-100, "reason": "brief reason", "summary": "1-2 sentence plain-English summary of what this email is about and any action needed", "ephemeral": false, "extractedCode": null}
 
-Set neverArchive to true if the email matches any safety rule above.
 Set ephemeral to true and extractedCode to the code string if it's a verification/OTP email.`;
 
 export async function classifyEmail(email, { account } = {}) {
   const config = loadConfig();
-  const { rules, neverArchive } = loadAllRules(account);
+  const { rules } = loadAllRules(account);
   const rulesText = formatRulesForPrompt(rules);
 
   const emailText = [
@@ -57,11 +52,8 @@ export async function classifyEmail(email, { account } = {}) {
     email.to ? `To: ${email.to}` : '',
   ].filter(Boolean).join('\n');
 
-  const userPrompt = `TRIAGE RULES (custom rules take precedence):
+  const userPrompt = `TRIAGE RULES (custom rules take precedence over baseline):
 ${rulesText}
-
-NEVER-ARCHIVE PATTERNS (if an email matches any of these, set archive=false and neverArchive=true):
-${neverArchive.map(p => `- ${p}`).join('\n')}
 
 EMAIL TO CLASSIFY:
 ${emailText}`;
@@ -87,7 +79,6 @@ ${emailText}`;
       confidence: 50,
       reason: 'Failed to parse classification response',
       summary: email.subject,
-      neverArchive: false,
     };
   }
 
@@ -100,12 +91,6 @@ ${emailText}`;
   if (result.confidence < 70 && result.archive) {
     result.archive = false;
     result.reason = `${result.reason} (kept in inbox due to ${result.confidence}% confidence)`;
-  }
-
-  // Enforce never-archive
-  if (result.neverArchive && result.archive) {
-    result.archive = false;
-    result.reason = `${result.reason} (kept: matches never-archive rule)`;
   }
 
   // Fallback: try to extract OTP code from snippet — only if classifier explicitly flagged extractedCode
@@ -129,7 +114,6 @@ ${emailText}`;
     confidence: result.confidence,
     reason: result.reason,
     summary: result.summary,
-    neverArchive: result.neverArchive || false,
     ephemeral: result.ephemeral || false,
     extractedCode,
   };

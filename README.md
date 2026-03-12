@@ -33,7 +33,7 @@ No cloud service. No subscription. Just a CLI that runs on your machine.
 - **Plain-English Rules** — No regex, no filters, no query syntax. Just write what you mean: *"Archive Robinhood statements unless something looks wrong."*
 - **Multi-Account** — Triage personal and work inboxes independently, each with their own rules and Slack channel.
 - **Real-Time** — Watch mode polls every 15 seconds. Emails get triaged before your phone even buzzes.
-- **Safe** — Never deletes anything. Only archives. Low-confidence classifications default to keeping emails in your inbox. 2FA codes, calendar invites, and payment emails are hardcoded to never archive.
+- **Safe** — Never deletes anything. Only archives. Low-confidence classifications default to keeping emails in your inbox. Sensible baseline rules protect 2FA codes, calendar invites, and payment emails out of the box — but everything is configurable.
 
 ## Quickstart
 
@@ -126,7 +126,7 @@ pm2 start ecosystem.config.cjs
 
 2. **Classify** — Each email is sent to Gemini with your custom rules + baseline rules. The AI returns a JSON decision: archive or keep, with a confidence score and summary.
 
-3. **Safety Net** — If confidence is below 70%, the email stays in your inbox regardless of classification. Hardcoded "never archive" rules protect 2FA codes, calendar invites, payment emails, and threads you've replied to.
+3. **Safety Net** — If confidence is below 70%, the email stays in your inbox regardless of classification. Baseline rules protect 2FA codes, calendar invites, payment emails, and threads you've replied to — all configurable.
 
 4. **Act** — Archived emails get removed from inbox, marked read, and labeled `winnow/archived`. Kept emails are left completely untouched. Ephemeral emails (OTPs, delivery updates) get a Slack notification and auto-archive.
 
@@ -181,14 +181,9 @@ rules:
     archive: false
 ```
 
-### 3. Never-Archive Safety Net
+### Confidence Threshold
 
-Hardcoded patterns that override everything:
-
-- 2FA/verification codes
-- Calendar invitations
-- Payment/invoice/billing emails
-- Threads you've replied to
+If the AI's confidence is below 70%, the email stays in your inbox no matter what the rules say. This is the only hardcoded behavior — everything else is configurable through rules.
 
 ### Managing Rules
 

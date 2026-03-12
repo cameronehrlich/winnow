@@ -57,9 +57,3 @@ rules:
     match: "Emails mentioning deadlines, expiring offers, 'by end of day', or events within 24 hours"
     archive: false
 
-# Never-archive patterns (hardcoded safety net, overrides classification)
-never_archive:
-  - "Contains 2FA or one-time verification codes"
-  - "Calendar invitations or event updates"
-  - "Payment, invoice, or billing emails"
-  - "Threads the user has previously replied to"
