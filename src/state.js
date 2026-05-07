@@ -14,6 +14,12 @@ const DEFAULT_STATE = {
     totalProcessed: 0,
     byPriority: { low: 0, normal: 0, urgent: 0 },
     lowConfidenceBumps: 0,
+    unsubscribes: {
+      total: 0,
+      byStatus: { succeeded: 0, failed: 0, attempted: 0 },
+      entries: [],
+      daily: {},
+    },
   },
 };
 
@@ -100,6 +106,78 @@ export function markDigestSent() {
   const state = loadState();
   state.lastDigestTime = new Date().toISOString();
   saveState(state);
+}
+
+export function recordUnsubscribe(entry) {
+  const state = loadState();
+  if (!state.stats) state.stats = {};
+  if (!state.stats.unsubscribes) {
+    state.stats.unsubscribes = {
+      total: 0,
+      byStatus: { succeeded: 0, failed: 0, attempted: 0 },
+      entries: [],
+      daily: {},
+    };
+  }
+
+  const unsubscribes = state.stats.unsubscribes;
+  if (!Array.isArray(unsubscribes.entries)) unsubscribes.entries = [];
+  if (!unsubscribes.byStatus) unsubscribes.byStatus = { succeeded: 0, failed: 0, attempted: 0 };
+  if (!unsubscribes.daily) unsubscribes.daily = {};
+
+  const now = new Date().toISOString();
+  const normalized = {
+    id: entry.id || `unsub-${Date.now()}`,
+    timestamp: entry.timestamp || now,
+    status: entry.status || 'succeeded',
+    sender: entry.sender || '',
+    subject: entry.subject || '',
+    account: entry.account || '',
+    threadId: entry.threadId || '',
+    source: entry.source || 'manual',
+    method: entry.method || 'unknown',
+    note: entry.note || '',
+    sourceMessageId: entry.sourceMessageId || '',
+    urlHost: entry.urlHost || '',
+  };
+
+  const existingIndex = unsubscribes.entries.findIndex(e =>
+    (normalized.sourceMessageId && e.sourceMessageId === normalized.sourceMessageId) ||
+    (normalized.threadId && normalized.sender && e.threadId === normalized.threadId && e.sender === normalized.sender) ||
+    (e.id === normalized.id)
+  );
+
+  if (existingIndex >= 0) {
+    unsubscribes.entries[existingIndex] = { ...unsubscribes.entries[existingIndex], ...normalized };
+  } else {
+    unsubscribes.entries.push(normalized);
+  }
+
+  // Recompute counters from entries so backfills/updates stay consistent.
+  unsubscribes.total = unsubscribes.entries.length;
+  unsubscribes.byStatus = { succeeded: 0, failed: 0, attempted: 0 };
+  unsubscribes.daily = {};
+  for (const e of unsubscribes.entries) {
+    const status = e.status || 'succeeded';
+    unsubscribes.byStatus[status] = (unsubscribes.byStatus[status] || 0) + 1;
+    const day = (e.timestamp || now).slice(0, 10);
+    if (!unsubscribes.daily[day]) unsubscribes.daily[day] = { total: 0, byStatus: {} };
+    unsubscribes.daily[day].total++;
+    unsubscribes.daily[day].byStatus[status] = (unsubscribes.daily[day].byStatus[status] || 0) + 1;
+  }
+
+  saveState(state);
+  return normalized;
+}
+
+export function getUnsubscribes() {
+  const state = loadState();
+  return state.stats?.unsubscribes || {
+    total: 0,
+    byStatus: { succeeded: 0, failed: 0, attempted: 0 },
+    entries: [],
+    daily: {},
+  };
 }
 
 export function getStats() {

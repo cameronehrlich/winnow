@@ -4,7 +4,7 @@ import { watch } from './watch.js';
 import { generateAndPostDigest } from './digest.js';
 import { loadConfig, setConfigField, getAccountEmails } from './config.js';
 import { addRule, removeRule, listRules } from './rules.js';
-import { getStats } from './state.js';
+import { getStats, recordUnsubscribe, getUnsubscribes } from './state.js';
 import { muteAlerts, unmuteAlerts, getAlertStatus } from './notify.js';
 import { runCheck, autoFix } from './check.js';
 
@@ -208,6 +208,9 @@ program
       console.log(`    📥 Kept:      ${totalKept}`);
       console.log(`    📌 Ephemeral: ${stats.ephemeralCount || 0}`);
 
+      const unsubscribes = stats.unsubscribes || { total: 0, byStatus: {} };
+      console.log(`    🚫 Unsubscribes: ${unsubscribes.total || 0} (${unsubscribes.byStatus?.succeeded || 0} succeeded)`);
+
       const pctArchived = stats.totalProcessed > 0
         ? Math.round((totalArchived / stats.totalProcessed) * 100)
         : 0;
@@ -241,6 +244,64 @@ program
     } catch (err) {
       console.error('❌ Failed to get stats:', err.message);
       process.exit(1);
+    }
+  });
+
+
+const unsubscribe = program
+  .command('unsubscribe')
+  .description('Manage unsubscribe log');
+
+unsubscribe
+  .command('add <sender>')
+  .description('Record an unsubscribe attempt/success')
+  .option('--status <status>', 'succeeded|failed|attempted', 'succeeded')
+  .option('--account <email>', 'Gmail account')
+  .option('--thread-id <id>', 'Gmail thread ID')
+  .option('--subject <subject>', 'Email subject')
+  .option('--source <source>', 'Source of log entry', 'manual')
+  .option('--method <method>', 'one-click|link|form|mailto|unknown', 'unknown')
+  .option('--note <note>', 'Additional note')
+  .option('--timestamp <iso>', 'Timestamp for backfills')
+  .option('--source-message-id <id>', 'Slack/session message ID for dedupe')
+  .option('--url-host <host>', 'Unsubscribe URL host')
+  .action((sender, opts) => {
+    const entry = recordUnsubscribe({
+      sender,
+      status: opts.status,
+      account: opts.account,
+      threadId: opts.threadId,
+      subject: opts.subject,
+      source: opts.source,
+      method: opts.method,
+      note: opts.note,
+      timestamp: opts.timestamp,
+      sourceMessageId: opts.sourceMessageId,
+      urlHost: opts.urlHost,
+    });
+    console.log(`✅ Recorded unsubscribe: ${entry.sender} (${entry.status})`);
+  });
+
+unsubscribe
+  .command('list')
+  .description('List recorded unsubscribes')
+  .option('--json', 'Output as JSON')
+  .option('--limit <n>', 'Max entries to show', '50')
+  .action((opts) => {
+    const data = getUnsubscribes();
+    const entries = [...(data.entries || [])]
+      .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))
+      .slice(0, parseInt(opts.limit, 10));
+    if (opts.json) {
+      console.log(JSON.stringify({ ...data, entries }, null, 2));
+      return;
+    }
+    console.log(`\n🚫 Unsubscribes: ${data.total || 0}`);
+    console.log(`  Succeeded: ${data.byStatus?.succeeded || 0}  Failed: ${data.byStatus?.failed || 0}  Attempted: ${data.byStatus?.attempted || 0}`);
+    for (const e of entries) {
+      const date = (e.timestamp || '').slice(0, 10);
+      const subject = e.subject ? ` — ${e.subject}` : '';
+      console.log(`  ${date}  ${e.status || 'succeeded'}  ${e.sender}${subject}`);
     }
   });
 
