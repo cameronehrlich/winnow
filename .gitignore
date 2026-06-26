@@ -1,9 +1,11 @@
 node_modules/
-data/state.json
+data/
 config/config.yaml
 config/rules-*.yaml
 !config/rules-example-*.yaml
 config/rules.yaml.bak
 firebase-debug.log
 *.log
-config/rules.yaml.bak
+.env
+.env.*
+!.env.example

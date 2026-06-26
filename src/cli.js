@@ -2,11 +2,12 @@ import { Command } from 'commander';
 import { scan } from './scan.js';
 import { watch } from './watch.js';
 import { generateAndPostDigest } from './digest.js';
-import { loadConfig, setConfigField, getAccountEmails } from './config.js';
+import { loadConfig, setConfigField, getAccountEmails, getAdapter } from './config.js';
 import { addRule, removeRule, listRules } from './rules.js';
 import { getStats, recordUnsubscribe, getUnsubscribes } from './state.js';
 import { muteAlerts, unmuteAlerts, getAlertStatus } from './notify.js';
 import { runCheck, autoFix } from './check.js';
+import { GogAdapter } from './adapters/gog.js';
 
 const program = new Command();
 
@@ -14,6 +15,39 @@ program
   .name('winnow')
   .description('AI email triage — separate the grain from the chaff')
   .version('1.0.0');
+
+program
+  .command('archive <threadId>')
+  .description('Archive a specific email thread by Gmail thread ID')
+  .requiredOption('-a, --account <email>', 'Gmail account the thread belongs to')
+  .action(async (threadId, opts) => {
+    try {
+      const adapter = new GogAdapter();
+      await adapter.archive(opts.account, threadId);
+      await adapter.markRead(opts.account, threadId);
+      await adapter.addLabel(opts.account, threadId, 'winnow/archived');
+      console.log(`✅ Archived thread ${threadId} for ${opts.account}`);
+    } catch (err) {
+      console.error('❌ Archive failed:', err.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('unarchive <threadId>')
+  .description('Move a thread back to inbox')
+  .requiredOption('-a, --account <email>', 'Gmail account the thread belongs to')
+  .action(async (threadId, opts) => {
+    try {
+      const adapter = new GogAdapter();
+      await adapter.unarchive(opts.account, threadId);
+      await adapter.removeLabel(opts.account, threadId, 'winnow/archived');
+      console.log(`✅ Moved thread ${threadId} back to inbox for ${opts.account}`);
+    } catch (err) {
+      console.error('❌ Unarchive failed:', err.message);
+      process.exit(1);
+    }
+  });
 
 program
   .command('scan')

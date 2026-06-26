@@ -5,8 +5,38 @@ import yaml from 'js-yaml';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = join(__dirname, '..', 'config', 'config.yaml');
+const ENV_PATH = join(__dirname, '..', '.env');
 
 let cachedConfig;
+
+function unquoteEnvValue(value) {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function loadLocalEnv() {
+  try {
+    const raw = readFileSync(ENV_PATH, 'utf8');
+    for (const line of raw.split(/\r?\n/)) {
+      const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+      if (!match) continue;
+      const [, key, value] = match;
+      if (process.env[key] === undefined) {
+        process.env[key] = unquoteEnvValue(value);
+      }
+    }
+  } catch {
+    // Local .env is optional. PM2 or the shell may provide credentials directly.
+  }
+}
+
+loadLocalEnv();
 
 export function loadConfig() {
   if (cachedConfig) return cachedConfig;
@@ -32,6 +62,11 @@ export function getAccounts() {
   const accounts = loadConfig().accounts || [];
   // Support both string ("email@x.com") and object ({ email, channel }) formats
   return accounts.map(a => typeof a === 'string' ? { email: a, channel: null } : a);
+}
+
+export function getAppToken() {
+  const config = loadConfig();
+  return config.slack?.app_token || null;
 }
 
 export function getAccountEmails() {

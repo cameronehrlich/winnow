@@ -3,6 +3,7 @@ import { loadConfig, getAdapter } from './config.js';
 import { loadState } from './state.js';
 
 const GmailAdapters = { gog: GogAdapter };
+const ARCHIVED_LABEL = 'winnow/archived';
 
 function createAdapter() {
   const name = getAdapter();
@@ -17,46 +18,51 @@ export async function runCheck(account) {
 
   console.log(`\n🔍 Winnow Health Check — ${account}\n`);
 
-  // 1. Unprocessed emails: in inbox, no winnow label, from recent days
+  // 1. Unprocessed emails: in inbox, no archived label, from recent days
   // These are emails winnow should have seen but didn't
   console.log('  Checking for unprocessed inbox emails...');
   const unprocessed = await adapter.fetchUnread(
     account,
-    'in:inbox -label:winnow/low -label:winnow/normal -label:winnow/urgent newer_than:2d',
+    `in:inbox -label:${ARCHIVED_LABEL} newer_than:2d`,
     50
   );
   if (unprocessed.length > 0) {
+    // Filter out messages already known in state. Kept-in-inbox emails may not
+    // have Gmail labels by design, so processedIds is the source of truth here.
+    const state = loadState();
+    const trulyUnprocessed = unprocessed.filter(m => !state.processedIds?.includes(m.id));
+
     // Filter out very recent ones (< 10 min old) since they may not have been scanned yet
     const tenMinAgo = Date.now() - 10 * 60 * 1000;
-    const stale = unprocessed.filter(m => {
+    const stale = trulyUnprocessed.filter(m => {
       const msgDate = m.date ? new Date(m.date).getTime() : Date.now();
       return msgDate < tenMinAgo;
     });
     if (stale.length > 0) {
       warnings.push({
         type: 'unprocessed',
-        message: `${stale.length} email(s) in inbox without winnow labels (older than 10 min)`,
+        message: `${stale.length} email(s) in inbox not seen in state (older than 10 min)`,
         emails: stale.map(m => ({ subject: m.subject, from: m.from, date: m.date })),
       });
     } else {
       ok.push('All recent inbox emails have been processed');
     }
   } else {
-    ok.push('All inbox emails have winnow labels ✓');
+    ok.push('No recent unprocessed inbox emails found ✓');
   }
 
-  // 2. Failed archives: labeled winnow/low but still in inbox
+  // 2. Failed archives: labeled archived but still in inbox
   // These mean the archive (remove INBOX) failed
   console.log('  Checking for failed archives...');
   const failedArchives = await adapter.fetchUnread(
     account,
-    'in:inbox label:winnow/low newer_than:2d',
+    `in:inbox label:${ARCHIVED_LABEL} newer_than:2d`,
     50
   );
   if (failedArchives.length > 0) {
     issues.push({
       type: 'failed_archive',
-      message: `${failedArchives.length} email(s) labeled winnow/low but still in inbox`,
+      message: `${failedArchives.length} email(s) labeled ${ARCHIVED_LABEL} but still in inbox`,
       emails: failedArchives.map(m => ({ subject: m.subject, from: m.from, threadId: m.threadId })),
       autoFix: true,
     });
@@ -95,7 +101,7 @@ export async function runCheck(account) {
   // 5. Labels exist
   console.log('  Checking Gmail labels...');
   try {
-    const labelsOut = await adapter.fetchUnread(account, 'label:winnow/low', 1);
+    await adapter.fetchUnread(account, `label:${ARCHIVED_LABEL}`, 1);
     ok.push('Gmail labels accessible ✓');
   } catch (e) {
     issues.push({ type: 'labels', message: `Cannot access winnow labels: ${e.message}` });
@@ -144,10 +150,10 @@ export async function autoFix(account) {
   const adapter = createAdapter();
   let fixed = 0;
 
-  // Fix failed archives: re-apply archive to winnow/low emails still in inbox
+  // Fix failed archives: re-apply archive to archived-labeled emails still in inbox
   const failedArchives = await adapter.fetchUnread(
     account,
-    'in:inbox label:winnow/low newer_than:7d',
+    `in:inbox label:${ARCHIVED_LABEL} newer_than:7d`,
     50
   );
   for (const msg of failedArchives) {

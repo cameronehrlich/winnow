@@ -7,8 +7,9 @@ adapter: gog
 
 # Slack notifications
 slack:
-  # Set SLACK_BOT_TOKEN env var (preferred) or put token here
+  # Set SLACK_BOT_TOKEN and SLACK_APP_TOKEN in .env (preferred) or put tokens here
   bot_token: ""
+  app_token: ""
   channel_id: "YOUR_CHANNEL_ID"
 
 # AI model configuration (uses GEMINI_API_KEY env var)

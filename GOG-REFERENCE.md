@@ -32,19 +32,19 @@ gog gmail labels list --account user@example.com --json --no-input
 
 #### Create a label
 ```bash
-gog gmail labels create "winnow/low" --account user@example.com --json --no-input
+gog gmail labels create "winnow/archived" --account user@example.com --json --no-input
 ```
 
 #### Modify labels on threads (add/remove)
 ```bash
 # Add label + archive (remove INBOX)
-gog gmail labels modify <threadId> --add "winnow/low" --remove "INBOX" --account user@example.com --force --no-input
+gog gmail labels modify <threadId> --add "winnow/archived" --remove "INBOX" --account user@example.com --force --no-input
 
 # Add label + mark as read (remove UNREAD)
-gog gmail labels modify <threadId> --add "winnow/normal" --remove "UNREAD" --account user@example.com --force --no-input
+gog gmail labels modify <threadId> --add "winnow/kept" --remove "UNREAD" --account user@example.com --force --no-input
 
-# Add urgent label (leave INBOX and UNREAD intact)
-gog gmail labels modify <threadId> --add "winnow/urgent" --account user@example.com --force --no-input
+# Move an archived message back to the inbox
+gog gmail labels modify <threadId> --add "INBOX" --remove "winnow/archived" --account user@example.com --force --no-input
 ```
 
 ### Common flags
@@ -65,5 +65,5 @@ gog gmail labels modify <threadId> --add "winnow/urgent" --account user@example.
 ## Notes
 - To "archive" = remove the INBOX label
 - To "mark as read" = remove the UNREAD label
-- Custom labels like `winnow/low` use `/` for nesting (shows as folder hierarchy in Gmail)
+- Custom labels like `winnow/archived` use `/` for nesting (shows as folder hierarchy in Gmail)
 - Always use `--json --no-input --force` for scripting

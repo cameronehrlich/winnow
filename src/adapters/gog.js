@@ -60,6 +60,10 @@ export class GogAdapter extends GmailAdapter {
     return this.modifyLabels(account, threadId, { remove: ['INBOX'] });
   }
 
+  async unarchive(account, threadId) {
+    return this.modifyLabels(account, threadId, { add: ['INBOX'] });
+  }
+
   async markRead(account, threadId) {
     return this.modifyLabels(account, threadId, { remove: ['UNREAD'] });
   }

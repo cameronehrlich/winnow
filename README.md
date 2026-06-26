@@ -39,7 +39,7 @@ Stop context-switching to Gmail. Let your inbox come to you.
 - **Plain-English Rules** — No regex, no filters, no query syntax. Just write what you mean: *"Archive Robinhood statements unless something looks wrong."*
 - **CLI-First** — Scan, triage, add rules, check stats — all from the terminal. Run it as a one-shot command or a background daemon.
 - **Multi-Account** — Personal and work inboxes, each with their own rules and notification channel. One tool for all your email.
-- **Private** — Runs locally on your machine. Only sender, subject, and snippet go to the AI — never full email bodies. No cloud service, no subscription.
+- **Private** — Runs locally on your machine. Sender, subject, snippet, and a capped message body excerpt go to the AI; credentials and state stay local.
 - **Safe** — Never deletes anything. Only archives. Low-confidence classifications stay in your inbox. Everything is configurable.
 
 ## Quickstart
@@ -63,6 +63,7 @@ npm install
 
 ```bash
 cp config/config.yaml.example config/config.yaml
+cp .env.example .env
 ```
 
 Edit `config/config.yaml`:
@@ -75,8 +76,9 @@ accounts:
 adapter: gog
 
 slack:
-  bot_token: xoxb-your-token
-  channel_id: C0DEFAULT_CHANNEL  # fallback channel
+  bot_token: ""                  # prefer SLACK_BOT_TOKEN in .env
+  app_token: ""                  # prefer SLACK_APP_TOKEN in .env for button actions
+  channel_id: C0DEFAULT_CHANNEL  # fallback channel for accounts without a channel
 
 model:
   name: gemini-2.5-flash
@@ -88,10 +90,12 @@ scan:
   search_query: "in:inbox is:unread newer_than:1d"
 ```
 
-Set your Gemini API key:
+Set credentials in `.env`:
 
 ```bash
-export GEMINI_API_KEY=your_key_here
+GEMINI_API_KEY=your_gemini_key
+SLACK_BOT_TOKEN=xoxb-your-token
+SLACK_APP_TOKEN=xapp-your-token
 ```
 
 Authenticate your Gmail account(s):
@@ -106,7 +110,7 @@ gog auth login you@gmail.com
 # One-shot scan — triage and notify
 ./bin/winnow scan
 
-# Watch mode — real-time email feed (polls every 15s)
+# Watch mode — real-time email feed (polls every 30s by default)
 ./bin/winnow watch
 
 # Always-on with PM2
@@ -115,7 +119,7 @@ pm2 start ecosystem.config.cjs
 
 Once running, every email shows up in your Slack channel with an emoji indicating what happened:
 - 📥 Kept in inbox
-- 🗂️ Auto-archived (with confidence %)
+- 🗂️ Auto-archived
 - 🔑 OTP code extracted and copied to clipboard
 - 📌 Ephemeral FYI (delivered, checked in, etc.)
 
@@ -134,7 +138,7 @@ Once running, every email shows up in your Slack channel with an emoji indicatin
               └───────────────┘
 ```
 
-1. **Scan** — Polls Gmail for unread messages. Only fetches sender, subject, snippet, and headers — never full email bodies.
+1. **Scan** — Polls Gmail for unread messages and fetches metadata, headers, and a capped body excerpt for classification.
 
 2. **Classify** — Each email is sent to Gemini with your rules. The AI returns: archive or keep, confidence score, and a summary.
 
@@ -176,7 +180,7 @@ winnow feed status  # check current state
 
 | Platform | Status | How |
 |----------|--------|-----|
-| **Slack** | ✅ Supported | Bot token + channel ID in config |
+| **Slack** | ✅ Supported | Bot/app tokens in `.env` + channel IDs in config |
 | **Discord** | 🔜 Planned | Webhook URL |
 | **Telegram** | 🔜 Planned | Bot token + chat ID |
 | **Desktop** | ✅ Partial | macOS notifications for OTP codes |
@@ -272,6 +276,7 @@ If the AI's confidence is below 70%, the email stays in your inbox no matter wha
 ```
 winnow/
 ├── bin/winnow              # CLI entrypoint
+├── .env                    # Local credentials (gitignored)
 ├── config/
 │   ├── config.yaml         # Main config (gitignored)
 │   ├── config.yaml.example # Template
@@ -283,6 +288,7 @@ winnow/
 │   ├── classify.js         # Gemini classification
 │   ├── rules.js            # Rule loading & merging
 │   ├── notify.js           # Notifications & email feed
+│   ├── slack-actions.js    # Slack button actions via Socket Mode
 │   ├── digest.js           # Daily archive report
 │   ├── config.js           # Config & account routing
 │   ├── state.js            # Persistent state (processed IDs, stats)
@@ -290,6 +296,7 @@ winnow/
 │   ├── watch.js            # Real-time watch mode
 │   └── adapters/
 │       └── gog.js          # Gmail adapter via gog CLI
+├── scripts/                # Optional rule action hooks
 ├── data/
 │   └── state.json          # Processing state (gitignored)
 └── test/
@@ -312,7 +319,7 @@ Want to add an adapter? Implement the `GmailAdapter` interface in `src/adapters/
 ### Design Decisions
 
 - **Never delete** — Only archive. Everything is recoverable from Gmail's All Mail.
-- **Snippet-only** — Only sender + subject + snippet go to the AI. Never full email bodies. Faster, cheaper, more private.
+- **Capped AI input** — Classification uses sender, subject, snippet, and a bounded body excerpt so summaries are more useful without sending unlimited message content.
 - **Low-confidence = keep** — Below 70% confidence, emails stay in the inbox.
 - **Pluggable everything** — Gmail adapters, notification targets, AI models — all swappable.
 
@@ -326,7 +333,7 @@ pm2 save
 pm2 startup  # auto-start on boot
 ```
 
-This runs `winnow watch` as a daemon, polling every 15 seconds and posting to your channels in real-time.
+`ecosystem.config.cjs` loads `.env` automatically, so normal PM2 restarts pick up local credentials without hardcoded secrets in the tracked config. It runs `winnow watch --interval 10` as a daemon and posts to your channels in real time.
 
 ## Contributing
 
@@ -348,10 +355,10 @@ cd winnow
 npm install
 
 # Run tests
-node --test test/
+npm test
 
 # Dry-run scan (no Gmail changes)
-GEMINI_API_KEY=your_key ./bin/winnow scan --dry-run
+./bin/winnow scan --dry-run
 
 # Check health
 ./bin/winnow check

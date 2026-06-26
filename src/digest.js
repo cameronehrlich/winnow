@@ -12,16 +12,32 @@ function cleanSender(from) {
 
 function gmailLink(threadId) {
   if (!threadId) return null;
-  return `https://mail.google.com/mail/u/0/#all/${threadId}`;
+  return `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(threadId)}`;
+}
+
+function escapeSlackText(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/[*_`~]/g, '')
+    .replace(/[\r\n]+/g, ' ')
+    .trim();
+}
+
+function escapeSlackLinkLabel(str) {
+  return escapeSlackText(str).replace(/\|/g, '¦');
 }
 
 function formatResultCompact(r) {
-  const sender = cleanSender(r.from);
+  const sender = escapeSlackText(cleanSender(r.from));
+  const subject = escapeSlackText(r.subject || '(no subject)');
   const link = gmailLink(r.threadId);
   if (link) {
-    return `  • <${link}|${r.subject}> — _${sender}_`;
+    return `  • <${link}|${escapeSlackLinkLabel(r.subject || '(no subject)')}> — _${sender}_`;
   }
-  return `  • ${r.subject} — _${sender}_`;
+  return `  • ${subject} — _${sender}_`;
 }
 
 export function formatDigest(results, account) {

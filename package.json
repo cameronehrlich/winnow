@@ -7,10 +7,13 @@
     "winnow": "./bin/winnow"
   },
   "scripts": {
-    "start": "node bin/winnow"
+    "start": "node bin/winnow",
+    "test": "node --test"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@slack/socket-mode": "^2.0.6",
+    "@slack/web-api": "^7.15.1",
     "commander": "^13.1.0",
     "js-yaml": "^4.1.0"
   },

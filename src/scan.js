@@ -1,10 +1,13 @@
-import { execFile } from 'node:child_process';
+import { execFile, exec as execRaw, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { GogAdapter } from './adapters/gog.js';
 import { classifyEmail } from './classify.js';
 import { loadConfig, getAdapter } from './config.js';
+import { loadAllRules } from './rules.js';
 import { loadState, saveState, isProcessed, markProcessed, pruneOldResults } from './state.js';
 import { postEmailFeed } from './notify.js';
+
+const execShellAsync = promisify(execRaw);
 
 const execAsync = promisify(execFile);
 
@@ -23,10 +26,73 @@ function createAdapter() {
 }
 
 function extractUnsubscribeLink(headers) {
-  const h = headers?.find(h => h.name?.toLowerCase() === 'list-unsubscribe');
-  if (!h?.value) return null;
-  const match = h.value.match(/<(https?:\/\/[^>]+)>/);
-  return match ? match[1] : null;
+  if (!headers) return null;
+
+  let value = null;
+  if (Array.isArray(headers)) {
+    const h = headers.find(h => h.name?.toLowerCase() === 'list-unsubscribe');
+    value = h?.value || null;
+  } else if (typeof headers === 'object') {
+    value = headers['list-unsubscribe'] || headers['List-Unsubscribe'] || null;
+  }
+
+  if (!value) return null;
+
+  // Prefer HTTP(S) unsubscribe endpoints over mailto links for one-click handling.
+  const httpMatch = String(value).match(/<((?:https?):\/\/[^>]+)>|((?:https?):\/\/[^,\s>]+)/i);
+  if (httpMatch) return httpMatch[1] || httpMatch[2];
+
+  const mailtoMatch = String(value).match(/<(mailto:[^>]+)>|(mailto:[^,\s>]+)/i);
+  return mailtoMatch ? (mailtoMatch[1] || mailtoMatch[2]) : null;
+}
+
+async function getFullMessage(adapter, account, msg) {
+  try {
+    return await adapter.getMessage(account, msg.id || msg.threadId);
+  } catch (err) {
+    console.log(`[winnow] ⚠️ Could not fetch full message for ${msg.threadId || msg.id}: ${err.message}`);
+    return null;
+  }
+}
+
+function enrichMessageFromFull(msg, full) {
+  if (!full) return msg;
+  const headers = full.headers || msg.headers;
+  return {
+    ...msg,
+    body: full.body || msg.body || msg.snippet || '',
+    headers,
+    from: headers?.from || headers?.From || msg.from,
+    to: headers?.to || headers?.To || msg.to,
+    subject: headers?.subject || headers?.Subject || msg.subject,
+    date: headers?.date || headers?.Date || msg.date,
+  };
+}
+
+async function getUnsubscribeLink(adapter, account, msg, fullMessage = null) {
+  const fromSearchResult = extractUnsubscribeLink(msg.headers);
+  if (fromSearchResult) return fromSearchResult;
+
+  const fromFullMessage = fullMessage?.unsubscribe
+    || extractUnsubscribeLink(fullMessage?.headers)
+    || extractUnsubscribeLink(fullMessage?.message?.payload?.headers)
+    || extractUnsubscribeLink(fullMessage?.payload?.headers);
+  if (fromFullMessage) return fromFullMessage;
+
+  // `gog gmail messages search` does not include List-Unsubscribe headers, but
+  // `gog gmail get` exposes a normalized `unsubscribe` field. Fetch the full
+  // message lazily so archived cards can show the Unsubscribe button.
+  try {
+    const full = await adapter.getMessage(account, msg.id || msg.threadId);
+    return full?.unsubscribe
+      || extractUnsubscribeLink(full?.headers)
+      || extractUnsubscribeLink(full?.message?.payload?.headers)
+      || extractUnsubscribeLink(full?.payload?.headers)
+      || null;
+  } catch (err) {
+    console.log(`[winnow] ⚠️ Could not fetch unsubscribe link for ${msg.threadId || msg.id}: ${err.message}`);
+    return null;
+  }
 }
 
 export async function scan(account, opts = {}) {
@@ -60,20 +126,23 @@ export async function scan(account, opts = {}) {
   console.log(`[winnow] Found ${messages.length} unread messages`);
 
   for (const msg of messages) {
-    if (!skipProcessedCheck && isProcessed(msg.id)) {
+    const messageKey = msg.id || msg.threadId;
+    if (!skipProcessedCheck && isProcessed(messageKey)) {
       continue;
     }
 
     console.log(`[winnow] Classifying: ${msg.subject || '(no subject)'}`);
 
-    const classification = await classifyEmail(msg, { account });
-    const unsubscribeLink = extractUnsubscribeLink(msg.headers);
+    const fullMessage = await getFullMessage(adapter, account, msg);
+    const enrichedMsg = enrichMessageFromFull(msg, fullMessage);
+    const classification = await classifyEmail(enrichedMsg, { account });
+    const unsubscribeLink = await getUnsubscribeLink(adapter, account, enrichedMsg, fullMessage);
 
     const result = {
       ...classification,
-      from: msg.from,
-      subject: msg.subject,
-      snippet: msg.snippet,
+      from: enrichedMsg.from,
+      subject: enrichedMsg.subject,
+      snippet: enrichedMsg.snippet,
       threadId: msg.threadId,
       unsubscribeLink,
       account,
@@ -109,10 +178,17 @@ export async function scan(account, opts = {}) {
         }
       }
 
-      markProcessed(msg.id, result);
+      markProcessed(messageKey, result);
+
+      // Run any matching rule action hooks
+      const hookResult = await runActionHooks(enrichedMsg, result, account);
 
       // Post to Slack feed (every email, regardless of action)
-      await postEmailFeed(result);
+      if (hookResult.suppressFeed) {
+        console.log('[winnow] Action hook suppressed generic Slack feed for this email');
+      } else {
+        await postEmailFeed(result);
+      }
     }
 
     results.push(result);
@@ -121,13 +197,19 @@ export async function scan(account, opts = {}) {
 
   if (!dryRun) {
     pruneOldResults();
-    // Track scan count for daily stats
+    // Track scan time + count for health checks and daily stats
     const state = loadState();
-    const today = new Date().toISOString().split('T')[0];
+    const now = new Date().toISOString();
+    const today = now.split('T')[0];
+    state.lastScanTime = now;
     if (!state.stats.daily) state.stats.daily = {};
-    if (state.stats.daily[today]) {
-      state.stats.daily[today].scansRun = (state.stats.daily[today].scansRun || 0) + 1;
-    }
+    if (!state.stats.daily[today]) state.stats.daily[today] = {};
+    if (!state.stats.daily[today].byPriority) state.stats.daily[today].byPriority = { low: 0, normal: 0, urgent: 0 };
+    if (!state.stats.daily[today].rulesTriggered) state.stats.daily[today].rulesTriggered = {};
+    state.stats.daily[today].processed = state.stats.daily[today].processed || 0;
+    state.stats.daily[today].ephemeral = state.stats.daily[today].ephemeral || 0;
+    state.stats.daily[today].bumped = state.stats.daily[today].bumped || 0;
+    state.stats.daily[today].scansRun = (state.stats.daily[today].scansRun || 0) + 1;
     saveState(state);
   }
 
@@ -135,17 +217,88 @@ export async function scan(account, opts = {}) {
   return results;
 }
 
+/**
+ * Run shell action hooks for rules that have an `action` field.
+ *
+ * Rule schema:
+ *   - id: testflight-removal-request
+ *     match: "Someone asking to be removed from TestFlight beta"
+ *     trigger:              # required unless always: true; keywords that must appear in from/subject/snippet
+ *       - testflight
+ *       - remove
+ *     action: "/path/to/script.sh"   # shell command; email metadata passed as env vars
+ *     suppress_feed: true             # optional: skip generic Slack feed when hook already posts its own message
+ *     archive: true
+ *
+ * Env vars available in the action command:
+ *   WINNOW_FROM, WINNOW_SUBJECT, WINNOW_SNIPPET, WINNOW_ACCOUNT, WINNOW_THREAD_ID
+ */
+async function runActionHooks(msg, result, account) {
+  const { rules } = loadAllRules(account);
+  const actionRules = rules.filter(r => r.action);
+
+  if (actionRules.length === 0) return { suppressFeed: false };
+
+  const searchable = [msg.from, msg.subject, msg.snippet].join(' ').toLowerCase();
+  let suppressFeed = false;
+
+  for (const rule of actionRules) {
+    // Action hooks are allowed to mutate external systems, so require an
+    // explicit deterministic trigger unless the rule opts into always running.
+    if (rule.trigger && rule.trigger.length > 0) {
+      const allMatch = rule.trigger.every(kw => searchable.includes(kw.toLowerCase()));
+      if (!allMatch) continue;
+    } else if (!rule.always) {
+      console.warn(`[winnow] ⚠️ Skipping action hook "${rule.id}" because it has no trigger`);
+      continue;
+    }
+
+    console.log(`[winnow] 🎯 Action hook triggered: ${rule.id}`);
+    const ruleRequestsSuppress = Boolean(rule.suppress_feed || rule.suppressFeed);
+
+    const env = {
+      ...process.env,
+      WINNOW_FROM: msg.from || '',
+      WINNOW_SUBJECT: msg.subject || '',
+      WINNOW_SNIPPET: msg.snippet || '',
+      WINNOW_ACCOUNT: account || '',
+      WINNOW_THREAD_ID: msg.threadId || '',
+      WINNOW_MESSAGE_ID: msg.id || '',
+    };
+
+    try {
+      const { stdout, stderr } = await execShellAsync(rule.action, { env, timeout: 30000 });
+      if (stdout) console.log(`[winnow] Action stdout:\n${stdout.trim()}`);
+      if (stderr) console.log(`[winnow] Action stderr:\n${stderr.trim()}`);
+      if (ruleRequestsSuppress || (stdout && /WINNOW_SUPPRESS_FEED=1/.test(stdout))) suppressFeed = true;
+    } catch (err) {
+      console.error(`[winnow] ⚠️ Action hook "${rule.id}" failed: ${err.message}`);
+    }
+  }
+
+  return { suppressFeed };
+}
+
 async function copyToClipboardAndNotify(code, from, subject) {
   try {
-    // Copy code to clipboard via pbcopy (macOS)
-    await execAsync('sh', ['-c', `printf '%s' "${code}" | pbcopy`]);
+    // Copy code to clipboard via pbcopy (macOS), without invoking a shell.
+    await new Promise((resolve, reject) => {
+      const child = spawn('pbcopy');
+      child.on('error', reject);
+      child.on('close', (exitCode) => {
+        if (exitCode === 0) resolve();
+        else reject(new Error(`pbcopy exited with code ${exitCode}`));
+      });
+      child.stdin.end(String(code));
+    });
 
     // Send macOS notification
-    const sender = (from || '').replace(/"/g, '\\"').replace(/<.*>/, '').trim();
+    const escapeAppleScript = (value) => String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const sender = (from || '').replace(/<.*>/, '').trim();
     const title = `🔑 Code copied: ${code}`;
     const body = `From: ${sender}`;
     await execAsync('osascript', [
-      '-e', `display notification "${body}" with title "${title}" sound name "Glass"`,
+      '-e', `display notification "${escapeAppleScript(body)}" with title "${escapeAppleScript(title)}" sound name "Glass"`,
     ]);
 
     console.log(`[winnow] 📋 Code "${code}" copied to clipboard + notification sent`);
@@ -154,5 +307,3 @@ async function copyToClipboardAndNotify(code, from, subject) {
     console.log(`[winnow] ⚠️ Could not copy to clipboard: ${err.message}`);
   }
 }
-
-
