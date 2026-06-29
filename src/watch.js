@@ -19,8 +19,10 @@ export async function watch(opts = {}) {
   console.log(`[winnow] 👁️  Watch mode started — polling every ${intervalSec}s`);
   console.log(`[winnow] Accounts: ${emails.join(', ')}`);
 
-  // Start Slack button action listener (Socket Mode)
-  await startActionListener();
+  // Start Slack button action listener without blocking inbox scans.
+  startActionListener().catch(err => {
+    console.error(`[winnow] Slack action listener failed: ${err.message}`);
+  });
 
   let running = false;
   const runGuardedCycle = async () => {

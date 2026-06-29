@@ -167,6 +167,19 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_delivery_email_sink
       ON delivery_records(email_item_id, sink);
 
+    DELETE FROM delivery_records
+    WHERE sink = 'slack'
+      AND id NOT IN (
+        SELECT MAX(id)
+        FROM delivery_records
+        WHERE sink = 'slack'
+        GROUP BY email_item_id, sink
+      );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_delivery_slack_email_sink_unique
+      ON delivery_records(email_item_id, sink)
+      WHERE sink = 'slack';
+
     CREATE TABLE IF NOT EXISTS push_devices (
       id TEXT PRIMARY KEY,
       device_token TEXT NOT NULL UNIQUE,
@@ -520,12 +533,7 @@ export function recordDelivery({
   metadata = {},
 }) {
   const timestamp = nowIso();
-  const result = getDb().prepare(`
-    INSERT INTO delivery_records (
-      email_item_id, sink, channel_id, message_ts, delivery_state, created_at, updated_at, metadata_json
-    )
-    VALUES (@emailItemId, @sink, @channelId, @messageTs, @deliveryState, @timestamp, @timestamp, @metadataJson)
-  `).run({
+  const params = {
     emailItemId,
     sink,
     channelId,
@@ -533,7 +541,30 @@ export function recordDelivery({
     deliveryState,
     timestamp,
     metadataJson: safeJson(metadata),
-  });
+  };
+
+  if (sink === 'slack') {
+    getDb().prepare(`
+      INSERT INTO delivery_records (
+        email_item_id, sink, channel_id, message_ts, delivery_state, created_at, updated_at, metadata_json
+      )
+      VALUES (@emailItemId, @sink, @channelId, @messageTs, @deliveryState, @timestamp, @timestamp, @metadataJson)
+      ON CONFLICT(email_item_id, sink) WHERE sink = 'slack' DO UPDATE SET
+        channel_id = excluded.channel_id,
+        message_ts = excluded.message_ts,
+        delivery_state = excluded.delivery_state,
+        updated_at = excluded.updated_at,
+        metadata_json = excluded.metadata_json
+    `).run(params);
+    return listDeliveryRecords(emailItemId, sink)[0];
+  }
+
+  const result = getDb().prepare(`
+    INSERT INTO delivery_records (
+      email_item_id, sink, channel_id, message_ts, delivery_state, created_at, updated_at, metadata_json
+    )
+    VALUES (@emailItemId, @sink, @channelId, @messageTs, @deliveryState, @timestamp, @timestamp, @metadataJson)
+  `).run(params);
   return { id: Number(result.lastInsertRowid), emailItemId, sink, channelId, messageTs, deliveryState };
 }
 

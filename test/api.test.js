@@ -79,4 +79,17 @@ describe('local API', () => {
     assert.equal(summaryJson.counters.processed, 1);
     assert.equal(summaryJson.counters.kept, 1);
   });
+
+  it('returns a client error for invalid JSON bodies', async () => {
+    const res = await fetch(`${baseUrl}/v1/push/devices`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'application/json',
+      },
+      body: '{not-json',
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error, 'invalid_json');
+  });
 });

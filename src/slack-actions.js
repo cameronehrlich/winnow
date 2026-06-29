@@ -13,12 +13,17 @@
 
 import { SocketModeClient } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { loadConfig, getAppToken } from './config.js';
 import { recordUnsubscribe } from './state.js';
 import { archiveEmail, moveEmailToInbox } from './actions.js';
+import { formatEmailFeedMessage } from './notify.js';
 
 let client = null;
 let web = null;
+const UNSUBSCRIBE_TIMEOUT_MS = 10000;
+const MAX_UNSUBSCRIBE_REDIRECTS = 5;
 
 function getTokens() {
   const config = loadConfig();
@@ -53,37 +58,29 @@ async function markMessageDone(channelId, ts, text) {
   return updateMessage(channelId, ts, text);
 }
 
-function actionButton(actionId, label, value, style) {
-  const btn = {
-    type: 'button',
-    text: { type: 'plain_text', text: label, emoji: false },
-    action_id: actionId,
-    value,
+function itemToSlackResult(item) {
+  return {
+    account: item.account,
+    threadId: item.threadId,
+    messageId: item.messageId,
+    from: item.from,
+    subject: item.subject,
+    summary: item.summary,
+    action: item.action,
+    deadline: item.deadline,
+    impact: item.impact,
+    handling: item.handling,
+    confidence: item.confidence,
+    ephemeral: item.ephemeral,
+    archive: item.mailboxState === 'archived',
+    unsubscribeLink: item.unsubscribeLink,
   };
-  if (style) btn.style = style;
-  return btn;
 }
 
-function archivedBlocks(text, data) {
-  const buttons = [];
-  if (data.threadId && data.account) {
-    buttons.push(actionButton(
-      'winnow_unarchive',
-      'Move to Inbox',
-      JSON.stringify({ threadId: data.threadId, account: data.account }),
-    ));
-  }
-  if (data.unsubscribeLink) {
-    buttons.push(actionButton(
-      'winnow_unsubscribe',
-      'Unsubscribe',
-      JSON.stringify(data),
-      'danger',
-    ));
-  }
-  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text } }];
-  if (buttons.length) blocks.push({ type: 'actions', elements: buttons });
-  return blocks;
+async function updateMessageFromItem(channelId, ts, item) {
+  if (!item) return;
+  const { text, blocks } = formatEmailFeedMessage(itemToSlackResult(item));
+  await updateMessage(channelId, ts, text, blocks);
 }
 
 async function handleArchive(payload, action) {
@@ -91,11 +88,10 @@ async function handleArchive(payload, action) {
   const { threadId, account } = data;
   const channelId = payload.channel?.id;
   const ts = payload.message?.ts;
-  const subject = payload.message?.blocks?.[0]?.text?.text || '(email)';
 
   console.log(`[winnow/actions] Archive: ${threadId} (${account})`);
   try {
-    await archiveEmail({
+    const updated = await archiveEmail({
       account,
       threadId,
       source: 'slack',
@@ -104,10 +100,7 @@ async function handleArchive(payload, action) {
       reason: 'Slack Archive button',
     });
 
-    // Update the card to archived state, preserving the unsubscribe action when available.
-    const cleanSubject = subject.replace(/📥 /g, '').replace(/\n.*/gs, '').trim();
-    const text = `🗂️ ${cleanSubject}\n_Archived_`;
-    await updateMessage(channelId, ts, text, archivedBlocks(text, data));
+    await updateMessageFromItem(channelId, ts, updated);
     console.log(`[winnow/actions] Archived ✓`);
   } catch (err) {
     console.error(`[winnow/actions] Archive failed: ${err.message}`);
@@ -118,20 +111,17 @@ async function handleUnarchive(payload, action) {
   const { threadId, account } = JSON.parse(action.value);
   const channelId = payload.channel?.id;
   const ts = payload.message?.ts;
-  const subject = payload.message?.blocks?.[0]?.text?.text || '(email)';
 
   console.log(`[winnow/actions] Move to inbox: ${threadId} (${account})`);
   try {
-    await moveEmailToInbox({
+    const updated = await moveEmailToInbox({
       account,
       threadId,
       source: 'slack',
       reason: 'Slack Move to Inbox button',
     });
 
-    // Update the card to remove buttons and show moved state
-    const cleanSubject = subject.replace(/[🗂️📌🔑] /g, '').replace(/\n.*/gs, '').trim();
-    await markMessageDone(channelId, ts, `📥 ${cleanSubject}\n_Moved to inbox_`);
+    await updateMessageFromItem(channelId, ts, updated);
     console.log(`[winnow/actions] Moved to inbox ✓`);
   } catch (err) {
     console.error(`[winnow/actions] Unarchive failed: ${err.message}`);
@@ -144,6 +134,110 @@ function absoluteUrl(url, base) {
 
 function safeHostname(url) {
   try { return new URL(url).hostname; } catch { return ''; }
+}
+
+function normalizedHostname(url) {
+  return String(url.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+}
+
+function isPrivateIpv4(address) {
+  const parts = address.split('.').map(Number);
+  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b] = parts;
+  return a === 10
+    || a === 127
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || a === 0;
+}
+
+function isPrivateIpv6(address) {
+  const value = address.toLowerCase();
+  if (value === '::1' || value === '::') return true;
+  const firstHextet = Number.parseInt(value.split(':')[0], 16);
+  if (firstHextet >= 0xfe80 && firstHextet <= 0xfebf) return true;
+  if (value.startsWith('fc') || value.startsWith('fd')) return true;
+  if (value.startsWith('::ffff:')) {
+    const mapped = value.slice('::ffff:'.length);
+    if (/^[0-9a-f]+:[0-9a-f]+$/i.test(mapped)) {
+      const [high, low] = mapped.split(':').map(part => Number.parseInt(part, 16));
+      if (Number.isInteger(high) && Number.isInteger(low)) {
+        return isPrivateIpv4([
+          (high >> 8) & 255,
+          high & 255,
+          (low >> 8) & 255,
+          low & 255,
+        ].join('.'));
+      }
+    }
+    return isPrivateIpv4(mapped);
+  }
+  return false;
+}
+
+function isPrivateAddress(address) {
+  const family = isIP(address);
+  if (family === 4) return isPrivateIpv4(address);
+  if (family === 6) return isPrivateIpv6(address);
+  return false;
+}
+
+function isBlockedHostname(hostname) {
+  const host = hostname.toLowerCase();
+  return host === 'localhost'
+    || host.endsWith('.localhost')
+    || host === 'local'
+    || host.endsWith('.local');
+}
+
+export async function validateUnsubscribeUrl(unsubscribeLink) {
+  const url = new URL(unsubscribeLink);
+  if (url.protocol === 'mailto:') return url;
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error(`Unsupported unsubscribe URL protocol: ${url.protocol}`);
+  }
+
+  const hostname = normalizedHostname(url);
+  if (!hostname || isBlockedHostname(hostname) || isPrivateAddress(hostname)) {
+    throw new Error('Blocked unsafe unsubscribe URL host');
+  }
+
+  const addresses = await lookup(hostname, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some(entry => isPrivateAddress(entry.address))) {
+    throw new Error('Blocked unsafe unsubscribe URL address');
+  }
+
+  return url;
+}
+
+async function safeFetch(urlLike, opts = {}, redirectsRemaining = MAX_UNSUBSCRIBE_REDIRECTS) {
+  const url = await validateUnsubscribeUrl(urlLike);
+  if (url.protocol === 'mailto:') {
+    throw new Error('Unsupported unsubscribe redirect protocol: mailto:');
+  }
+  const res = await fetch(url, {
+    ...opts,
+    redirect: 'manual',
+    signal: AbortSignal.timeout(UNSUBSCRIBE_TIMEOUT_MS),
+  });
+
+  if (res.status >= 300 && res.status < 400) {
+    const location = res.headers.get('location');
+    if (!location) return res;
+    if (redirectsRemaining <= 0) throw new Error('Too many unsubscribe redirects');
+
+    const nextUrl = absoluteUrl(location, url.toString());
+    const nextOpts = { ...opts };
+    if ([301, 302, 303].includes(res.status)) {
+      nextOpts.method = 'GET';
+      delete nextOpts.body;
+      delete nextOpts.headers;
+    }
+    return safeFetch(nextUrl, nextOpts, redirectsRemaining - 1);
+  }
+
+  return res;
 }
 
 function extractInputs(formHtml) {
@@ -162,16 +256,13 @@ function extractInputs(formHtml) {
 
 export async function followUnsubscribeLink(unsubscribeLink) {
   if (!unsubscribeLink) throw new Error('No unsubscribe link on this email');
-  const url = new URL(unsubscribeLink);
+  const url = await validateUnsubscribeUrl(unsubscribeLink);
 
   if (url.protocol === 'mailto:') {
     return { status: 'attempted', method: 'mailto', note: 'Mailto unsubscribe link; manual email required', urlHost: url.hostname };
   }
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    throw new Error(`Unsupported unsubscribe URL protocol: ${url.protocol}`);
-  }
 
-  const getRes = await fetch(url, { method: 'GET', redirect: 'follow' });
+  const getRes = await safeFetch(url, { method: 'GET' });
   const finalUrl = getRes.url || unsubscribeLink;
   const contentType = getRes.headers.get('content-type') || '';
   const body = contentType.includes('text/html') ? await getRes.text() : '';
@@ -199,9 +290,8 @@ export async function followUnsubscribeLink(unsubscribeLink) {
     target = u.toString();
   }
 
-  const postRes = await fetch(target, {
+  const postRes = await safeFetch(target, {
     method: method === 'post' ? 'POST' : 'GET',
-    redirect: 'follow',
     headers: method === 'post' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : undefined,
     body: method === 'post' ? params.toString() : undefined,
   });

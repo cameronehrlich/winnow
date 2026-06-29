@@ -8,6 +8,8 @@ import {
   closeStoreForTests,
   configureDatabaseForTests,
   getDailyActionSummary,
+  listDeliveryRecords,
+  recordDelivery,
   upsertEmailItemFromResult,
 } from '../src/store.js';
 
@@ -79,5 +81,38 @@ describe('daily action summary', () => {
     assert.equal(summary.lists.kept.length, 1);
     assert.equal(summary.lists.restored.length, 1);
     assert.equal(summary.lists.unsubscribed.length, 1);
+  });
+
+  it('upserts Slack delivery records for the same email item', () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com',
+      messageId: 'm-delivery',
+      threadId: 't-delivery',
+      from: 'Sender <sender@example.com>',
+      subject: 'Delivery',
+      archive: false,
+    }, {
+      account: 'me@example.com',
+      messageId: 'm-delivery',
+      threadId: 't-delivery',
+      timestamp: '2026-06-29T16:00:00.000Z',
+    });
+
+    recordDelivery({
+      emailItemId: item.id,
+      sink: 'slack',
+      channelId: 'C1',
+      messageTs: '1710000000.000000',
+    });
+    recordDelivery({
+      emailItemId: item.id,
+      sink: 'slack',
+      channelId: 'C1',
+      messageTs: '1710000001.000000',
+    });
+
+    const records = listDeliveryRecords(item.id, 'slack');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].messageTs, '1710000001.000000');
   });
 });

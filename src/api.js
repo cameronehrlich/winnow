@@ -15,6 +15,16 @@ import {
   storeEvents,
 } from './store.js';
 
+const MAX_JSON_BODY_BYTES = 1024 * 1024;
+
+class HttpError extends Error {
+  constructor(status, code, message = code) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 function sendJson(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
@@ -26,10 +36,21 @@ function sendJson(res, status, body) {
 
 async function readJson(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > MAX_JSON_BODY_BYTES) {
+      throw new HttpError(413, 'request_body_too_large');
+    }
+    chunks.push(chunk);
+  }
   if (!chunks.length) return {};
   const raw = Buffer.concat(chunks).toString('utf8');
-  return raw ? JSON.parse(raw) : {};
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new HttpError(400, 'invalid_json');
+  }
 }
 
 function getToken() {
@@ -105,7 +126,7 @@ async function handleAuthed(req, res, url) {
         account: item.account,
         threadId: item.threadId,
         messageId: item.messageId,
-        source: 'future_api',
+        source: 'api',
         reason: `API ${suffix}`,
       });
       sendJson(res, 200, { ok: true, item: updated || item });
@@ -128,7 +149,7 @@ async function handleAuthed(req, res, url) {
           subject: item.subject,
           account: item.account,
           threadId: item.threadId,
-          source: 'future_api',
+          source: 'api',
           method: result.method,
           status: result.status,
           note: result.note,
@@ -141,7 +162,7 @@ async function handleAuthed(req, res, url) {
           subject: item.subject,
           account: item.account,
           threadId: item.threadId,
-          source: 'future_api',
+          source: 'api',
           method: 'unknown',
           status: 'failed',
           note: err.message,
@@ -230,6 +251,10 @@ export function createApiServer() {
       if (!requireAuth(req, res)) return;
       await handleAuthed(req, res, url);
     } catch (err) {
+      if (err instanceof HttpError) {
+        sendJson(res, err.status, { error: err.code, message: err.message });
+        return;
+      }
       sendJson(res, 500, { error: 'internal_error', message: err.message });
     }
   });

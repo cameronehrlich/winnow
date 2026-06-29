@@ -36,6 +36,12 @@ async function runReconcileCycle(accounts) {
   }
 }
 
+function startSlackActionsInBackground() {
+  startActionListener().catch(err => {
+    console.error(`[winnow/daemon] Slack action listener failed: ${err.message}`);
+  });
+}
+
 function guarded(fn, label) {
   let running = false;
   return async () => {
@@ -63,7 +69,7 @@ export async function startDaemon(opts = {}) {
 
   console.log(`[winnow/daemon] Starting daemon for accounts: ${accounts.join(', ')}`);
   const apiServer = await startApiServer();
-  await startActionListener();
+  startSlackActionsInBackground();
 
   const scanCycle = guarded(() => runScanCycle(accounts), 'scan');
   const reconcileCycle = guarded(() => runReconcileCycle(accounts), 'reconcile');

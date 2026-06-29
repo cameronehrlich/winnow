@@ -17,6 +17,7 @@ let originalFetch;
 beforeEach(() => {
   process.env.WINNOW_SKIP_LEGACY_IMPORT = '1';
   tempDir = mkdtempSync(join(tmpdir(), 'winnow-notify-'));
+  process.env.WINNOW_STATE_PATH = join(tempDir, 'state.json');
   configureDatabaseForTests(join(tempDir, 'winnow.db'));
   originalFetch = globalThis.fetch;
 });
@@ -26,6 +27,7 @@ afterEach(() => {
   closeStoreForTests();
   rmSync(tempDir, { recursive: true, force: true });
   delete process.env.WINNOW_SKIP_LEGACY_IMPORT;
+  delete process.env.WINNOW_STATE_PATH;
 });
 
 describe('formatEmailFeedMessage', () => {

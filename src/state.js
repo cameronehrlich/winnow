@@ -4,7 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { appendEvent, findEmailItemByGmail } from './store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const STATE_PATH = join(__dirname, '..', 'data', 'state.json');
+const DEFAULT_STATE_PATH = join(__dirname, '..', 'data', 'state.json');
+
+function statePath() {
+  return process.env.WINNOW_STATE_PATH || DEFAULT_STATE_PATH;
+}
 
 const DEFAULT_STATE = {
   processedIds: [],
@@ -59,7 +63,7 @@ function normalizeState(state) {
 
 export function loadState() {
   try {
-    const raw = readFileSync(STATE_PATH, 'utf8');
+    const raw = readFileSync(statePath(), 'utf8');
     return normalizeState(JSON.parse(raw));
   } catch {
     return cloneDefaultState();
@@ -67,10 +71,11 @@ export function loadState() {
 }
 
 export function saveState(state) {
-  mkdirSync(dirname(STATE_PATH), { recursive: true });
-  const tmpPath = STATE_PATH + '.tmp';
+  const path = statePath();
+  mkdirSync(dirname(path), { recursive: true });
+  const tmpPath = path + '.tmp';
   writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf8');
-  renameSync(tmpPath, STATE_PATH);
+  renameSync(tmpPath, path);
 }
 
 export function isProcessed(messageId) {
@@ -182,6 +187,15 @@ export function recordUnsubscribe(entry) {
     (e.id === normalized.id)
   );
 
+  const previous = existingIndex >= 0 ? unsubscribes.entries[existingIndex] : null;
+  if (previous?.id) normalized.id = previous.id;
+  const isDuplicateEvent = previous
+    && previous.status === normalized.status
+    && previous.method === normalized.method
+    && previous.note === normalized.note
+    && previous.source === normalized.source;
+  if (isDuplicateEvent && previous?.timestamp) normalized.timestamp = previous.timestamp;
+
   if (existingIndex >= 0) {
     unsubscribes.entries[existingIndex] = { ...unsubscribes.entries[existingIndex], ...normalized };
   } else {
@@ -202,6 +216,8 @@ export function recordUnsubscribe(entry) {
   }
 
   saveState(state);
+  if (isDuplicateEvent) return normalized;
+
   const existing = normalized.account || normalized.threadId
     ? findEmailItemByGmail({ account: normalized.account, threadId: normalized.threadId })
     : null;

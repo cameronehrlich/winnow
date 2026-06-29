@@ -114,7 +114,13 @@ export class GogAdapter extends GmailAdapter {
 
   async getMailboxState(account, messageId) {
     const message = await this.getMessage(account, messageId);
-    const labelIds = message?.labelIds || message?.LabelIds || message?.payload?.labelIds || [];
+    const labelIds = message?.labelIds
+      || message?.LabelIds
+      || message?.message?.labelIds
+      || message?.message?.LabelIds
+      || message?.payload?.labelIds
+      || message?.message?.payload?.labelIds
+      || [];
     const labels = Array.isArray(labelIds) ? labelIds : [];
     return {
       mailboxState: labels.includes('INBOX') ? 'inbox' : 'archived',
