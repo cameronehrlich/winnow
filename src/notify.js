@@ -1,5 +1,6 @@
 import { loadConfig, reloadConfig, getChannelForAccount } from './config.js';
 import { loadState, saveState } from './state.js';
+import { appendEmailEvent, listDeliveryRecords, makeEmailItemId, recordDelivery } from './store.js';
 
 const SLACK_API_URL = 'https://slack.com/api/chat.postMessage';
 
@@ -365,10 +366,36 @@ export async function postEmailFeed(result) {
 
   const config = reloadConfig(); // re-read so toggle works without restart
   if (config.feed === false) return false;
+  const feedMode = config.slack?.feed_mode || 'all';
+  if (feedMode === 'off') return false;
+  if (feedMode === 'kept' && result.archive) return false;
+
+  const emailItemId = result.emailItemId || makeEmailItemId(result.account, result.messageId, result.threadId);
+  const existingDelivery = listDeliveryRecords(emailItemId, 'slack')
+    .find(delivery => delivery.deliveryState === 'sent' && delivery.messageTs);
+  if (existingDelivery) {
+    console.log(`[winnow] Slack feed already posted for ${result.threadId || result.messageId || emailItemId} — skipping duplicate`);
+    return true;
+  }
 
   const { text, blocks } = formatEmailFeedMessage(result);
   const channel = result.account ? getChannelForAccount(result.account) : null;
   const posted = await postToSlackAPI(text, channel, null, blocks);
+  if (posted.ok) {
+    const delivery = recordDelivery({
+      emailItemId,
+      sink: 'slack',
+      channelId: channel,
+      messageTs: posted.ts,
+      deliveryState: 'sent',
+      metadata: { feedMode },
+    });
+    appendEmailEvent('delivery.slack_posted', { id: emailItemId, account: result.account, messageId: result.messageId, threadId: result.threadId }, {
+      source: 'slack',
+      reason: 'Posted email feed card',
+      metadata: { deliveryId: delivery.id, channelId: channel, messageTs: posted.ts },
+    });
+  }
 
   return posted.ok;
 }

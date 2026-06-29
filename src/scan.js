@@ -6,6 +6,8 @@ import { loadConfig, getAdapter } from './config.js';
 import { loadAllRules } from './rules.js';
 import { loadState, saveState, isProcessed, markProcessed, pruneOldResults } from './state.js';
 import { postEmailFeed } from './notify.js';
+import { maybeSendPushForEmail } from './push.js';
+import { appendEmailEvent, upsertEmailItemFromResult } from './store.js';
 
 const execShellAsync = promisify(execRaw);
 
@@ -179,9 +181,32 @@ export async function scan(account, opts = {}) {
       }
 
       markProcessed(messageKey, result);
+      const item = upsertEmailItemFromResult(result, {
+        account,
+        messageId: messageKey,
+        threadId: msg.threadId,
+        timestamp: new Date().toISOString(),
+      });
+      result.emailItemId = item.id;
+      result.messageId = messageKey;
+      appendEmailEvent('email.scanned', item, { source: 'scan', reason: result.reason });
+      appendEmailEvent(result.archive ? 'email.auto_archived' : 'email.kept', item, {
+        source: 'scan',
+        reason: result.reason,
+        metadata: { confidence: result.confidence, ephemeral: Boolean(result.ephemeral) },
+      });
 
       // Run any matching rule action hooks
       const hookResult = await runActionHooks(enrichedMsg, result, account);
+      for (const ruleId of hookResult.triggeredRules || []) {
+        appendEmailEvent('email.action_hook_ran', item, {
+          source: 'action_hook',
+          reason: ruleId,
+          metadata: { ruleId },
+        });
+      }
+
+      await maybeSendPushForEmail(item);
 
       // Post to Slack feed (every email, regardless of action)
       if (hookResult.suppressFeed) {
@@ -241,6 +266,7 @@ async function runActionHooks(msg, result, account) {
 
   const searchable = [msg.from, msg.subject, msg.snippet].join(' ').toLowerCase();
   let suppressFeed = false;
+  const triggeredRules = [];
 
   for (const rule of actionRules) {
     // Action hooks are allowed to mutate external systems, so require an
@@ -255,6 +281,7 @@ async function runActionHooks(msg, result, account) {
 
     console.log(`[winnow] 🎯 Action hook triggered: ${rule.id}`);
     const ruleRequestsSuppress = Boolean(rule.suppress_feed || rule.suppressFeed);
+    triggeredRules.push(rule.id);
 
     const env = {
       ...process.env,
@@ -276,7 +303,7 @@ async function runActionHooks(msg, result, account) {
     }
   }
 
-  return { suppressFeed };
+  return { suppressFeed, triggeredRules };
 }
 
 async function copyToClipboardAndNotify(code, from, subject) {

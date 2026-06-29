@@ -6,6 +6,9 @@
   "bin": {
     "winnow": "./bin/winnow"
   },
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
     "start": "node bin/winnow",
     "test": "node --test"

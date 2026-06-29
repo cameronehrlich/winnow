@@ -1,6 +1,32 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatEmailFeedMessage } from '../src/notify.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { formatEmailFeedMessage, postEmailFeed } from '../src/notify.js';
+import {
+  closeStoreForTests,
+  configureDatabaseForTests,
+  recordDelivery,
+  upsertEmailItemFromResult,
+} from '../src/store.js';
+
+let tempDir;
+let originalFetch;
+
+beforeEach(() => {
+  process.env.WINNOW_SKIP_LEGACY_IMPORT = '1';
+  tempDir = mkdtempSync(join(tmpdir(), 'winnow-notify-'));
+  configureDatabaseForTests(join(tempDir, 'winnow.db'));
+  originalFetch = globalThis.fetch;
+});
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  closeStoreForTests();
+  rmSync(tempDir, { recursive: true, force: true });
+  delete process.env.WINNOW_SKIP_LEGACY_IMPORT;
+});
 
 describe('formatEmailFeedMessage', () => {
   const base = {
@@ -120,5 +146,40 @@ describe('formatEmailFeedMessage', () => {
     assert.ok(!blockText.includes('<https://evil.example|Click me>'));
     assert.ok(blockText.includes('&lt;!here&gt;'));
     assert.ok(blockText.includes('&lt;https://evil.example¦Click me&gt; now'));
+  });
+
+  it('does not post a second Slack card when a sent delivery record already exists', async () => {
+    const item = upsertEmailItemFromResult({
+      ...base,
+      messageId: 'm-existing',
+      archive: false,
+    }, {
+      account: base.account,
+      messageId: 'm-existing',
+      threadId: base.threadId,
+      timestamp: '2026-06-29T16:00:00.000Z',
+    });
+    recordDelivery({
+      emailItemId: item.id,
+      sink: 'slack',
+      channelId: 'C123',
+      messageTs: '1710000000.000000',
+    });
+
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      return { json: async () => ({ ok: true, ts: '1710000001.000000' }) };
+    };
+
+    const posted = await postEmailFeed({
+      ...base,
+      emailItemId: item.id,
+      messageId: 'm-existing',
+      archive: false,
+    });
+
+    assert.equal(posted, true);
+    assert.equal(fetchCalls, 0);
   });
 });

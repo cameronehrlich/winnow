@@ -7,7 +7,9 @@ import { addRule, removeRule, listRules } from './rules.js';
 import { getStats, recordUnsubscribe, getUnsubscribes } from './state.js';
 import { muteAlerts, unmuteAlerts, getAlertStatus } from './notify.js';
 import { runCheck, autoFix } from './check.js';
-import { GogAdapter } from './adapters/gog.js';
+import { archiveEmail, moveEmailToInbox } from './actions.js';
+import { startDaemon } from './daemon.js';
+import { getDailyActionSummary } from './store.js';
 
 const program = new Command();
 
@@ -22,10 +24,7 @@ program
   .requiredOption('-a, --account <email>', 'Gmail account the thread belongs to')
   .action(async (threadId, opts) => {
     try {
-      const adapter = new GogAdapter();
-      await adapter.archive(opts.account, threadId);
-      await adapter.markRead(opts.account, threadId);
-      await adapter.addLabel(opts.account, threadId, 'winnow/archived');
+      await archiveEmail({ account: opts.account, threadId, source: 'cli', reason: 'CLI archive command' });
       console.log(`✅ Archived thread ${threadId} for ${opts.account}`);
     } catch (err) {
       console.error('❌ Archive failed:', err.message);
@@ -39,9 +38,7 @@ program
   .requiredOption('-a, --account <email>', 'Gmail account the thread belongs to')
   .action(async (threadId, opts) => {
     try {
-      const adapter = new GogAdapter();
-      await adapter.unarchive(opts.account, threadId);
-      await adapter.removeLabel(opts.account, threadId, 'winnow/archived');
+      await moveEmailToInbox({ account: opts.account, threadId, source: 'cli', reason: 'CLI unarchive command' });
       console.log(`✅ Moved thread ${threadId} back to inbox for ${opts.account}`);
     } catch (err) {
       console.error('❌ Unarchive failed:', err.message);
@@ -127,7 +124,7 @@ program
 
 program
   .command('run')
-  .description('Scan all accounts + generate digest (everything since last run)')
+  .description('Scan all accounts and print today\'s structured summary')
   .option('--dry-run', 'Classify but don\'t take any Gmail actions')
   .action(async (opts) => {
     try {
@@ -137,12 +134,73 @@ program
         const results = await scan(account, { dryRun: opts.dryRun });
         console.log(`✅ Processed ${results.length} emails`);
       }
-      console.log('\n📋 Generating digest...');
-      const digest = await generateAndPostDigest({ preview: false });
-      console.log('✅ Digest posted to Slack');
+      console.log('\n📋 Today\'s Summary:');
+      printSummary(getDailyActionSummary({}));
     } catch (err) {
       console.error('❌ Run failed:', err.message);
       process.exit(1);
+    }
+  });
+
+program
+  .command('daemon')
+  .description('Run scanner, Slack actions, local API, and mailbox reconciliation')
+  .option('-i, --interval <seconds>', 'Scan interval in seconds', '30')
+  .action(async (opts) => {
+    try {
+      await startDaemon({ interval: parseInt(opts.interval, 10) });
+    } catch (err) {
+      console.error('❌ Daemon failed:', err.message);
+      process.exit(1);
+    }
+  });
+
+function todayLocalDate() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const get = type => parts.find(p => p.type === type)?.value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+function printSummary(summary) {
+  const c = summary.counters;
+  console.log(`  Date: ${summary.date} (${summary.timeZone})`);
+  console.log(`  Processed: ${c.processed}`);
+  console.log(`  Kept: ${c.kept}`);
+  console.log(`  Auto-archived: ${c.autoArchived}`);
+  console.log(`  Manually archived: ${c.manualArchived}`);
+  console.log(`  Restored to inbox: ${c.restoredToInbox}`);
+  console.log(`  Unsubscribed: ${c.unsubscribedSucceeded} succeeded, ${c.unsubscribedFailed} failed`);
+  console.log(`  Ephemeral: ${c.ephemeral}`);
+  console.log(`  Low-confidence kept: ${c.lowConfidenceKept}`);
+  if (summary.lists.actedOn.length) {
+    console.log('\n  Recent actions:');
+    for (const item of summary.lists.actedOn.slice(-10).reverse()) {
+      console.log(`    ${item.timestamp}  ${item.actionType}  ${item.subject || '(no subject)'}`);
+    }
+  }
+}
+
+program
+  .command('summary')
+  .description('Show structured daily action summary')
+  .option('--today', 'Use today in America/Los_Angeles')
+  .option('--date <YYYY-MM-DD>', 'Summary date in America/Los_Angeles')
+  .option('-a, --account <email>', 'Specific account')
+  .option('--json', 'Output JSON')
+  .action((opts) => {
+    const summary = getDailyActionSummary({
+      date: opts.date || (opts.today ? todayLocalDate() : undefined),
+      account: opts.account || '',
+    });
+    if (opts.json) {
+      console.log(JSON.stringify(summary, null, 2));
+    } else {
+      printSummary(summary);
     }
   });
 

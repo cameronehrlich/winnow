@@ -20,7 +20,7 @@ module.exports = {
     {
       name: 'winnow-watch',
       script: 'src/cli.js',
-      args: 'watch --interval 10',
+      args: 'daemon --interval 10',
       cwd: __dirname,
       interpreter: 'node',
       node_args: '--experimental-vm-modules',

@@ -11,6 +11,19 @@ slack:
   bot_token: ""
   app_token: ""
   channel_id: "YOUR_CHANNEL_ID"
+  # all = keep current Slack feed behavior; kept = only inbox-worthy emails; off = no Slack feed
+  feed_mode: all
+
+# Local API for the future iOS app
+api:
+  host: 127.0.0.1
+  port: 3777
+
+daemon:
+  scan_interval_seconds: 30
+
+reconcile:
+  interval_seconds: 300
 
 # AI model configuration (uses GEMINI_API_KEY env var)
 model:

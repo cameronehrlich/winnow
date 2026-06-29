@@ -34,4 +34,8 @@ export class GmailAdapter {
   async ensureLabel(account, labelName) {
     throw new Error('Not implemented');
   }
+
+  async getMailboxState(account, messageId) {
+    throw new Error('Not implemented');
+  }
 }

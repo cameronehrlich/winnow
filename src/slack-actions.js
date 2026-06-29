@@ -13,9 +13,9 @@
 
 import { SocketModeClient } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';
-import { GogAdapter } from './adapters/gog.js';
 import { loadConfig, getAppToken } from './config.js';
 import { recordUnsubscribe } from './state.js';
+import { archiveEmail, moveEmailToInbox } from './actions.js';
 
 let client = null;
 let web = null;
@@ -95,10 +95,14 @@ async function handleArchive(payload, action) {
 
   console.log(`[winnow/actions] Archive: ${threadId} (${account})`);
   try {
-    const adapter = new GogAdapter();
-    await adapter.archive(account, threadId);
-    await adapter.markRead(account, threadId);
-    await adapter.addLabel(account, threadId, 'winnow/archived');
+    await archiveEmail({
+      account,
+      threadId,
+      source: 'slack',
+      from: data.from,
+      subject: data.subject,
+      reason: 'Slack Archive button',
+    });
 
     // Update the card to archived state, preserving the unsubscribe action when available.
     const cleanSubject = subject.replace(/📥 /g, '').replace(/\n.*/gs, '').trim();
@@ -118,9 +122,12 @@ async function handleUnarchive(payload, action) {
 
   console.log(`[winnow/actions] Move to inbox: ${threadId} (${account})`);
   try {
-    const adapter = new GogAdapter();
-    await adapter.unarchive(account, threadId);
-    await adapter.removeLabel(account, threadId, 'winnow/archived');
+    await moveEmailToInbox({
+      account,
+      threadId,
+      source: 'slack',
+      reason: 'Slack Move to Inbox button',
+    });
 
     // Update the card to remove buttons and show moved state
     const cleanSubject = subject.replace(/[🗂️📌🔑] /g, '').replace(/\n.*/gs, '').trim();
@@ -153,7 +160,7 @@ function extractInputs(formHtml) {
   return params;
 }
 
-async function followUnsubscribeLink(unsubscribeLink) {
+export async function followUnsubscribeLink(unsubscribeLink) {
   if (!unsubscribeLink) throw new Error('No unsubscribe link on this email');
   const url = new URL(unsubscribeLink);
 

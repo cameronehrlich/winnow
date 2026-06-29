@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { appendEvent, findEmailItemByGmail } from './store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = join(__dirname, '..', 'data', 'state.json');
@@ -201,6 +202,20 @@ export function recordUnsubscribe(entry) {
   }
 
   saveState(state);
+  const existing = normalized.account || normalized.threadId
+    ? findEmailItemByGmail({ account: normalized.account, threadId: normalized.threadId })
+    : null;
+  appendEvent({
+    eventType: normalized.status === 'failed' ? 'email.unsubscribe_failed' : 'email.unsubscribed',
+    source: normalized.source || 'manual',
+    account: normalized.account || existing?.account || '',
+    emailItemId: existing?.id || '',
+    messageId: existing?.messageId || '',
+    threadId: normalized.threadId || existing?.threadId || '',
+    timestamp: normalized.timestamp,
+    reason: normalized.note || normalized.status,
+    metadata: normalized,
+  });
   return normalized;
 }
 

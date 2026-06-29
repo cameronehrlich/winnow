@@ -46,7 +46,7 @@ Stop context-switching to Gmail. Let your inbox come to you.
 
 ### Prerequisites
 
-- **Node.js** 18+
+- **Node.js** 22.5+ (uses built-in SQLite support)
 - **[gog](https://github.com/xlab-si/gog)** — Gmail CLI adapter (handles OAuth)
 - **Gemini API key** — [Get one free](https://aistudio.google.com/apikey)
 - **Slack Bot Token** *(optional but recommended)* — For the email feed
@@ -113,6 +113,9 @@ gog auth login you@gmail.com
 # Watch mode — real-time email feed (polls every 30s by default)
 ./bin/winnow watch
 
+# Daemon mode — scanner + Slack actions + local API + mailbox reconciliation
+./bin/winnow daemon
+
 # Always-on with PM2
 pm2 start ecosystem.config.cjs
 ```
@@ -144,7 +147,7 @@ Once running, every email shows up in your Slack channel with an emoji indicatin
 
 3. **Act** — Archived emails get removed from inbox and labeled. Kept emails are left untouched. OTP codes get copied to your clipboard.
 
-4. **Notify** — Every email posts to your messaging platform in real-time, routed to the right channel per account. Daily archive reports summarize what was handled.
+4. **Track + Notify** — Every email is written to the local feed/event store. Slack receives feed posts according to your config, and structured summaries are available from the CLI/API.
 
 ### Ephemeral Emails
 
@@ -250,10 +253,13 @@ If the AI's confidence is below 70%, the email stays in your inbox no matter wha
 | Command | Description |
 |---------|-------------|
 | `winnow scan` | Scan and triage unread emails |
-| `winnow watch` | Real-time watch mode (polls every 15s) |
-| `winnow run` | Scan all accounts + post daily digest |
+| `winnow watch` | Real-time watch mode (polls every 30s by default) |
+| `winnow daemon` | Run scanner, Slack actions, local API, and mailbox reconciliation |
+| `winnow run` | Scan all accounts + print today's structured summary |
 | `winnow rescan --since 7d` | Re-classify emails with current rules |
-| `winnow digest` | Generate and post archive report |
+| `winnow digest --preview` | Preview legacy archive report for debugging |
+| `winnow summary --today` | Show daily action counters and lists |
+| `winnow summary --date YYYY-MM-DD --json` | Export structured daily analytics |
 | `winnow rules` | List all active rules |
 | `winnow rule add <desc> -a <email>` | Add a custom rule |
 | `winnow rule remove <id> -a <email>` | Remove a custom rule |
@@ -289,7 +295,10 @@ winnow/
 │   ├── rules.js            # Rule loading & merging
 │   ├── notify.js           # Notifications & email feed
 │   ├── slack-actions.js    # Slack button actions via Socket Mode
-│   ├── digest.js           # Daily archive report
+│   ├── api.js              # Local private HTTP API
+│   ├── daemon.js           # Combined runtime process
+│   ├── store.js            # SQLite feed/event/analytics store
+│   ├── digest.js           # Legacy manual archive report
 │   ├── config.js           # Config & account routing
 │   ├── state.js            # Persistent state (processed IDs, stats)
 │   ├── check.js            # Health checks & auto-fix
@@ -299,6 +308,7 @@ winnow/
 ├── scripts/                # Optional rule action hooks
 ├── data/
 │   └── state.json          # Processing state (gitignored)
+│   └── winnow.db           # SQLite feed/event store (gitignored)
 └── test/
     └── notify.test.js      # Notification tests
 ```
@@ -333,7 +343,31 @@ pm2 save
 pm2 startup  # auto-start on boot
 ```
 
-`ecosystem.config.cjs` loads `.env` automatically, so normal PM2 restarts pick up local credentials without hardcoded secrets in the tracked config. It runs `winnow watch --interval 10` as a daemon and posts to your channels in real time.
+`ecosystem.config.cjs` loads `.env` automatically, so normal PM2 restarts pick up local credentials without hardcoded secrets in the tracked config. It runs `winnow daemon --interval 10`, which starts scanning, Slack actions, the local API, and mailbox reconciliation.
+
+Scheduled Slack archive digests are intentionally disabled. The legacy `winnow digest` command remains available for manual debugging, while daily analytics should come from `winnow summary` or the local API.
+
+## Local API
+
+The daemon exposes a private local API for the future iOS app. Set `WINNOW_API_TOKEN` in `.env`, then call API routes with `Authorization: Bearer <token>`.
+
+Defaults:
+
+```yaml
+api:
+  host: 127.0.0.1
+  port: 3777
+```
+
+Useful endpoints:
+
+```bash
+curl http://127.0.0.1:3777/health
+curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
+  "http://127.0.0.1:3777/v1/summaries/daily?date=2026-06-29"
+curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
+  "http://127.0.0.1:3777/v1/emails?state=all&limit=50"
+```
 
 ## Contributing
 
