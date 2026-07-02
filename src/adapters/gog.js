@@ -93,7 +93,8 @@ export class GogAdapter extends GmailAdapter {
         'gmail', 'labels', 'list',
         '--account', account,
       ]);
-      const labels = parseJson(stdout);
+      const data = parseJson(stdout);
+      const labels = Array.isArray(data) ? data : (data?.labels || data?.Labels || []);
       const exists = Array.isArray(labels) && labels.some(
         l => (l.name || l.Name || '') === labelName
       );
