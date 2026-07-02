@@ -24,6 +24,7 @@ let client = null;
 let web = null;
 const UNSUBSCRIBE_TIMEOUT_MS = 10000;
 const MAX_UNSUBSCRIBE_REDIRECTS = 5;
+const UNSUBSCRIBE_USER_AGENT = 'Winnow unsubscribe bot (+https://github.com/cameronehrlich/winnow)';
 
 function getTokens() {
   const config = loadConfig();
@@ -191,6 +192,46 @@ function isBlockedHostname(hostname) {
     || host.endsWith('.local');
 }
 
+function splitSetCookieHeader(value) {
+  if (!value) return [];
+  return value.split(/,(?=\s*[^;,=\s]+=[^;,]*)/g).map(cookie => cookie.trim()).filter(Boolean);
+}
+
+function getSetCookieHeaders(headers) {
+  if (typeof headers.getSetCookie === 'function') return headers.getSetCookie();
+  return splitSetCookieHeader(headers.get('set-cookie'));
+}
+
+class UnsubscribeCookieJar {
+  constructor() {
+    this.cookies = new Map();
+  }
+
+  storeFromResponse(url, headers) {
+    const host = normalizedHostname(new URL(url));
+    for (const header of getSetCookieHeaders(headers)) {
+      const [pair] = header.split(';');
+      const eq = pair.indexOf('=');
+      if (eq <= 0) continue;
+      const name = pair.slice(0, eq).trim();
+      const value = pair.slice(eq + 1).trim();
+      if (!name) continue;
+      this.cookies.set(`${host}\t${name}`, { host, name, value });
+    }
+  }
+
+  headerFor(url) {
+    const host = normalizedHostname(new URL(url));
+    const pairs = [];
+    for (const cookie of this.cookies.values()) {
+      if (cookie.host === host || host.endsWith(`.${cookie.host}`)) {
+        pairs.push(`${cookie.name}=${cookie.value}`);
+      }
+    }
+    return pairs.join('; ');
+  }
+}
+
 export async function validateUnsubscribeUrl(unsubscribeLink) {
   const url = new URL(unsubscribeLink);
   if (url.protocol === 'mailto:') return url;
@@ -211,16 +252,24 @@ export async function validateUnsubscribeUrl(unsubscribeLink) {
   return url;
 }
 
-async function safeFetch(urlLike, opts = {}, redirectsRemaining = MAX_UNSUBSCRIBE_REDIRECTS) {
+async function safeFetch(urlLike, opts = {}, redirectsRemaining = MAX_UNSUBSCRIBE_REDIRECTS, cookieJar = null) {
   const url = await validateUnsubscribeUrl(urlLike);
   if (url.protocol === 'mailto:') {
     throw new Error('Unsupported unsubscribe redirect protocol: mailto:');
   }
+  const headers = new Headers(opts.headers || {});
+  if (!headers.has('Accept')) headers.set('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8');
+  if (!headers.has('User-Agent')) headers.set('User-Agent', UNSUBSCRIBE_USER_AGENT);
+  const cookieHeader = cookieJar?.headerFor(url.toString());
+  if (cookieHeader && !headers.has('Cookie')) headers.set('Cookie', cookieHeader);
+
   const res = await fetch(url, {
     ...opts,
+    headers,
     redirect: 'manual',
     signal: AbortSignal.timeout(UNSUBSCRIBE_TIMEOUT_MS),
   });
+  cookieJar?.storeFromResponse(url.toString(), res.headers);
 
   if (res.status >= 300 && res.status < 400) {
     const location = res.headers.get('location');
@@ -234,7 +283,7 @@ async function safeFetch(urlLike, opts = {}, redirectsRemaining = MAX_UNSUBSCRIB
       delete nextOpts.body;
       delete nextOpts.headers;
     }
-    return safeFetch(nextUrl, nextOpts, redirectsRemaining - 1);
+    return safeFetch(nextUrl, nextOpts, redirectsRemaining - 1, cookieJar);
   }
 
   return res;
@@ -262,7 +311,8 @@ export async function followUnsubscribeLink(unsubscribeLink) {
     return { status: 'attempted', method: 'mailto', note: 'Mailto unsubscribe link; manual email required', urlHost: url.hostname };
   }
 
-  const getRes = await safeFetch(url, { method: 'GET' });
+  const cookieJar = new UnsubscribeCookieJar();
+  const getRes = await safeFetch(url, { method: 'GET' }, MAX_UNSUBSCRIBE_REDIRECTS, cookieJar);
   const finalUrl = getRes.url || unsubscribeLink;
   const contentType = getRes.headers.get('content-type') || '';
   const body = contentType.includes('text/html') ? await getRes.text() : '';
@@ -290,11 +340,19 @@ export async function followUnsubscribeLink(unsubscribeLink) {
     target = u.toString();
   }
 
+  const headers = method === 'post'
+    ? {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': new URL(target).origin,
+        'Referer': finalUrl,
+      }
+    : { 'Referer': finalUrl };
+
   const postRes = await safeFetch(target, {
     method: method === 'post' ? 'POST' : 'GET',
-    headers: method === 'post' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : undefined,
+    headers,
     body: method === 'post' ? params.toString() : undefined,
-  });
+  }, MAX_UNSUBSCRIBE_REDIRECTS, cookieJar);
 
   if (!postRes.ok) throw new Error(`Form submit returned HTTP ${postRes.status}`);
   return { status: 'succeeded', method: method === 'post' ? 'form' : 'link', note: `Submitted unsubscribe form (${postRes.status})`, urlHost: safeHostname(target) };
