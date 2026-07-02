@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">🌾 Winnow</h1>
   <p align="center">
-    <strong>AI email triage that lives in Slack, Discord, or wherever you already hang out</strong>
+    <strong>Local AI email triage with Slack actions, SQLite analytics, and a private API</strong>
   </p>
   <p align="center">
     <a href="#quickstart">Quickstart</a> •
@@ -14,9 +14,9 @@
 
 ---
 
-Winnow brings your email into the tools you actually use. Every email posts to Slack (or your messaging platform of choice) as it arrives — triaged by AI, with the noise auto-archived so you only see what matters. It's also a full CLI for managing your inbox from the terminal.
+Winnow is a local email triage daemon. It scans Gmail, classifies messages with AI, archives low-value mail, posts an actionable Slack feed, and records every scan/action in SQLite for summaries and future app clients.
 
-Stop context-switching to Gmail. Let your inbox come to you.
+The current production surface is Slack plus a private localhost API. Discord/Telegram-style targets are planned adapter work, not current behavior.
 
 ```
 #work-email
@@ -34,10 +34,11 @@ Stop context-switching to Gmail. Let your inbox come to you.
 
 ## Why Winnow?
 
-- **Email → Messaging** — Every email appears in Slack, Discord, or your favorite platform. Multiple accounts route to separate channels. Your inbox becomes a feed you can glance at without opening Gmail.
+- **Email → Slack** — Every email can appear in Slack. Multiple accounts route to separate channels. Your inbox becomes a feed you can glance at without opening Gmail.
 - **AI Triage** — Winnow uses Gemini to classify each email: archive it or keep it. Marketing, newsletters, and noise get auto-archived. Important emails stay in your inbox.
 - **Plain-English Rules** — No regex, no filters, no query syntax. Just write what you mean: *"Archive Robinhood statements unless something looks wrong."*
-- **CLI-First** — Scan, triage, add rules, check stats — all from the terminal. Run it as a one-shot command or a background daemon.
+- **CLI + Daemon** — Scan, triage, add rules, check stats, and run an always-on local daemon.
+- **Private API + Analytics** — The daemon exposes a bearer-token localhost API and writes a durable event log to SQLite.
 - **Multi-Account** — Personal and work inboxes, each with their own rules and notification channel. One tool for all your email.
 - **Private** — Runs locally on your machine. Sender, subject, snippet, and a capped message body excerpt go to the AI; credentials and state stay local.
 - **Safe** — Never deletes anything. Only archives. Low-confidence classifications stay in your inbox. Everything is configurable.
@@ -47,17 +48,21 @@ Stop context-switching to Gmail. Let your inbox come to you.
 ### Prerequisites
 
 - **Node.js** 22.5+ (uses built-in SQLite support)
-- **[gog](https://github.com/xlab-si/gog)** — Gmail CLI adapter (handles OAuth)
+- **Homebrew** — Recommended for installing external runtime tools
+- **[gogcli](https://gogcli.sh)** 0.31.1+ — Gmail CLI adapter (handles OAuth)
 - **Gemini API key** — [Get one free](https://aistudio.google.com/apikey)
-- **Slack Bot Token** *(optional but recommended)* — For the email feed
+- **Slack Bot/App Tokens** *(optional but recommended)* — For the email feed and buttons
 
 ### Install
 
 ```bash
 git clone https://github.com/cameronehrlich/winnow.git
 cd winnow
+brew bundle
 npm install
 ```
+
+`brew bundle` installs `gogcli` from the tracked `Brewfile`. If you do not use Homebrew, install `gog` separately and make sure `gog --version` reports `0.31.1` or newer.
 
 ### Configure
 
@@ -83,7 +88,7 @@ slack:
 model:
   name: gemini-2.5-flash
 
-feed: true  # post every email to your messaging platform
+feed: true  # post every processed email to Slack
 
 scan:
   max_messages: 50
@@ -96,12 +101,13 @@ Set credentials in `.env`:
 GEMINI_API_KEY=your_gemini_key
 SLACK_BOT_TOKEN=xoxb-your-token
 SLACK_APP_TOKEN=xapp-your-token
+WINNOW_API_TOKEN=generate-a-long-random-token
 ```
 
 Authenticate your Gmail account(s):
 
 ```bash
-gog auth login you@gmail.com
+gog auth add you@gmail.com --services gmail
 ```
 
 ### Run
@@ -118,6 +124,12 @@ gog auth login you@gmail.com
 
 # Always-on with PM2
 pm2 start ecosystem.config.cjs
+
+# Verify local runtime dependencies and Gmail adapter compatibility
+./bin/winnow doctor
+
+# Verify mailbox/state health
+./bin/winnow check
 ```
 
 Once running, every email shows up in your Slack channel with an emoji indicating what happened:
@@ -136,8 +148,8 @@ Once running, every email shows up in your Slack channel with an emoji indicatin
                       │
                       ▼
               ┌───────────────┐
-              │ Slack/Discord │
-              │  (email feed) │
+              │ Slack + API   │
+              │ feed/events   │
               └───────────────┘
 ```
 
@@ -179,7 +191,7 @@ winnow feed off     # CLI-only mode, no notifications
 winnow feed status  # check current state
 ```
 
-### Notification Platforms
+### Notification Targets
 
 | Platform | Status | How |
 |----------|--------|-----|
@@ -264,7 +276,8 @@ If the AI's confidence is below 70%, the email stays in your inbox no matter wha
 | `winnow rule add <desc> -a <email>` | Add a custom rule |
 | `winnow rule remove <id> -a <email>` | Remove a custom rule |
 | `winnow stats` | Processing statistics and daily breakdown |
-| `winnow check` | Health check — verify everything works |
+| `winnow doctor` | System check — verify Node, `gog`, auth, and JSON compatibility |
+| `winnow check` | Mailbox/state health check |
 | `winnow check --fix` | Auto-fix issues (re-archive stuck emails) |
 | `winnow feed on/off/status` | Toggle the email feed |
 | `winnow alerts on/off/status` | Mute/unmute notifications |
@@ -282,6 +295,7 @@ If the AI's confidence is below 70%, the email stays in your inbox no matter wha
 ```
 winnow/
 ├── bin/winnow              # CLI entrypoint
+├── Brewfile                # External runtime dependencies
 ├── .env                    # Local credentials (gitignored)
 ├── config/
 │   ├── config.yaml         # Main config (gitignored)
@@ -307,10 +321,9 @@ winnow/
 │       └── gog.js          # Gmail adapter via gog CLI
 ├── scripts/                # Optional rule action hooks
 ├── data/
-│   └── state.json          # Processing state (gitignored)
+│   ├── state.json          # Legacy processing state (gitignored)
 │   └── winnow.db           # SQLite feed/event store (gitignored)
-└── test/
-    └── notify.test.js      # Notification tests
+└── test/                   # Node test suite
 ```
 
 ### Gmail Adapters
@@ -319,7 +332,7 @@ Winnow accesses Gmail through a pluggable adapter interface. Swap backends witho
 
 | Adapter | Status | Description |
 |---------|--------|-------------|
-| **[gog](https://github.com/xlab-si/gog)** | ✅ Supported | Google CLI with OAuth. Current default. |
+| **[gogcli](https://gogcli.sh)** | ✅ Supported | Google CLI with OAuth. Current default. Tracked as an external dependency in `Brewfile`. |
 | **[gws](https://github.com/googleworkspace/cli)** | 🔜 Planned | Google's official Workspace CLI. Structured JSON output. |
 | **Gmail API** | 🔜 Planned | Direct Gmail REST API — no CLI dependency. |
 | **IMAP** | 💡 Future | For non-Gmail providers (Outlook, Fastmail, etc.) |
@@ -344,6 +357,15 @@ pm2 startup  # auto-start on boot
 ```
 
 `ecosystem.config.cjs` loads `.env` automatically, so normal PM2 restarts pick up local credentials without hardcoded secrets in the tracked config. It runs `winnow daemon --interval 10`, which starts scanning, Slack actions, the local API, and mailbox reconciliation.
+
+After updating `gogcli`, run:
+
+```bash
+./bin/winnow doctor
+./bin/winnow check
+pm2 restart ecosystem.config.cjs --only winnow-watch --update-env
+pm2 save
+```
 
 Scheduled Slack archive digests are intentionally disabled. The legacy `winnow digest` command remains available for manual debugging, while daily analytics should come from `winnow summary` or the local API.
 
@@ -390,6 +412,9 @@ npm install
 
 # Run tests
 npm test
+
+# Verify runtime dependencies
+./bin/winnow doctor
 
 # Dry-run scan (no Gmail changes)
 ./bin/winnow scan --dry-run

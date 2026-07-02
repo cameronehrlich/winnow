@@ -10,6 +10,7 @@ import { runCheck, autoFix } from './check.js';
 import { archiveEmail, moveEmailToInbox } from './actions.js';
 import { startDaemon } from './daemon.js';
 import { getDailyActionSummary } from './store.js';
+import { runDoctor } from './doctor.js';
 
 const program = new Command();
 
@@ -415,6 +416,20 @@ program
       }
     } catch (err) {
       console.error('❌ Check failed:', err.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('doctor')
+  .description('Verify local runtime dependencies and gog adapter compatibility')
+  .option('-a, --account <email>', 'Specific account to check')
+  .action(async (opts) => {
+    try {
+      const result = await runDoctor({ account: opts.account || '' });
+      if (!result.healthy) process.exit(1);
+    } catch (err) {
+      console.error('Doctor failed:', err.message);
       process.exit(1);
     }
   });
