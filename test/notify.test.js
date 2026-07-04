@@ -7,6 +7,8 @@ import { formatEmailFeedMessage, postEmailFeed } from '../src/notify.js';
 import {
   closeStoreForTests,
   configureDatabaseForTests,
+  listDeliveryRecords,
+  makeEmailItemId,
   recordDelivery,
   upsertEmailItemFromResult,
 } from '../src/store.js';
@@ -31,6 +33,7 @@ afterEach(() => {
   delete process.env.WINNOW_SKIP_LEGACY_IMPORT;
   delete process.env.WINNOW_STATE_PATH;
   delete process.env.WINNOW_CONFIG_PATH;
+  delete process.env.SLACK_BOT_TOKEN;
 });
 
 describe('formatEmailFeedMessage', () => {
@@ -186,5 +189,36 @@ describe('formatEmailFeedMessage', () => {
 
     assert.equal(posted, true);
     assert.equal(fetchCalls, 0);
+  });
+
+  it('stores the resolved Slack channel returned by chat.postMessage', async () => {
+    process.env.SLACK_BOT_TOKEN = 'xoxb-test';
+    upsertEmailItemFromResult({
+      ...base,
+      messageId: 'm-resolved-channel',
+      archive: false,
+    }, {
+      account: base.account,
+      messageId: 'm-resolved-channel',
+      threadId: base.threadId,
+      timestamp: '2026-06-29T16:00:00.000Z',
+    });
+    globalThis.fetch = async () => ({
+      json: async () => ({ ok: true, ts: '1710000002.000000', channel: 'CRESOLVED' }),
+    });
+
+    const posted = await postEmailFeed({
+      ...base,
+      messageId: 'm-resolved-channel',
+      archive: false,
+    });
+
+    assert.equal(posted, true);
+    const deliveries = listDeliveryRecords(
+      makeEmailItemId(base.account, 'm-resolved-channel', base.threadId),
+      'slack',
+    );
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0].channelId, 'CRESOLVED');
   });
 });

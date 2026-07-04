@@ -304,8 +304,13 @@ export function recordUnsubscribe(entry) {
   const existing = normalized.account || normalized.threadId
     ? findEmailItemByGmail({ account: normalized.account, threadId: normalized.threadId })
     : null;
+  const eventType = normalized.status === 'failed'
+    ? 'email.unsubscribe_failed'
+    : normalized.status === 'attempted'
+      ? 'email.unsubscribe_attempted'
+      : 'email.unsubscribed';
   appendEvent({
-    eventType: normalized.status === 'failed' ? 'email.unsubscribe_failed' : 'email.unsubscribed',
+    eventType,
     source: normalized.source || 'manual',
     account: normalized.account || existing?.account || '',
     emailItemId: existing?.id || '',
@@ -326,6 +331,12 @@ export function getUnsubscribes() {
     entries: [],
     daily: {},
   };
+}
+
+export function findUnsubscribeBySourceMessageId(sourceMessageId) {
+  if (!sourceMessageId) return null;
+  const entries = getUnsubscribes().entries || [];
+  return entries.find(entry => entry.sourceMessageId === sourceMessageId) || null;
 }
 
 export function getStats() {

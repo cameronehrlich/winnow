@@ -19,12 +19,20 @@ const LABEL_MAP = {
 };
 
 const ADAPTERS = { gog: GogAdapter };
+const LABEL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 
 function createAdapter() {
   const name = getAdapter();
   const Cls = ADAPTERS[name];
   if (!Cls) throw new Error(`Unknown adapter: ${name}`);
   return new Cls();
+}
+
+function shouldVerifyLabels(state, account) {
+  const value = state.labelsVerified?.[account];
+  if (!value || value === true) return true;
+  const verifiedAt = new Date(value).getTime();
+  return !Number.isFinite(verifiedAt) || (Date.now() - verifiedAt) > LABEL_VERIFICATION_TTL_MS;
 }
 
 function extractUnsubscribeLink(headers) {
@@ -120,14 +128,17 @@ export async function scan(account, opts = {}) {
   // Ensure labels exist (skip if already verified in state)
   if (!dryRun) {
     const state = loadState();
-    if (!state.labelsVerified?.[account]) {
+    if (shouldVerifyLabels(state, account)) {
+      let verified = true;
       for (const label of Object.values(LABEL_MAP)) {
-
-        await adapter.ensureLabel(account, label);
+        const ok = await adapter.ensureLabel(account, label);
+        if (!ok) verified = false;
       }
-      if (!state.labelsVerified) state.labelsVerified = {};
-      state.labelsVerified[account] = true;
-      saveState(state);
+      if (verified) {
+        if (!state.labelsVerified) state.labelsVerified = {};
+        state.labelsVerified[account] = new Date().toISOString();
+        saveState(state);
+      }
     }
   }
 

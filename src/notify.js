@@ -66,7 +66,7 @@ export function getAlertStatus() {
  * @param {string|null} channelOverride - Channel ID override
  * @param {string|null} threadTs - Thread timestamp for replies
  * @param {Array|null} blocks - Block Kit blocks for rich formatting
- * @returns {{ ok: boolean, ts?: string }}
+ * @returns {{ ok: boolean, ts?: string, channelId?: string }}
  */
 async function postToSlackAPI(text, channelOverride = null, threadTs = null, blocks = null) {
   const token = getSlackToken();
@@ -95,7 +95,7 @@ async function postToSlackAPI(text, channelOverride = null, threadTs = null, blo
       console.error(`[winnow] Slack API error: ${data.error}`);
       return { ok: false };
     }
-    return { ok: true, ts: data.ts };
+    return { ok: true, ts: data.ts, channelId: data.channel || channel };
   } catch (err) {
     console.error(`[winnow] Failed to post to Slack: ${err.message}`);
     return { ok: false };
@@ -364,12 +364,6 @@ export function formatEmailFeedMessage(result) {
 export async function postEmailFeed(result) {
   if (isAlertsMuted()) return false;
 
-  const config = reloadConfig(); // re-read so toggle works without restart
-  if (config.feed === false) return false;
-  const feedMode = config.slack?.feed_mode || 'all';
-  if (feedMode === 'off') return false;
-  if (feedMode === 'kept' && result.archive) return false;
-
   const emailItemId = result.emailItemId || makeEmailItemId(result.account, result.messageId, result.threadId);
   const existingDelivery = listDeliveryRecords(emailItemId, 'slack')
     .find(delivery => delivery.deliveryState === 'sent' && delivery.messageTs);
@@ -378,6 +372,12 @@ export async function postEmailFeed(result) {
     return true;
   }
 
+  const config = reloadConfig(); // re-read so toggle works without restart
+  if (config.feed === false) return false;
+  const feedMode = config.slack?.feed_mode || 'all';
+  if (feedMode === 'off') return false;
+  if (feedMode === 'kept' && result.archive) return false;
+
   const { text, blocks } = formatEmailFeedMessage(result);
   const channel = result.account ? getChannelForAccount(result.account) : null;
   const posted = await postToSlackAPI(text, channel, null, blocks);
@@ -385,7 +385,7 @@ export async function postEmailFeed(result) {
     const delivery = recordDelivery({
       emailItemId,
       sink: 'slack',
-      channelId: channel,
+      channelId: posted.channelId || channel || '',
       messageTs: posted.ts,
       deliveryState: 'sent',
       metadata: { feedMode },
@@ -393,7 +393,7 @@ export async function postEmailFeed(result) {
     appendEmailEvent('delivery.slack_posted', { id: emailItemId, account: result.account, messageId: result.messageId, threadId: result.threadId }, {
       source: 'slack',
       reason: 'Posted email feed card',
-      metadata: { deliveryId: delivery.id, channelId: channel, messageTs: posted.ts },
+      metadata: { deliveryId: delivery.id, channelId: posted.channelId || channel || '', messageTs: posted.ts },
     });
   }
 

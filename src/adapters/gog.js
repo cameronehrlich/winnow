@@ -86,7 +86,7 @@ export class GogAdapter extends GmailAdapter {
 
   async ensureLabel(account, labelName) {
     const cacheKey = `${account}:${labelName}`;
-    if (this.#labelCache.has(cacheKey)) return;
+    if (this.#labelCache.has(cacheKey)) return true;
 
     try {
       const { stdout } = await gogExec([
@@ -107,9 +107,11 @@ export class GogAdapter extends GmailAdapter {
         console.log(`[winnow] ✅ Label created: ${labelName}`);
       }
       this.#labelCache.set(cacheKey, true);
+      return true;
     } catch (err) {
       // Don't cache on failure — retry next scan
       console.error(`[winnow] ⚠️ Failed to ensure label "${labelName}": ${err.message}`);
+      return false;
     }
   }
 

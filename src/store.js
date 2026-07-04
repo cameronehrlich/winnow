@@ -683,6 +683,7 @@ export function getDailyActionSummary({ date = localDateString(Date.now()), acco
       restoredToInbox: 0,
       unsubscribedSucceeded: 0,
       unsubscribedFailed: 0,
+      unsubscribedAttempted: 0,
       ephemeral: 0,
       lowConfidenceKept: 0,
     },
@@ -728,6 +729,10 @@ export function getDailyActionSummary({ date = localDateString(Date.now()), acco
     }
     if (event.eventType === 'email.unsubscribe_failed') {
       summary.counters.unsubscribedFailed++;
+      summary.lists.unsubscribed.push(item);
+    }
+    if (event.eventType === 'email.unsubscribe_attempted') {
+      summary.counters.unsubscribedAttempted++;
       summary.lists.unsubscribed.push(item);
     }
   }

@@ -178,7 +178,7 @@ function printSummary(summary) {
   console.log(`  Auto-archived: ${c.autoArchived}`);
   console.log(`  Manually archived: ${c.manualArchived}`);
   console.log(`  Restored to inbox: ${c.restoredToInbox}`);
-  console.log(`  Unsubscribed: ${c.unsubscribedSucceeded} succeeded, ${c.unsubscribedFailed} failed`);
+  console.log(`  Unsubscribed: ${c.unsubscribedSucceeded} succeeded, ${c.unsubscribedFailed} failed, ${c.unsubscribedAttempted} attempted`);
   console.log(`  Ephemeral: ${c.ephemeral}`);
   console.log(`  Low-confidence kept: ${c.lowConfidenceKept}`);
   if (summary.lists.actedOn.length) {

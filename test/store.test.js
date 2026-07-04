@@ -115,4 +115,31 @@ describe('daily action summary', () => {
     assert.equal(records.length, 1);
     assert.equal(records[0].messageTs, '1710000001.000000');
   });
+
+  it('tracks mailto unsubscribe attempts separately from successful unsubscribes', () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com',
+      messageId: 'm-attempted',
+      threadId: 't-attempted',
+      from: 'Sender <sender@example.com>',
+      subject: 'Attempted unsubscribe',
+      archive: true,
+    }, {
+      account: 'me@example.com',
+      messageId: 'm-attempted',
+      threadId: 't-attempted',
+      timestamp: '2026-06-29T16:00:00.000Z',
+    });
+
+    appendEmailEvent('email.unsubscribe_attempted', item, {
+      source: 'test',
+      timestamp: '2026-06-29T19:00:00.000Z',
+    });
+
+    const summary = getDailyActionSummary({ date: '2026-06-29' });
+    assert.equal(summary.counters.unsubscribedSucceeded, 0);
+    assert.equal(summary.counters.unsubscribedFailed, 0);
+    assert.equal(summary.counters.unsubscribedAttempted, 1);
+    assert.equal(summary.lists.unsubscribed.length, 1);
+  });
 });
