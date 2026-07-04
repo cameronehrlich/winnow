@@ -9,3 +9,7 @@ firebase-debug.log
 .env
 .env.*
 !.env.example
+
+# Local rule action hooks can contain personal routing, account IDs, or
+# workspace-specific credentials. Keep reusable examples in docs instead.
+scripts/*.sh

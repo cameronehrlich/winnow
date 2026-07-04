@@ -29,7 +29,7 @@ The current production surface is Slack plus a private localhost API. Discord/Te
 📥 Dr. Smith — Appointment reminder for Friday
 🗂️ Promo — 50% off everything! (archived, 95%)
 📌 USPS — Package delivered to front door (archived)
-📌 Procare — Noa checked in at 8:15am (archived)
+📌 School — Check-in update received (archived)
 ```
 
 ## Why Winnow?
@@ -167,7 +167,7 @@ Some emails are briefly useful but don't need to live in your inbox:
 
 - **🔑 OTP/2FA codes** — Extracted, copied to clipboard, macOS notification, then archived
 - **📌 Delivery updates** — "Package delivered" → posted to your channel, archived
-- **📌 School check-ins** — "Noa checked in at 8:15am" → posted, archived
+- **📌 School check-ins** — "Check-in update received" → posted, archived
 
 ## The Email Feed
 
@@ -235,8 +235,8 @@ rules:
 
   - id: mychart-messages
     match: >-
-      MyChart messages from doctors or care teams should NOT be archived.
-      Only archive MyChart marketing or surveys.
+      Patient portal messages from doctors or care teams should NOT be archived.
+      Only archive portal marketing or surveys.
     archive: false
 ```
 
@@ -319,7 +319,7 @@ winnow/
 │   ├── watch.js            # Real-time watch mode
 │   └── adapters/
 │       └── gog.js          # Gmail adapter via gog CLI
-├── scripts/                # Optional rule action hooks
+├── scripts/                # Optional local action hook docs
 ├── data/
 │   ├── state.json          # Legacy processing state (gitignored)
 │   └── winnow.db           # SQLite feed/event store (gitignored)
@@ -344,6 +344,7 @@ Want to add an adapter? Implement the `GmailAdapter` interface in `src/adapters/
 - **Never delete** — Only archive. Everything is recoverable from Gmail's All Mail.
 - **Capped AI input** — Classification uses sender, subject, snippet, and a bounded body excerpt so summaries are more useful without sending unlimited message content.
 - **Low-confidence = keep** — Below 70% confidence, emails stay in the inbox.
+- **Local hooks stay local** — Rule action hooks can automate personal workflows, so `scripts/*.sh` is ignored by default. See `scripts/README.md`.
 - **Pluggable everything** — Gmail adapters, notification targets, AI models — all swappable.
 
 ## Running with PM2
@@ -408,6 +409,7 @@ Winnow is young and opinionated — contributions are welcome.
 ```bash
 git clone https://github.com/cameronehrlich/winnow.git
 cd winnow
+brew bundle
 npm install
 
 # Run tests
@@ -428,11 +430,12 @@ npm test
 - Keep it simple. Winnow is a CLI, not a platform.
 - Plain English rules are a feature, not a limitation.
 - Privacy-first: no telemetry, no cloud, no accounts.
+- Do not commit local credentials, personal rule files, data stores, logs, or action hooks.
 - When in doubt, don't archive.
 
 ## License
 
-MIT
+MIT. See `LICENSE`.
 
 ---
 

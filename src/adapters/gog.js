@@ -12,7 +12,7 @@ async function gogExec(args) {
       maxBuffer: 10 * 1024 * 1024,
     });
   } catch (e) {
-    if (e.code === 'ENOENT') throw new Error('gog CLI not found. Install it: https://github.com/cameronehrlich/gog');
+    if (e.code === 'ENOENT') throw new Error('gog CLI not found. Install gogcli: https://gogcli.sh');
     throw e;
   }
 }

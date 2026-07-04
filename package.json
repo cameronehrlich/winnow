@@ -1,11 +1,27 @@
 {
   "name": "winnow",
   "version": "1.0.0",
-  "description": "AI email triage CLI — separate the grain from the chaff",
+  "description": "Local AI email triage daemon with Slack actions, SQLite analytics, and a private API",
   "type": "module",
   "bin": {
     "winnow": "./bin/winnow"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cameronehrlich/winnow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cameronehrlich/winnow/issues"
+  },
+  "homepage": "https://github.com/cameronehrlich/winnow#readme",
+  "keywords": [
+    "email",
+    "gmail",
+    "triage",
+    "slack",
+    "ai",
+    "cli"
+  ],
   "engines": {
     "node": ">=22.5.0"
   },

@@ -1,75 +1,69 @@
 rules:
-  - id: amazon-return-confirmations-dropoff-conf
+  - id: retail-return-confirmations
     match: >-
-      Amazon return confirmations, dropoff confirmations, and return request confirmations are low priority. Only keep
-      in inbox if something went wrong (return lost, waiting on action, deadline)
+      Retail return confirmations, dropoff confirmations, and return request confirmations are low priority. Only keep
+      in inbox if something went wrong, such as a lost return, a deadline, or a required follow-up.
     archive: true
-    added: '2026-03-05'
-    source: user
-  - id: robinhood-account-statements-crypto-summ
-    match: Robinhood account statements, crypto summaries, and regulatory document updates
-    archive: true
-    added: '2026-03-05'
-    source: user
-  - id: new-login-or-sign-in-alerts-from-x-twitt
+    source: example
+  - id: account-statements
     match: >-
-      New login or sign-in alerts from X/Twitter, Google, and other services unless the login is from an unusual
-      location, unknown device, or unfamiliar browser
+      Routine account statements, tax documents, and monthly summaries from financial services. Keep in inbox only if
+      the email mentions failed delivery, fraud, an urgent deadline, or required action.
     archive: true
-    added: '2026-03-05'
-    source: user
-  - id: healthequity-hsa-card-transaction-notifi
+    source: example
+  - id: routine-login-alerts
     match: >-
-      HealthEquity HSA card transaction notifications. Only keep in inbox if the email mentions low balance,
-      insufficient funds, or account issues
+      New login or sign-in alerts from services you use, unless the login is from an unusual location, unknown device,
+      or unfamiliar browser.
     archive: true
-    added: '2026-03-05'
-    source: user
-  - id: nextdoor-neighborhood-digest-emails-and-
-    match: Nextdoor neighborhood digest emails and popular posts notifications
+    source: example
+  - id: card-transaction-notifications
+    match: >-
+      Routine card transaction notifications. Keep in inbox only if the message mentions low balance, insufficient
+      funds, fraud, or account issues.
     archive: true
-    added: '2026-03-05'
-    source: user
-  - id: refund-confirmation-and-refund-processed-vdcy
+    source: example
+  - id: neighborhood-digests
+    match: Neighborhood digest emails, popular post notifications, and community roundups.
+    archive: true
+    source: example
+  - id: refund-confirmations
     match: >-
       Refund confirmation and refund processed notifications. Only keep in inbox if the refund failed, was denied, or
-      there was an issue with the refund amount
+      the amount looks wrong.
     archive: true
-    added: '2026-03-05'
-    source: user
-  - id: procare-daily-summaries-and-school-check-10da
+    source: example
+  - id: school-checkins
     match: >-
-      Procare daily summaries and school check-in/check-out notifications for Noa are ephemeral — send a Slack FYI with
-      the sign-in/sign-out times and archive
+      School or childcare check-in/check-out notifications are ephemeral. Post a short FYI if feed notifications are
+      enabled, then archive.
     archive: true
-    added: '2026-03-05'
-    source: user
-  - id: warby-parker-order-confirmations-shippin-gdvu
-    match: Warby Parker order confirmations, shipping updates, and marketing emails
-    archive: true
-    added: '2026-03-05'
-    source: user
-  - id: experian-credit-alerts-and-monitoring-notif
+    source: example
+  - id: order-updates
     match: >-
-      Experian credit file alerts, credit monitoring notifications, and credit score updates unless they mention fraud,
-      identity theft, or unauthorized accounts
+      Routine order confirmations, shipping updates, and delivery notifications. Keep in inbox if there is a failed
+      delivery, damaged shipment, payment issue, or action required.
     archive: true
-    added: '2026-03-07'
-    source: user
-  - id: emails-from-richie-bonilla-or-anyone-at--tg0e
-    match: Emails from Richie Bonilla or anyone at foragemail.com are from a real person and should be kept in inbox
+    source: example
+  - id: credit-monitoring-updates
+    match: >-
+      Credit monitoring notifications and score updates unless they mention fraud, identity theft, unauthorized
+      accounts, or a required dispute.
+    archive: true
+    source: example
+  - id: real-person-known-partners
+    match: >-
+      Emails from known collaborators, vendors, or partners that appear written by a real person should be kept in
+      inbox.
     archive: false
-    added: '2026-03-05'
-    source: user
-  - id: archive-all-emails-from-aisecret-us-doma-zv5v
-    match: Archive all emails from aisecret.us domain (MyClaw Newsletter, AI Secret)
+    source: example
+  - id: newsletters
+    match: Newsletters, product updates, and educational content that are not tied to a current project or deadline.
     archive: true
-    added: '2026-03-09'
-    source: user
-  - id: mychart-messages-from-doctors-providers
+    source: example
+  - id: patient-portal-messages
     match: >-
-      MyChart messages from doctors, providers, or care teams should NOT be archived. These are personal health
-      communications that need attention. Only archive MyChart marketing, surveys, or generic system notifications
+      Patient portal messages from doctors, providers, or care teams should not be archived. Only archive generic
+      marketing, surveys, or system notifications.
     archive: false
-    added: '2026-03-10'
-    source: user
+    source: example
