@@ -73,9 +73,69 @@ export function getAccounts() {
   return accounts.map(a => typeof a === 'string' ? { email: a, channel: null } : a);
 }
 
-export function getAppToken() {
+function readEnv(name) {
+  return name ? process.env[name] || null : null;
+}
+
+function accountForEmail(email) {
+  if (!email) return null;
+  return getAccounts().find(a => a.email === email) || null;
+}
+
+function tokenFromConfig(value, envName, fallbackValue, fallbackEnvName) {
+  return readEnv(envName)
+    || value
+    || readEnv(fallbackEnvName)
+    || fallbackValue
+    || null;
+}
+
+export function getSlackRoutingForAccount(email = '') {
   const config = loadConfig();
-  return config.slack?.app_token || null;
+  const account = accountForEmail(email);
+  const accountSlack = account?.slack || {};
+  const globalSlack = config.slack || {};
+  const hasAccountSlackTokens = Boolean(
+    accountSlack.bot_token
+    || accountSlack.bot_token_env
+    || accountSlack.app_token
+    || accountSlack.app_token_env
+  );
+
+  return {
+    account: email || '',
+    channelId: accountSlack.channel_id || account?.channel || globalSlack.channel_id || null,
+    botToken: hasAccountSlackTokens
+      ? (readEnv(accountSlack.bot_token_env) || accountSlack.bot_token || null)
+      : tokenFromConfig(globalSlack.bot_token, null, null, 'SLACK_BOT_TOKEN'),
+    appToken: hasAccountSlackTokens
+      ? (readEnv(accountSlack.app_token_env) || accountSlack.app_token || null)
+      : tokenFromConfig(globalSlack.app_token, null, null, 'SLACK_APP_TOKEN'),
+  };
+}
+
+export function getSlackActionRoutings() {
+  const routes = [];
+  const seen = new Set();
+
+  const addRoute = (route) => {
+    if (!route.botToken || !route.appToken) return;
+    const key = `${route.botToken}\0${route.appToken}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    routes.push(route);
+  };
+
+  addRoute(getSlackRoutingForAccount(''));
+  for (const account of getAccounts()) {
+    addRoute(getSlackRoutingForAccount(account.email));
+  }
+
+  return routes;
+}
+
+export function getAppToken() {
+  return getSlackRoutingForAccount('').appToken;
 }
 
 export function getAccountEmails() {
@@ -83,10 +143,7 @@ export function getAccountEmails() {
 }
 
 export function getChannelForAccount(email) {
-  const account = getAccounts().find(a => a.email === email);
-  if (account?.channel) return account.channel;
-  // Fall back to global channel
-  return loadConfig().slack?.channel_id || null;
+  return getSlackRoutingForAccount(email).channelId;
 }
 
 export function getAdapter() {

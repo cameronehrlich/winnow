@@ -29,7 +29,7 @@ export async function syncSlackDeliveryForItem(item, reason = 'Mailbox state cha
   const { text, blocks } = formatEmailFeedMessage(itemToResult(item));
   let updated = 0;
   for (const delivery of deliveries) {
-    const result = await updateSlackMessage(delivery.messageTs, delivery.channelId, text, blocks);
+    const result = await updateSlackMessage(delivery.messageTs, delivery.channelId, text, blocks, item.account);
     if (result.ok) updated++;
   }
   return { updated, reason };

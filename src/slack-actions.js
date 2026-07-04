@@ -15,29 +15,21 @@ import { SocketModeClient } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
-import { loadConfig, getAppToken } from './config.js';
+import { getSlackActionRoutings } from './config.js';
 import { findUnsubscribeBySourceMessageId, recordUnsubscribe } from './state.js';
 import { archiveEmail, moveEmailToInbox } from './actions.js';
 import { formatEmailFeedMessage } from './notify.js';
 import { getEmailItem } from './store.js';
 
-let client = null;
-let web = null;
+let clients = [];
 const UNSUBSCRIBE_TIMEOUT_MS = 10000;
 const MAX_UNSUBSCRIBE_REDIRECTS = 5;
 const UNSUBSCRIBE_USER_AGENT = 'Winnow unsubscribe bot (+https://github.com/cameronehrlich/winnow)';
 
-function getTokens() {
-  const config = loadConfig();
-  const botToken = process.env.SLACK_BOT_TOKEN || config.slack?.bot_token;
-  const appToken = process.env.SLACK_APP_TOKEN || getAppToken();
-  return { botToken, appToken };
-}
-
 /**
  * Update a Slack message in-place — replaces buttons with a done state.
  */
-async function updateMessage(channelId, ts, text, blocks = null) {
+async function updateMessage(web, channelId, ts, text, blocks = null) {
   if (!web) return;
   try {
     await web.chat.update({
@@ -56,8 +48,8 @@ async function updateMessage(channelId, ts, text, blocks = null) {
   }
 }
 
-async function markMessageDone(channelId, ts, text) {
-  return updateMessage(channelId, ts, text);
+async function markMessageDone(web, channelId, ts, text) {
+  return updateMessage(web, channelId, ts, text);
 }
 
 function itemToSlackResult(item) {
@@ -80,10 +72,10 @@ function itemToSlackResult(item) {
   };
 }
 
-async function updateMessageFromItem(channelId, ts, item) {
+async function updateMessageFromItem(web, channelId, ts, item) {
   if (!item) return;
   const { text, blocks } = formatEmailFeedMessage(itemToSlackResult(item));
-  await updateMessage(channelId, ts, text, blocks);
+  await updateMessage(web, channelId, ts, text, blocks);
 }
 
 function resolveActionEmailData(data) {
@@ -100,7 +92,7 @@ function resolveActionEmailData(data) {
   };
 }
 
-async function handleArchive(payload, action) {
+async function handleArchive(web, payload, action) {
   const data = resolveActionEmailData(JSON.parse(action.value));
   const { threadId, account } = data;
   const channelId = payload.channel?.id;
@@ -119,14 +111,14 @@ async function handleArchive(payload, action) {
       reason: 'Slack Archive button',
     });
 
-    await updateMessageFromItem(channelId, ts, updated);
+    await updateMessageFromItem(web, channelId, ts, updated);
     console.log(`[winnow/actions] Archived ✓`);
   } catch (err) {
     console.error(`[winnow/actions] Archive failed: ${err.message}`);
   }
 }
 
-async function handleUnarchive(payload, action) {
+async function handleUnarchive(web, payload, action) {
   const data = resolveActionEmailData(JSON.parse(action.value));
   const { threadId, account } = data;
   const channelId = payload.channel?.id;
@@ -143,7 +135,7 @@ async function handleUnarchive(payload, action) {
       reason: 'Slack Move to Inbox button',
     });
 
-    await updateMessageFromItem(channelId, ts, updated);
+    await updateMessageFromItem(web, channelId, ts, updated);
     console.log(`[winnow/actions] Moved to inbox ✓`);
   } catch (err) {
     console.error(`[winnow/actions] Unarchive failed: ${err.message}`);
@@ -379,7 +371,7 @@ export async function followUnsubscribeLink(unsubscribeLink) {
   return { status: 'succeeded', method: method === 'post' ? 'form' : 'link', note: `Submitted unsubscribe form (${postRes.status})`, urlHost: safeHostname(target) };
 }
 
-async function handleUnsubscribe(payload, action) {
+async function handleUnsubscribe(web, payload, action) {
   const data = resolveActionEmailData(JSON.parse(action.value));
   const channelId = payload.channel?.id;
   const ts = payload.message?.ts;
@@ -390,7 +382,7 @@ async function handleUnsubscribe(payload, action) {
   try {
     const existing = findUnsubscribeBySourceMessageId(ts);
     if (existing && existing.status !== 'failed') {
-      await markMessageDone(channelId, ts, `🚫 ${cleanSubject}\n_Already unsubscribed_`);
+      await markMessageDone(web, channelId, ts, `🚫 ${cleanSubject}\n_Already unsubscribed_`);
       console.log('[winnow/actions] Unsubscribe already recorded for this Slack card; skipping duplicate request');
       return;
     }
@@ -413,7 +405,7 @@ async function handleUnsubscribe(payload, action) {
     const statusText = result.status === 'attempted'
       ? '_Manual unsubscribe required_'
       : '_Unsubscribed_';
-    await markMessageDone(channelId, ts, `🚫 ${cleanSubject}\n${statusText}`);
+    await markMessageDone(web, channelId, ts, `🚫 ${cleanSubject}\n${statusText}`);
     console.log(`[winnow/actions] Unsubscribed ✓`);
   } catch (err) {
     recordUnsubscribe({
@@ -428,71 +420,73 @@ async function handleUnsubscribe(payload, action) {
       sourceMessageId: ts,
       urlHost: data.unsubscribeLink ? safeHostname(data.unsubscribeLink) : '',
     });
-    await markMessageDone(channelId, ts, `⚠️ ${cleanSubject}\n_Unsubscribe failed: ${err.message}_`);
+    await markMessageDone(web, channelId, ts, `⚠️ ${cleanSubject}\n_Unsubscribe failed: ${err.message}_`);
     console.error(`[winnow/actions] Unsubscribe failed: ${err.message}`);
   }
 }
 
 /**
  * Start the Socket Mode action listener.
- * Returns the client so watch.js can shut it down cleanly.
+ * Returns the clients so watch.js can shut them down cleanly.
  */
 export async function startActionListener() {
-  const { botToken, appToken } = getTokens();
+  const routes = getSlackActionRoutings();
 
-  if (!appToken) {
-    console.warn('[winnow/actions] No SLACK_APP_TOKEN — button actions disabled');
-    return null;
-  }
-  if (!botToken) {
-    console.warn('[winnow/actions] No slack bot_token — button actions disabled');
-    return null;
+  if (!routes.length) {
+    console.warn('[winnow/actions] No Slack app+bot token pair configured — button actions disabled');
+    return [];
   }
 
-  web = new WebClient(botToken);
-  client = new SocketModeClient({ appToken, logLevel: 'warn' });
+  clients = [];
+  for (const route of routes) {
+    const web = new WebClient(route.botToken);
+    const client = new SocketModeClient({ appToken: route.appToken, logLevel: 'warn' });
+    const label = route.account || 'default';
 
-  client.on('connecting', () => console.log('[winnow/actions] Socket Mode connecting...'));
-  client.on('connected', () => console.log('[winnow/actions] Socket Mode connected ✓'));
-  client.on('reconnecting', () => console.log('[winnow/actions] Socket Mode reconnecting...'));
-  client.on('disconnected', (err) => console.log(`[winnow/actions] Socket Mode disconnected${err ? ': ' + err.message : ''}`));
+    client.on('connecting', () => console.log(`[winnow/actions] Socket Mode connecting (${label})...`));
+    client.on('connected', () => console.log(`[winnow/actions] Socket Mode connected (${label}) ✓`));
+    client.on('reconnecting', () => console.log(`[winnow/actions] Socket Mode reconnecting (${label})...`));
+    client.on('disconnected', (err) => console.log(`[winnow/actions] Socket Mode disconnected (${label})${err ? ': ' + err.message : ''}`));
 
-  client.on('interactive', async ({ body, ack }) => {
-    // Ack immediately — Slack requires <3s response
-    try { await ack(); } catch (ackErr) {
-      console.error(`[winnow/actions] ack() failed: ${ackErr.message}`);
-    }
-
-    if (!body || body.type !== 'block_actions') return;
-
-    for (const action of body.actions || []) {
-      try {
-        if (action.action_id === 'winnow_archive') {
-          await handleArchive(body, action);
-        } else if (action.action_id === 'winnow_unarchive') {
-          await handleUnarchive(body, action);
-        } else if (action.action_id === 'winnow_unsubscribe') {
-          await handleUnsubscribe(body, action);
-        } else if (action.action_id === 'winnow_test') {
-          const channelId = body.channel?.id;
-          const ts = body.message?.ts;
-          await markMessageDone(channelId, ts, '✅ Button routing works! Actions are live.');
-          console.log('[winnow/actions] Test button confirmed ✓');
-        }
-      } catch (err) {
-        console.error(`[winnow/actions] Error handling ${action.action_id}: ${err.message}`);
+    client.on('interactive', async ({ body, ack }) => {
+      // Ack immediately — Slack requires <3s response
+      try { await ack(); } catch (ackErr) {
+        console.error(`[winnow/actions] ack() failed (${label}): ${ackErr.message}`);
       }
-    }
-  });
 
-  await client.start();
-  console.log('[winnow/actions] Socket Mode action listener started');
-  return client;
+      if (!body || body.type !== 'block_actions') return;
+
+      for (const action of body.actions || []) {
+        try {
+          if (action.action_id === 'winnow_archive') {
+            await handleArchive(web, body, action);
+          } else if (action.action_id === 'winnow_unarchive') {
+            await handleUnarchive(web, body, action);
+          } else if (action.action_id === 'winnow_unsubscribe') {
+            await handleUnsubscribe(web, body, action);
+          } else if (action.action_id === 'winnow_test') {
+            const channelId = body.channel?.id;
+            const ts = body.message?.ts;
+            await markMessageDone(web, channelId, ts, '✅ Button routing works! Actions are live.');
+            console.log(`[winnow/actions] Test button confirmed (${label}) ✓`);
+          }
+        } catch (err) {
+          console.error(`[winnow/actions] Error handling ${action.action_id} (${label}): ${err.message}`);
+        }
+      }
+    });
+
+    await client.start();
+    clients.push(client);
+  }
+
+  console.log(`[winnow/actions] Socket Mode action listener started for ${clients.length} Slack app${clients.length === 1 ? '' : 's'}`);
+  return clients;
 }
 
 export async function stopActionListener() {
-  if (client) {
+  for (const client of clients) {
     await client.disconnect();
-    client = null;
   }
+  clients = [];
 }

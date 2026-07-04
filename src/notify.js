@@ -1,18 +1,15 @@
-import { loadConfig, reloadConfig, getChannelForAccount } from './config.js';
+import { reloadConfig, getSlackRoutingForAccount } from './config.js';
 import { loadState, saveState } from './state.js';
 import { appendEmailEvent, listDeliveryRecords, makeEmailItemId, recordDelivery } from './store.js';
 
 const SLACK_API_URL = 'https://slack.com/api/chat.postMessage';
 
-function getSlackToken() {
-  if (process.env.SLACK_BOT_TOKEN) return process.env.SLACK_BOT_TOKEN;
-  const config = loadConfig();
-  return config.slack?.bot_token || null;
+function getSlackToken(account = '') {
+  return getSlackRoutingForAccount(account).botToken;
 }
 
-function getChannelId() {
-  const config = loadConfig();
-  return config.slack?.channel_id || null;
+function getChannelId(account = '') {
+  return getSlackRoutingForAccount(account).channelId;
 }
 
 // ── Alert muting ──────────────────────────────────────────────
@@ -68,9 +65,9 @@ export function getAlertStatus() {
  * @param {Array|null} blocks - Block Kit blocks for rich formatting
  * @returns {{ ok: boolean, ts?: string, channelId?: string }}
  */
-async function postToSlackAPI(text, channelOverride = null, threadTs = null, blocks = null) {
-  const token = getSlackToken();
-  const channel = channelOverride || getChannelId();
+async function postToSlackAPI(text, channelOverride = null, threadTs = null, blocks = null, account = '') {
+  const token = getSlackToken(account);
+  const channel = channelOverride || getChannelId(account);
 
   if (!token || !channel) {
     console.log('[winnow] No Slack bot token or channel configured — skipping notification');
@@ -109,8 +106,8 @@ async function postToSlackAPI(text, channelOverride = null, threadTs = null, blo
  * @param {string} text - New fallback text
  * @param {Array|null} blocks - New Block Kit blocks
  */
-export async function updateSlackMessage(ts, channelId, text, blocks = null) {
-  const token = getSlackToken();
+export async function updateSlackMessage(ts, channelId, text, blocks = null, account = '') {
+  const token = getSlackToken(account);
   if (!token) return { ok: false };
 
   try {
@@ -378,8 +375,8 @@ export async function postEmailFeed(result) {
   if (feedMode === 'kept' && result.archive) return false;
 
   const { text, blocks } = formatEmailFeedMessage(result);
-  const channel = result.account ? getChannelForAccount(result.account) : null;
-  const posted = await postToSlackAPI(text, channel, null, blocks);
+  const channel = result.account ? getChannelId(result.account) : null;
+  const posted = await postToSlackAPI(text, channel, null, blocks, result.account || '');
   if (posted.ok) {
     const delivery = recordDelivery({
       emailItemId,

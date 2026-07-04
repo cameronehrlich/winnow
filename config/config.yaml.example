@@ -1,13 +1,23 @@
 # Winnow configuration
 accounts:
-  - you@example.com
+  - email: you@example.com
+    channel: C0PERSONAL_EMAIL
+
+  # Optional: route one Gmail account to a different Slack workspace/app.
+  # Keep tokens in .env and reference their variable names here.
+  - email: work@example.com
+    slack:
+      channel_id: C0WORK_EMAIL
+      bot_token_env: WORK_SLACK_BOT_TOKEN
+      app_token_env: WORK_SLACK_APP_TOKEN
 
 # Gmail adapter: "gog" (default) or "google-workspace" (future)
 adapter: gog
 
 # Slack notifications
 slack:
-  # Set SLACK_BOT_TOKEN and SLACK_APP_TOKEN in .env (preferred) or put tokens here
+  # Set SLACK_BOT_TOKEN and SLACK_APP_TOKEN in .env (preferred) or put tokens here.
+  # Account-level slack.bot_token_env/app_token_env overrides these for separate workspaces.
   bot_token: ""
   app_token: ""
   channel_id: "YOUR_CHANNEL_ID"

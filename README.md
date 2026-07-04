@@ -77,6 +77,11 @@ Edit `config/config.yaml`:
 accounts:
   - email: you@gmail.com
     channel: C0YOUR_CHANNEL  # Slack channel for this account's emails
+  - email: work@example.com
+    slack:
+      channel_id: C0WORK_CHANNEL
+      bot_token_env: WORK_SLACK_BOT_TOKEN
+      app_token_env: WORK_SLACK_APP_TOKEN
 
 adapter: gog
 
@@ -84,6 +89,7 @@ slack:
   bot_token: ""                  # prefer SLACK_BOT_TOKEN in .env
   app_token: ""                  # prefer SLACK_APP_TOKEN in .env for button actions
   channel_id: C0DEFAULT_CHANNEL  # fallback channel for accounts without a channel
+  # account-level slack tokens override these for separate workspaces
 
 model:
   name: gemini-2.5-flash
@@ -101,6 +107,8 @@ Set credentials in `.env`:
 GEMINI_API_KEY=your_gemini_key
 SLACK_BOT_TOKEN=xoxb-your-token
 SLACK_APP_TOKEN=xapp-your-token
+WORK_SLACK_BOT_TOKEN=xoxb-your-workspace-token
+WORK_SLACK_APP_TOKEN=xapp-your-workspace-token
 WINNOW_API_TOKEN=generate-a-long-random-token
 ```
 
@@ -181,7 +189,15 @@ accounts:
     channel: C0PERSONAL    # → #personal-email
   - email: work@company.com
     channel: C0WORK        # → #work-email
+  - email: partner@example.com
+    slack:
+      channel_id: C0PARTNER
+      bot_token_env: PARTNER_SLACK_BOT_TOKEN
+      app_token_env: PARTNER_SLACK_APP_TOKEN
 ```
+
+For a separate Slack workspace, configure account-level `slack.bot_token_env` and `slack.app_token_env`.
+Posting only needs the bot token; button actions need a Socket Mode app token for that workspace too.
 
 Toggle the feed on or off anytime:
 
