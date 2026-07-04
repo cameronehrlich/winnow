@@ -241,6 +241,14 @@ function actionBlock(buttons) {
   return { type: 'actions', elements: buttons };
 }
 
+function actionPayload(result, keys) {
+  const payload = {};
+  for (const key of keys) {
+    if (result[key]) payload[key] = result[key];
+  }
+  return JSON.stringify(payload);
+}
+
 /**
  * Build Block Kit blocks for a kept-inbox email.
  * Subject is already a Gmail link — one compact Archive button, no redundant Open button.
@@ -264,13 +272,7 @@ function buildInboxBlocks(result) {
       actionButton(
         'winnow_archive',
         'Archive',
-        JSON.stringify({
-          threadId: result.threadId,
-          account: result.account,
-          unsubscribeLink: result.unsubscribeLink,
-          from: result.from,
-          subject: result.subject,
-        }),
+        actionPayload(result, ['emailItemId', 'threadId', 'account']),
         'danger',
       ),
     ]));
@@ -293,21 +295,18 @@ function buildArchivedBlocks(text, result) {
     buttons.push(actionButton(
       'winnow_unarchive',
       'Move to Inbox',
-      JSON.stringify({ threadId: result.threadId, account: result.account }),
+      actionPayload(result, ['emailItemId', 'threadId', 'account']),
     ));
   }
 
   if (result.unsubscribeLink) {
+    const payloadKeys = result.emailItemId
+      ? ['emailItemId', 'threadId', 'account']
+      : ['threadId', 'account', 'unsubscribeLink', 'from', 'subject'];
     buttons.push(actionButton(
       'winnow_unsubscribe',
       'Unsubscribe',
-      JSON.stringify({
-        threadId: result.threadId,
-        account: result.account,
-        unsubscribeLink: result.unsubscribeLink,
-        from: result.from,
-        subject: result.subject,
-      }),
+      actionPayload(result, payloadKeys),
       'danger',
     ));
   }

@@ -156,6 +156,30 @@ describe('formatEmailFeedMessage', () => {
     assert.ok(blockText.includes('&lt;https://evil.example¦Click me&gt; now'));
   });
 
+  it('keeps Slack button payloads compact when unsubscribe URLs are long', () => {
+    const longUnsubscribeLink = `https://unsubscribe.example.test/${'x'.repeat(3000)}`;
+    const msg = formatEmailFeedMessage({
+      ...base,
+      emailItemId: 'email-item-123',
+      archive: true,
+      unsubscribeLink: longUnsubscribeLink,
+      from: `"${'Sender '.repeat(100)}" <sender@example.com>`,
+      subject: 'Important '.repeat(200),
+    });
+
+    const actions = msg.blocks.find(block => block.type === 'actions');
+    assert.ok(actions);
+    const unsubscribe = actions.elements.find(element => element.action_id === 'winnow_unsubscribe');
+    assert.ok(unsubscribe);
+    assert.ok(unsubscribe.value.length < 2000);
+    assert.deepEqual(JSON.parse(unsubscribe.value), {
+      emailItemId: 'email-item-123',
+      threadId: base.threadId,
+      account: base.account,
+    });
+    assert.ok(!unsubscribe.value.includes(longUnsubscribeLink));
+  });
+
   it('does not post a second Slack card when a sent delivery record already exists', async () => {
     const item = upsertEmailItemFromResult({
       ...base,

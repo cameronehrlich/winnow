@@ -4,8 +4,10 @@ import { formatEmailFeedMessage, updateSlackMessage } from './notify.js';
 
 function itemToResult(item) {
   return {
+    emailItemId: item.id,
     account: item.account,
     threadId: item.threadId,
+    messageId: item.messageId,
     from: item.from,
     subject: item.subject,
     summary: item.summary,

@@ -19,6 +19,7 @@ import { loadConfig, getAppToken } from './config.js';
 import { findUnsubscribeBySourceMessageId, recordUnsubscribe } from './state.js';
 import { archiveEmail, moveEmailToInbox } from './actions.js';
 import { formatEmailFeedMessage } from './notify.js';
+import { getEmailItem } from './store.js';
 
 let client = null;
 let web = null;
@@ -61,6 +62,7 @@ async function markMessageDone(channelId, ts, text) {
 
 function itemToSlackResult(item) {
   return {
+    emailItemId: item.id,
     account: item.account,
     threadId: item.threadId,
     messageId: item.messageId,
@@ -84,8 +86,22 @@ async function updateMessageFromItem(channelId, ts, item) {
   await updateMessage(channelId, ts, text, blocks);
 }
 
+function resolveActionEmailData(data) {
+  const item = data.emailItemId ? getEmailItem(data.emailItemId) : null;
+  return {
+    ...data,
+    account: data.account || item?.account || '',
+    threadId: data.threadId || item?.threadId || '',
+    messageId: data.messageId || item?.messageId || '',
+    from: data.from || item?.from || '',
+    subject: data.subject || item?.subject || '',
+    unsubscribeLink: data.unsubscribeLink || item?.unsubscribeLink || '',
+    item,
+  };
+}
+
 async function handleArchive(payload, action) {
-  const data = JSON.parse(action.value);
+  const data = resolveActionEmailData(JSON.parse(action.value));
   const { threadId, account } = data;
   const channelId = payload.channel?.id;
   const ts = payload.message?.ts;
@@ -95,6 +111,8 @@ async function handleArchive(payload, action) {
     const updated = await archiveEmail({
       account,
       threadId,
+      messageId: data.messageId,
+      emailItemId: data.emailItemId,
       source: 'slack',
       from: data.from,
       subject: data.subject,
@@ -109,7 +127,8 @@ async function handleArchive(payload, action) {
 }
 
 async function handleUnarchive(payload, action) {
-  const { threadId, account } = JSON.parse(action.value);
+  const data = resolveActionEmailData(JSON.parse(action.value));
+  const { threadId, account } = data;
   const channelId = payload.channel?.id;
   const ts = payload.message?.ts;
 
@@ -118,6 +137,8 @@ async function handleUnarchive(payload, action) {
     const updated = await moveEmailToInbox({
       account,
       threadId,
+      messageId: data.messageId,
+      emailItemId: data.emailItemId,
       source: 'slack',
       reason: 'Slack Move to Inbox button',
     });
@@ -359,7 +380,7 @@ export async function followUnsubscribeLink(unsubscribeLink) {
 }
 
 async function handleUnsubscribe(payload, action) {
-  const data = JSON.parse(action.value);
+  const data = resolveActionEmailData(JSON.parse(action.value));
   const channelId = payload.channel?.id;
   const ts = payload.message?.ts;
   const subjectText = payload.message?.blocks?.[0]?.text?.text || '(email)';
@@ -374,6 +395,7 @@ async function handleUnsubscribe(payload, action) {
       return;
     }
 
+    if (!data.unsubscribeLink) throw new Error('No unsubscribe link on this email');
     const result = await followUnsubscribeLink(data.unsubscribeLink);
     recordUnsubscribe({
       sender: data.from || cleanSubject,
