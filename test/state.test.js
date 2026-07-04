@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadState, recordUnsubscribe } from '../src/state.js';
+import { claimProcessing, loadState, markProcessed, recordUnsubscribe, releaseProcessing } from '../src/state.js';
 import {
   closeStoreForTests,
   configureDatabaseForTests,
@@ -67,5 +67,25 @@ describe('unsubscribe state tracking', () => {
     assert.equal(second.id, first.id);
     assert.equal(entries[0].timestamp, '2026-06-29T17:00:00.000Z');
     assert.equal(listEvents({ limit: 10 }).length, 1);
+  });
+});
+
+describe('processing claims', () => {
+  it('claims a message once and clears the claim after markProcessed', () => {
+    assert.equal(claimProcessing('m-claim'), true);
+    assert.equal(claimProcessing('m-claim'), false);
+
+    markProcessed('m-claim', { archive: false, confidence: 80 });
+
+    const state = loadState();
+    assert.ok(state.processedIds.includes('m-claim'));
+    assert.equal(state.processingIds['m-claim'], undefined);
+    assert.equal(claimProcessing('m-claim'), false);
+  });
+
+  it('releases an in-flight claim after failure paths', () => {
+    assert.equal(claimProcessing('m-release'), true);
+    assert.equal(releaseProcessing('m-release'), true);
+    assert.equal(claimProcessing('m-release'), true);
   });
 });

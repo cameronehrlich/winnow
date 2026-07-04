@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { formatEmailFeedMessage, postEmailFeed } from '../src/notify.js';
@@ -18,6 +18,8 @@ beforeEach(() => {
   process.env.WINNOW_SKIP_LEGACY_IMPORT = '1';
   tempDir = mkdtempSync(join(tmpdir(), 'winnow-notify-'));
   process.env.WINNOW_STATE_PATH = join(tempDir, 'state.json');
+  process.env.WINNOW_CONFIG_PATH = join(tempDir, 'config.yaml');
+  writeFileSync(process.env.WINNOW_CONFIG_PATH, 'slack:\n  channel_id: C123\n');
   configureDatabaseForTests(join(tempDir, 'winnow.db'));
   originalFetch = globalThis.fetch;
 });
@@ -28,6 +30,7 @@ afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true });
   delete process.env.WINNOW_SKIP_LEGACY_IMPORT;
   delete process.env.WINNOW_STATE_PATH;
+  delete process.env.WINNOW_CONFIG_PATH;
 });
 
 describe('formatEmailFeedMessage', () => {

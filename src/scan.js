@@ -4,7 +4,7 @@ import { GogAdapter } from './adapters/gog.js';
 import { classifyEmail } from './classify.js';
 import { loadConfig, getAdapter } from './config.js';
 import { loadAllRules } from './rules.js';
-import { loadState, saveState, isProcessed, markProcessed, pruneOldResults } from './state.js';
+import { loadState, saveState, isProcessed, markProcessed, pruneOldResults, claimProcessing, releaseProcessing } from './state.js';
 import { postEmailFeed } from './notify.js';
 import { maybeSendPushForEmail } from './push.js';
 import { appendEmailEvent, upsertEmailItemFromResult } from './store.js';
@@ -98,12 +98,19 @@ async function getUnsubscribeLink(adapter, account, msg, fullMessage = null) {
 }
 
 export async function scan(account, opts = {}) {
-  const config = loadConfig();
-  const adapter = createAdapter();
+  const config = opts.config || loadConfig();
+  const adapter = opts.adapter || createAdapter();
+  const classify = opts.classifyEmailFn || classifyEmail;
+  const postFeed = opts.postEmailFeedFn || postEmailFeed;
+  const sendPush = opts.maybeSendPushFn || maybeSendPushForEmail;
+  const runHooksFn = opts.runActionHooksFn || runActionHooks;
   const searchQuery = opts.searchQuery || config.scan?.search_query || 'in:inbox is:unread newer_than:1d';
   const maxMessages = config.scan?.max_messages || 50;
   const dryRun = opts.dryRun || false;
   const skipProcessedCheck = opts.skipProcessedCheck || false;
+  const shouldRunHooks = opts.runHooks ?? true;
+  const shouldPostToFeed = opts.postToFeed ?? true;
+  const shouldSendPush = opts.sendPush ?? true;
 
   let totalProcessed = 0;
   let results = [];
@@ -132,92 +139,106 @@ export async function scan(account, opts = {}) {
     if (!skipProcessedCheck && isProcessed(messageKey)) {
       continue;
     }
+    if (!skipProcessedCheck && !claimProcessing(messageKey)) {
+      continue;
+    }
 
-    console.log(`[winnow] Classifying: ${msg.subject || '(no subject)'}`);
+    try {
+      console.log(`[winnow] Classifying: ${msg.subject || '(no subject)'}`);
 
-    const fullMessage = await getFullMessage(adapter, account, msg);
-    const enrichedMsg = enrichMessageFromFull(msg, fullMessage);
-    const classification = await classifyEmail(enrichedMsg, { account });
-    const unsubscribeLink = await getUnsubscribeLink(adapter, account, enrichedMsg, fullMessage);
+      const fullMessage = await getFullMessage(adapter, account, msg);
+      const enrichedMsg = enrichMessageFromFull(msg, fullMessage);
+      const classification = await classify(enrichedMsg, { account });
+      const unsubscribeLink = await getUnsubscribeLink(adapter, account, enrichedMsg, fullMessage);
 
-    const result = {
-      ...classification,
-      from: enrichedMsg.from,
-      subject: enrichedMsg.subject,
-      snippet: enrichedMsg.snippet,
-      threadId: msg.threadId,
-      unsubscribeLink,
-      account,
-    };
+      const result = {
+        ...classification,
+        from: enrichedMsg.from,
+        subject: enrichedMsg.subject,
+        snippet: enrichedMsg.snippet,
+        threadId: msg.threadId,
+        unsubscribeLink,
+        account,
+      };
 
-    if (dryRun) {
-      const action = result.archive ? 'ARCHIVE' : 'KEEP';
-      console.log(`  → ${action} (${result.confidence}%) — ${result.summary}`);
-    } else {
-      if (result.archive) {
-        // Archive + mark read + label
-        await adapter.modifyLabels(account, msg.threadId, {
-          add: [LABEL_MAP.archived],
-          remove: ['INBOX', 'UNREAD'],
-        });
-      }
-      // Non-archived emails: leave completely untouched in inbox
-
-      // Ephemeral emails: local actions + auto-archive
-      if (result.ephemeral) {
-        if (result.extractedCode) {
-          // OTP/2FA: copy code to clipboard + macOS notification
-          await copyToClipboardAndNotify(result.extractedCode, result.from, result.subject);
-        }
-        // Ensure ephemeral emails are archived
-        if (!result.archive) {
-          console.log(`[winnow] Ephemeral email — auto-archiving`);
+      if (dryRun) {
+        const action = result.archive ? 'ARCHIVE' : 'KEEP';
+        console.log(`  → ${action} (${result.confidence}%) — ${result.summary}`);
+      } else {
+        if (result.archive) {
+          // Archive + mark read + label
           await adapter.modifyLabels(account, msg.threadId, {
             add: [LABEL_MAP.archived],
             remove: ['INBOX', 'UNREAD'],
           });
-          result.archive = true;
+        }
+        // Non-archived emails: leave completely untouched in inbox
+
+        // Ephemeral emails: local actions + auto-archive
+        if (result.ephemeral) {
+          if (result.extractedCode) {
+            // OTP/2FA: copy code to clipboard + macOS notification
+            await copyToClipboardAndNotify(result.extractedCode, result.from, result.subject);
+          }
+          // Ensure ephemeral emails are archived
+          if (!result.archive) {
+            console.log(`[winnow] Ephemeral email — auto-archiving`);
+            await adapter.modifyLabels(account, msg.threadId, {
+              add: [LABEL_MAP.archived],
+              remove: ['INBOX', 'UNREAD'],
+            });
+            result.archive = true;
+          }
+        }
+
+        markProcessed(messageKey, result);
+        const item = upsertEmailItemFromResult(result, {
+          account,
+          messageId: messageKey,
+          threadId: msg.threadId,
+          timestamp: new Date().toISOString(),
+        });
+        result.emailItemId = item.id;
+        result.messageId = messageKey;
+        appendEmailEvent('email.scanned', item, { source: 'scan', reason: result.reason });
+        appendEmailEvent(result.archive ? 'email.auto_archived' : 'email.kept', item, {
+          source: 'scan',
+          reason: result.reason,
+          metadata: { confidence: result.confidence, ephemeral: Boolean(result.ephemeral) },
+        });
+
+        let hookResult = { suppressFeed: false, triggeredRules: [] };
+        if (shouldRunHooks) {
+          hookResult = await runHooksFn(enrichedMsg, result, account);
+          for (const ruleId of hookResult.triggeredRules || []) {
+            appendEmailEvent('email.action_hook_ran', item, {
+              source: 'action_hook',
+              reason: ruleId,
+              metadata: { ruleId },
+            });
+          }
+        }
+
+        if (shouldSendPush) {
+          await sendPush(item);
+        }
+
+        // Post to Slack feed (every email, regardless of action)
+        if (!shouldPostToFeed) {
+          console.log('[winnow] Feed posting disabled for this scan run');
+        } else if (hookResult.suppressFeed) {
+          console.log('[winnow] Action hook suppressed generic Slack feed for this email');
+        } else {
+          await postFeed(result);
         }
       }
 
-      markProcessed(messageKey, result);
-      const item = upsertEmailItemFromResult(result, {
-        account,
-        messageId: messageKey,
-        threadId: msg.threadId,
-        timestamp: new Date().toISOString(),
-      });
-      result.emailItemId = item.id;
-      result.messageId = messageKey;
-      appendEmailEvent('email.scanned', item, { source: 'scan', reason: result.reason });
-      appendEmailEvent(result.archive ? 'email.auto_archived' : 'email.kept', item, {
-        source: 'scan',
-        reason: result.reason,
-        metadata: { confidence: result.confidence, ephemeral: Boolean(result.ephemeral) },
-      });
-
-      // Run any matching rule action hooks
-      const hookResult = await runActionHooks(enrichedMsg, result, account);
-      for (const ruleId of hookResult.triggeredRules || []) {
-        appendEmailEvent('email.action_hook_ran', item, {
-          source: 'action_hook',
-          reason: ruleId,
-          metadata: { ruleId },
-        });
-      }
-
-      await maybeSendPushForEmail(item);
-
-      // Post to Slack feed (every email, regardless of action)
-      if (hookResult.suppressFeed) {
-        console.log('[winnow] Action hook suppressed generic Slack feed for this email');
-      } else {
-        await postEmailFeed(result);
-      }
+      results.push(result);
+      totalProcessed++;
+    } catch (err) {
+      if (!skipProcessedCheck) releaseProcessing(messageKey);
+      throw err;
     }
-
-    results.push(result);
-    totalProcessed++;
   }
 
   if (!dryRun) {

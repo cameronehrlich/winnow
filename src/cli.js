@@ -92,6 +92,9 @@ program
           dryRun: opts.dryRun,
           searchQuery,
           skipProcessedCheck: true,
+          runHooks: false,
+          postToFeed: false,
+          sendPush: false,
         });
         console.log(`✅ Re-classified ${results.length} emails`);
         const archived = results.filter(r => r.archive).length;

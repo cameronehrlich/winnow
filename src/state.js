@@ -1,10 +1,13 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appendEvent, findEmailItemByGmail } from './store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STATE_PATH = join(__dirname, '..', 'data', 'state.json');
+const LOCK_TIMEOUT_MS = 5000;
+const LOCK_RETRY_MS = 25;
+const CLAIM_TTL_MS = 10 * 60 * 1000;
 
 function statePath() {
   return process.env.WINNOW_STATE_PATH || DEFAULT_STATE_PATH;
@@ -12,6 +15,7 @@ function statePath() {
 
 const DEFAULT_STATE = {
   processedIds: [],
+  processingIds: {},
   lastScanTime: null,
   lastDigestTime: null,
   scanResults: [],
@@ -50,6 +54,9 @@ function normalizeState(state) {
   };
 
   if (!Array.isArray(normalized.processedIds)) normalized.processedIds = [];
+  if (!normalized.processingIds || typeof normalized.processingIds !== 'object' || Array.isArray(normalized.processingIds)) {
+    normalized.processingIds = {};
+  }
   if (!Array.isArray(normalized.scanResults)) normalized.scanResults = [];
   if (!normalized.stats.byPriority) normalized.stats.byPriority = { low: 0, normal: 0, urgent: 0 };
   if (!Array.isArray(normalized.stats.unsubscribes.entries)) normalized.stats.unsubscribes.entries = [];
@@ -78,53 +85,129 @@ export function saveState(state) {
   renameSync(tmpPath, path);
 }
 
+function lockPath() {
+  return `${statePath()}.lock`;
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function withStateLock(fn) {
+  const path = lockPath();
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  mkdirSync(dirname(path), { recursive: true });
+
+  while (true) {
+    try {
+      mkdirSync(path);
+      break;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for state lock: ${path}`);
+      }
+      sleep(LOCK_RETRY_MS);
+    }
+  }
+
+  try {
+    return fn();
+  } finally {
+    rmSync(path, { recursive: true, force: true });
+  }
+}
+
+function cleanupExpiredClaims(state) {
+  const processingIds = state.processingIds || {};
+  const cutoff = Date.now() - CLAIM_TTL_MS;
+  for (const [messageId, claimedAt] of Object.entries(processingIds)) {
+    if (!messageId) continue;
+    const ts = Date.parse(claimedAt);
+    if (!Number.isFinite(ts) || ts < cutoff) {
+      delete processingIds[messageId];
+    }
+  }
+  state.processingIds = processingIds;
+}
+
 export function isProcessed(messageId) {
   if (!messageId) return false;
   const state = loadState();
   return state.processedIds.includes(messageId);
 }
 
+export function claimProcessing(messageId) {
+  if (!messageId) return false;
+  return withStateLock(() => {
+    const state = loadState();
+    cleanupExpiredClaims(state);
+    if (state.processedIds.includes(messageId) || state.processingIds[messageId]) {
+      return false;
+    }
+    state.processingIds[messageId] = new Date().toISOString();
+    saveState(state);
+    return true;
+  });
+}
+
+export function releaseProcessing(messageId) {
+  if (!messageId) return false;
+  return withStateLock(() => {
+    const state = loadState();
+    cleanupExpiredClaims(state);
+    if (!state.processingIds[messageId]) return false;
+    delete state.processingIds[messageId];
+    saveState(state);
+    return true;
+  });
+}
+
 export function markProcessed(messageId, result) {
   if (!messageId) return;
-  const state = loadState();
+  withStateLock(() => {
+    const state = loadState();
+    cleanupExpiredClaims(state);
 
-  if (!state.processedIds.includes(messageId)) {
-    state.processedIds.push(messageId);
-  }
+    if (!state.processedIds.includes(messageId)) {
+      state.processedIds.push(messageId);
+    }
+    delete state.processingIds[messageId];
 
-  if (result) {
-    state.scanResults.push({
-      ...result,
-      messageId,
-      processedAt: new Date().toISOString(),
-    });
+    if (result) {
+      state.scanResults.push({
+        ...result,
+        messageId,
+        processedAt: new Date().toISOString(),
+      });
 
-    const priority = result.priority || (result.archive ? 'low' : 'normal');
-    state.stats.totalProcessed++;
-    state.stats.byPriority[priority] = (state.stats.byPriority[priority] || 0) + 1;
-    if (result.bumped) state.stats.lowConfidenceBumps++;
-    if (result.ephemeral) state.stats.ephemeralCount = (state.stats.ephemeralCount || 0) + 1;
+      const priority = result.priority || (result.archive ? 'low' : 'normal');
+      state.stats.totalProcessed++;
+      state.stats.byPriority[priority] = (state.stats.byPriority[priority] || 0) + 1;
+      if (result.bumped) state.stats.lowConfidenceBumps++;
+      if (result.ephemeral) state.stats.ephemeralCount = (state.stats.ephemeralCount || 0) + 1;
 
-    // Daily stats tracking
-    const today = new Date().toISOString().split('T')[0];
-    if (!state.stats.daily) state.stats.daily = {};
-    if (!state.stats.daily[today]) state.stats.daily[today] = {};
-    const day = state.stats.daily[today];
-    if (!day.byPriority) day.byPriority = { low: 0, normal: 0, urgent: 0 };
-    if (!day.rulesTriggered) day.rulesTriggered = {};
-    day.processed = day.processed || 0;
-    day.ephemeral = day.ephemeral || 0;
-    day.bumped = day.bumped || 0;
-    day.scansRun = day.scansRun || 0;
+      // Daily stats tracking
+      const today = new Date().toISOString().split('T')[0];
+      if (!state.stats.daily) state.stats.daily = {};
+      if (!state.stats.daily[today]) state.stats.daily[today] = {};
+      const day = state.stats.daily[today];
+      if (!day.byPriority) day.byPriority = { low: 0, normal: 0, urgent: 0 };
+      if (!day.rulesTriggered) day.rulesTriggered = {};
+      day.processed = day.processed || 0;
+      day.ephemeral = day.ephemeral || 0;
+      day.bumped = day.bumped || 0;
+      day.scansRun = day.scansRun || 0;
 
-    day.processed++;
-    day.byPriority[priority] = (day.byPriority[priority] || 0) + 1;
-    if (result.ephemeral) day.ephemeral++;
-    if (result.bumped) day.bumped++;
-  }
+      day.processed++;
+      day.byPriority[priority] = (day.byPriority[priority] || 0) + 1;
+      if (result.ephemeral) day.ephemeral++;
+      if (result.bumped) day.bumped++;
+    }
 
-  state.lastScanTime = new Date().toISOString();
-  saveState(state);
+    state.lastScanTime = new Date().toISOString();
+    saveState(state);
+  });
 }
 
 export function getResultsSinceLastDigest() {

@@ -4,8 +4,16 @@ import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CONFIG_PATH = join(__dirname, '..', 'config', 'config.yaml');
-const ENV_PATH = join(__dirname, '..', '.env');
+const DEFAULT_CONFIG_PATH = join(__dirname, '..', 'config', 'config.yaml');
+const DEFAULT_ENV_PATH = join(__dirname, '..', '.env');
+
+function configPath() {
+  return process.env.WINNOW_CONFIG_PATH || DEFAULT_CONFIG_PATH;
+}
+
+function envPath() {
+  return process.env.WINNOW_ENV_PATH || DEFAULT_ENV_PATH;
+}
 
 let cachedConfig;
 
@@ -22,7 +30,7 @@ function unquoteEnvValue(value) {
 
 function loadLocalEnv() {
   try {
-    const raw = readFileSync(ENV_PATH, 'utf8');
+    const raw = readFileSync(envPath(), 'utf8');
     for (const line of raw.split(/\r?\n/)) {
       const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
       if (!match) continue;
@@ -40,7 +48,7 @@ loadLocalEnv();
 
 export function loadConfig() {
   if (cachedConfig) return cachedConfig;
-  const raw = readFileSync(CONFIG_PATH, 'utf8');
+  const raw = readFileSync(configPath(), 'utf8');
   cachedConfig = yaml.load(raw);
   return cachedConfig;
 }
@@ -51,10 +59,11 @@ export function reloadConfig() {
 }
 
 export function setConfigField(key, value) {
-  const raw = readFileSync(CONFIG_PATH, 'utf8');
+  const path = configPath();
+  const raw = readFileSync(path, 'utf8');
   const config = yaml.load(raw);
   config[key] = value;
-  writeFileSync(CONFIG_PATH, yaml.dump(config, { lineWidth: -1 }));
+  writeFileSync(path, yaml.dump(config, { lineWidth: -1 }));
   cachedConfig = null; // bust cache
 }
 
