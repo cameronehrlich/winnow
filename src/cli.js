@@ -95,6 +95,7 @@ program
           runHooks: false,
           postToFeed: false,
           sendPush: false,
+          recordProcessing: false,
         });
         console.log(`✅ Re-classified ${results.length} emails`);
         const archived = results.filter(r => r.archive).length;

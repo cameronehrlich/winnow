@@ -119,6 +119,7 @@ export async function scan(account, opts = {}) {
   const shouldRunHooks = opts.runHooks ?? true;
   const shouldPostToFeed = opts.postToFeed ?? true;
   const shouldSendPush = opts.sendPush ?? true;
+  const shouldRecordProcessing = opts.recordProcessing ?? true;
 
   let totalProcessed = 0;
   let results = [];
@@ -202,21 +203,24 @@ export async function scan(account, opts = {}) {
           }
         }
 
-        markProcessed(messageKey, result);
-        const item = upsertEmailItemFromResult(result, {
-          account,
-          messageId: messageKey,
-          threadId: msg.threadId,
-          timestamp: new Date().toISOString(),
-        });
-        result.emailItemId = item.id;
+        let item = null;
         result.messageId = messageKey;
-        appendEmailEvent('email.scanned', item, { source: 'scan', reason: result.reason });
-        appendEmailEvent(result.archive ? 'email.auto_archived' : 'email.kept', item, {
-          source: 'scan',
-          reason: result.reason,
-          metadata: { confidence: result.confidence, ephemeral: Boolean(result.ephemeral) },
-        });
+        if (shouldRecordProcessing) {
+          markProcessed(messageKey, result);
+          item = upsertEmailItemFromResult(result, {
+            account,
+            messageId: messageKey,
+            threadId: msg.threadId,
+            timestamp: new Date().toISOString(),
+          });
+          result.emailItemId = item.id;
+          appendEmailEvent('email.scanned', item, { source: 'scan', reason: result.reason });
+          appendEmailEvent(result.archive ? 'email.auto_archived' : 'email.kept', item, {
+            source: 'scan',
+            reason: result.reason,
+            metadata: { confidence: result.confidence, ephemeral: Boolean(result.ephemeral) },
+          });
+        }
 
         let hookResult = { suppressFeed: false, triggeredRules: [] };
         if (shouldRunHooks) {

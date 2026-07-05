@@ -100,6 +100,35 @@ describe('scan execution controls', () => {
     assert.equal(listEvents({ limit: 20 }).filter(event => event.eventType === 'email.action_hook_ran').length, 0);
   });
 
+  it('can rescan without duplicating processing stats or scan events', async () => {
+    const messages = [{
+      id: 'm-rescan-stats',
+      threadId: 't-rescan-stats',
+      subject: 'Rescan stats message',
+      from: 'Sender <sender@example.com>',
+      snippet: 'hello',
+      headers: {},
+    }];
+
+    const results = await scan('me@example.com', {
+      adapter: makeAdapter(messages),
+      config: { scan: { max_messages: 10 } },
+      skipProcessedCheck: true,
+      runHooks: false,
+      sendPush: false,
+      postToFeed: false,
+      recordProcessing: false,
+      classifyEmailFn: async () => ({ archive: true, confidence: 90, summary: 'archive' }),
+    });
+
+    assert.equal(results.length, 1);
+    const state = loadState();
+    assert.equal(state.stats.totalProcessed, 0);
+    assert.equal(state.processedIds.includes('m-rescan-stats'), false);
+    assert.equal(listEmailItems({ limit: 10 }).items.length, 0);
+    assert.equal(listEvents({ limit: 20 }).length, 0);
+  });
+
   it('records per-account scan health after empty scans', async () => {
     const results = await scan('me@example.com', {
       adapter: makeAdapter([]),
