@@ -47,7 +47,7 @@ The current production surface is Slack plus a private localhost API. Discord/Te
 
 ### Prerequisites
 
-- **Node.js** 22.5+ (uses built-in SQLite support)
+- **Node.js** 24.18+ LTS (uses built-in SQLite support; see `.nvmrc`)
 - **Homebrew** — Recommended for installing external runtime tools
 - **[gogcli](https://gogcli.sh)** 0.31.1+ — Gmail CLI adapter (handles OAuth)
 - **Gemini API key** — [Get one free](https://aistudio.google.com/apikey)

@@ -15,6 +15,11 @@ function loadEnvFile() {
   }
 }
 
+const localEnv = loadEnvFile();
+const nodeInterpreter = process.env.WINNOW_NODE_INTERPRETER
+  || localEnv.WINNOW_NODE_INTERPRETER
+  || 'node';
+
 module.exports = {
   apps: [
     {
@@ -22,10 +27,10 @@ module.exports = {
       script: 'src/cli.js',
       args: 'daemon --interval 10',
       cwd: __dirname,
-      interpreter: 'node',
+      interpreter: nodeInterpreter,
       node_args: '--experimental-vm-modules',
       env: {
-        ...loadEnvFile(),
+        ...localEnv,
         NODE_ENV: 'production',
       },
       // Restart policy
