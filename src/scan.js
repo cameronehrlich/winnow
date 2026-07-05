@@ -259,6 +259,14 @@ export async function scan(account, opts = {}) {
     const now = new Date().toISOString();
     const today = now.split('T')[0];
     state.lastScanTime = now;
+    if (!state.lastScanByAccount) state.lastScanByAccount = {};
+    if (!state.lastScanCountsByAccount) state.lastScanCountsByAccount = {};
+    state.lastScanByAccount[account] = now;
+    state.lastScanCountsByAccount[account] = {
+      scannedAt: now,
+      unreadFound: messages.length,
+      processed: totalProcessed,
+    };
     if (!state.stats.daily) state.stats.daily = {};
     if (!state.stats.daily[today]) state.stats.daily[today] = {};
     if (!state.stats.daily[today].byPriority) state.stats.daily[today].byPriority = { low: 0, normal: 0, urgent: 0 };

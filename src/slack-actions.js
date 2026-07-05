@@ -440,7 +440,7 @@ export async function startActionListener() {
   clients = [];
   for (const route of routes) {
     const web = new WebClient(route.botToken);
-    const client = new SocketModeClient({ appToken: route.appToken, logLevel: 'warn' });
+    const client = new SocketModeClient({ appToken: route.appToken, logLevel: 'error' });
     const label = route.account || 'default';
 
     client.on('connecting', () => console.log(`[winnow/actions] Socket Mode connecting (${label})...`));

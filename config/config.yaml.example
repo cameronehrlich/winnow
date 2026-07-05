@@ -25,6 +25,7 @@ slack:
   feed_mode: all
 
 # Local API for the future iOS app
+# Set WINNOW_API_TOKEN in .env. The same token protects /v1/* and /mcp.
 api:
   host: 127.0.0.1
   port: 3777

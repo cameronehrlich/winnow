@@ -417,6 +417,7 @@ export function listRecentTrackedEmailItems({ account = '', days = 7, limit = 10
 }
 
 function rowToEvent(row) {
+  if (!row) return null;
   return {
     id: row.event_id,
     eventType: row.event_type,
@@ -522,6 +523,30 @@ export function listEvents({ since = 0, limit = 100 } = {}) {
     ORDER BY e.id ASC
     LIMIT @limit
   `).all({ since: Number(since) || 0, limit: boundedLimit }).map(rowToEvent);
+}
+
+export function getLatestEventsByAccount({ accounts = [], eventTypes = [] } = {}) {
+  const result = {};
+  const typeClause = eventTypes.length
+    ? `AND e.event_type IN (${eventTypes.map(() => '?').join(', ')})`
+    : '';
+  const sql = `
+    SELECT ${EVENT_JOIN_SELECT}
+    FROM events e
+    LEFT JOIN email_items i ON i.id = e.email_item_id
+    WHERE e.account = ?
+      ${typeClause}
+    ORDER BY e.id DESC
+    LIMIT 1
+  `;
+  const stmt = getDb().prepare(sql);
+
+  for (const account of accounts) {
+    const row = stmt.get(account, ...eventTypes);
+    result[account] = rowToEvent(row);
+  }
+
+  return result;
 }
 
 export function recordDelivery({

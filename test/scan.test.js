@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { scan } from '../src/scan.js';
-import { claimProcessing } from '../src/state.js';
+import { claimProcessing, loadState } from '../src/state.js';
 import { closeStoreForTests, configureDatabaseForTests, listEvents, listEmailItems } from '../src/store.js';
 
 let tempDir;
@@ -98,5 +98,24 @@ describe('scan execution controls', () => {
     assert.equal(pushCalls, 0);
     assert.equal(feedCalls, 0);
     assert.equal(listEvents({ limit: 20 }).filter(event => event.eventType === 'email.action_hook_ran').length, 0);
+  });
+
+  it('records per-account scan health after empty scans', async () => {
+    const results = await scan('me@example.com', {
+      adapter: makeAdapter([]),
+      config: { scan: { max_messages: 10 } },
+      postToFeed: false,
+      sendPush: false,
+      runHooks: false,
+    });
+
+    assert.equal(results.length, 0);
+    const state = loadState();
+    assert.equal(typeof state.lastScanByAccount['me@example.com'], 'string');
+    assert.deepEqual(state.lastScanCountsByAccount['me@example.com'], {
+      scannedAt: state.lastScanByAccount['me@example.com'],
+      unreadFound: 0,
+      processed: 0,
+    });
   });
 });

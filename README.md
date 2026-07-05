@@ -326,6 +326,8 @@ winnow/
 │   ├── notify.js           # Notifications & email feed
 │   ├── slack-actions.js    # Slack button actions via Socket Mode
 │   ├── api.js              # Local private HTTP API
+│   ├── mcp.js              # MCP JSON-RPC tool surface
+│   ├── status.js           # Shared runtime/account status helpers
 │   ├── daemon.js           # Combined runtime process
 │   ├── store.js            # SQLite feed/event/analytics store
 │   ├── digest.js           # Legacy manual archive report
@@ -403,10 +405,17 @@ Useful endpoints:
 ```bash
 curl http://127.0.0.1:3777/health
 curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
+  "http://127.0.0.1:3777/v1/status"
+curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
+  "http://127.0.0.1:3777/v1/accounts"
+curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
   "http://127.0.0.1:3777/v1/summaries/daily?date=2026-06-29"
 curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
   "http://127.0.0.1:3777/v1/emails?state=all&limit=50"
 ```
+
+`POST /v1/scans` defaults to `dryRun: true`; pass `{"dryRun": false}` only when an API client should apply Gmail/Slack side effects.
+The same bearer token also protects `/mcp`, a Streamable-HTTP-style JSON-RPC endpoint exposing Winnow status, account routing, email lists, summaries, events, dry-run scans, and email actions as MCP tools.
 
 ## Contributing
 

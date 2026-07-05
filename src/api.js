@@ -4,6 +4,8 @@ import { archiveEmail, markEmailRead, markEmailUnread, moveEmailToInbox } from '
 import { scan } from './scan.js';
 import { recordUnsubscribe } from './state.js';
 import { followUnsubscribeLink } from './slack-actions.js';
+import { handleMcpMessage } from './mcp.js';
+import { getRuntimeStatus, listAccountStatus } from './status.js';
 import {
   deletePushDevice,
   ensureStore,
@@ -32,6 +34,11 @@ function sendJson(res, status, body) {
     'Content-Length': Buffer.byteLength(payload),
   });
   res.end(payload);
+}
+
+function sendNoContent(res) {
+  res.writeHead(202);
+  res.end();
 }
 
 async function readJson(req) {
@@ -83,9 +90,14 @@ function route(pathname, pattern) {
 }
 
 async function handleAuthed(req, res, url) {
+  if (req.method === 'GET' && url.pathname === '/v1/status') {
+    sendJson(res, 200, getRuntimeStatus());
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/v1/accounts') {
     sendJson(res, 200, {
-      accounts: getAccounts().map(account => ({ email: account.email, channel: account.channel || null })),
+      accounts: listAccountStatus(),
     });
     return;
   }
@@ -129,7 +141,7 @@ async function handleAuthed(req, res, url) {
         source: 'api',
         reason: `API ${suffix}`,
       });
-      sendJson(res, 200, { ok: true, item: updated || item });
+      sendJson(res, 200, { ok: true, action: suffix, item: updated || item });
       return;
     }
   }
@@ -175,12 +187,18 @@ async function handleAuthed(req, res, url) {
 
   if (req.method === 'POST' && url.pathname === '/v1/scans') {
     const body = await readJson(req);
+    const dryRun = body.dryRun !== undefined ? Boolean(body.dryRun) : true;
     const accounts = body.account ? [body.account] : getAccounts().map(a => a.email);
     const results = [];
-    for (const account of accounts) {
-      results.push({ account, results: await scan(account, { searchQuery: body.searchQuery }) });
+    const scanOpts = { dryRun };
+    if (body.searchQuery) scanOpts.searchQuery = body.searchQuery;
+    for (const key of ['postToFeed', 'runHooks', 'sendPush']) {
+      if (body[key] !== undefined) scanOpts[key] = Boolean(body[key]);
     }
-    sendJson(res, 200, { ok: true, accounts: results });
+    for (const account of accounts) {
+      results.push({ account, results: await scan(account, scanOpts) });
+    }
+    sendJson(res, 200, { ok: true, dryRun, accounts: results });
     return;
   }
 
@@ -235,6 +253,30 @@ async function handleAuthed(req, res, url) {
   sendJson(res, 404, { error: 'not_found' });
 }
 
+async function handleMcp(req, res) {
+  if (req.method === 'GET') {
+    sendJson(res, 200, {
+      ok: true,
+      endpoint: '/mcp',
+      transport: 'streamable-http-json-rpc',
+      authentication: 'bearer',
+    });
+    return;
+  }
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'method_not_allowed' });
+    return;
+  }
+
+  const body = await readJson(req);
+  const response = await handleMcpMessage(body);
+  if (!response) {
+    sendNoContent(res);
+    return;
+  }
+  sendJson(res, 200, response);
+}
+
 export function createApiServer() {
   ensureStore();
   return http.createServer(async (req, res) => {
@@ -242,6 +284,11 @@ export function createApiServer() {
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'GET' && url.pathname === '/health') {
         sendJson(res, 200, { ok: true, store: ensureStore(), apiTokenConfigured: Boolean(getToken()) });
+        return;
+      }
+      if (url.pathname === '/mcp' || url.pathname === '/mcp/') {
+        if (!requireAuth(req, res)) return;
+        await handleMcp(req, res);
         return;
       }
       if (!url.pathname.startsWith('/v1/')) {

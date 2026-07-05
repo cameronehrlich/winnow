@@ -17,6 +17,8 @@ const DEFAULT_STATE = {
   processedIds: [],
   processingIds: {},
   lastScanTime: null,
+  lastScanByAccount: {},
+  lastScanCountsByAccount: {},
   lastDigestTime: null,
   scanResults: [],
   stats: {
@@ -56,6 +58,12 @@ function normalizeState(state) {
   if (!Array.isArray(normalized.processedIds)) normalized.processedIds = [];
   if (!normalized.processingIds || typeof normalized.processingIds !== 'object' || Array.isArray(normalized.processingIds)) {
     normalized.processingIds = {};
+  }
+  if (!normalized.lastScanByAccount || typeof normalized.lastScanByAccount !== 'object' || Array.isArray(normalized.lastScanByAccount)) {
+    normalized.lastScanByAccount = {};
+  }
+  if (!normalized.lastScanCountsByAccount || typeof normalized.lastScanCountsByAccount !== 'object' || Array.isArray(normalized.lastScanCountsByAccount)) {
+    normalized.lastScanCountsByAccount = {};
   }
   if (!Array.isArray(normalized.scanResults)) normalized.scanResults = [];
   if (!normalized.stats.byPriority) normalized.stats.byPriority = { low: 0, normal: 0, urgent: 0 };

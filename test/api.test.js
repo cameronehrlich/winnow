@@ -1,9 +1,10 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApiServer } from '../src/api.js';
+import { reloadConfig } from '../src/config.js';
 import {
   appendEmailEvent,
   closeStoreForTests,
@@ -26,6 +27,21 @@ beforeEach(async () => {
   process.env.WINNOW_SKIP_LEGACY_IMPORT = '1';
   process.env.WINNOW_API_TOKEN = 'test-token';
   tempDir = mkdtempSync(join(tmpdir(), 'winnow-api-'));
+  process.env.WINNOW_STATE_PATH = join(tempDir, 'state.json');
+  process.env.WINNOW_CONFIG_PATH = join(tempDir, 'config.yaml');
+  process.env.SLACK_BOT_TOKEN = 'xoxb-test';
+  process.env.SLACK_APP_TOKEN = 'xapp-test';
+  writeFileSync(process.env.WINNOW_CONFIG_PATH, `
+accounts:
+  - email: me@example.com
+    channel: CTEST
+slack:
+  channel_id: CFALLBACK
+api:
+  host: 127.0.0.1
+  port: 3777
+`, 'utf8');
+  reloadConfig();
   configureDatabaseForTests(join(tempDir, 'winnow.db'));
   const item = upsertEmailItemFromResult({
     account: 'me@example.com',
@@ -53,6 +69,11 @@ afterEach(async () => {
   rmSync(tempDir, { recursive: true, force: true });
   delete process.env.WINNOW_SKIP_LEGACY_IMPORT;
   delete process.env.WINNOW_API_TOKEN;
+  delete process.env.WINNOW_STATE_PATH;
+  delete process.env.WINNOW_CONFIG_PATH;
+  delete process.env.SLACK_BOT_TOKEN;
+  delete process.env.SLACK_APP_TOKEN;
+  reloadConfig();
 });
 
 describe('local API', () => {
@@ -78,6 +99,67 @@ describe('local API', () => {
     const summaryJson = await summary.json();
     assert.equal(summaryJson.counters.processed, 1);
     assert.equal(summaryJson.counters.kept, 1);
+  });
+
+  it('returns status and account routing metadata without secrets', async () => {
+    const headers = { Authorization: 'Bearer test-token' };
+
+    const accounts = await fetch(`${baseUrl}/v1/accounts`, { headers });
+    assert.equal(accounts.status, 200);
+    const accountsJson = await accounts.json();
+    assert.equal(accountsJson.accounts.length, 1);
+    assert.equal(accountsJson.accounts[0].email, 'me@example.com');
+    assert.equal(accountsJson.accounts[0].slack.channelId, 'CTEST');
+    assert.equal(accountsJson.accounts[0].slack.hasBotToken, true);
+    assert.equal(accountsJson.accounts[0].slack.hasAppToken, true);
+    assert.equal(accountsJson.accounts[0].slack.botToken, undefined);
+
+    const status = await fetch(`${baseUrl}/v1/status`, { headers });
+    assert.equal(status.status, 200);
+    const statusJson = await status.json();
+    assert.equal(statusJson.ok, true);
+    assert.equal(statusJson.accounts[0].email, 'me@example.com');
+    assert.equal(statusJson.slack.actionRouteCount, 1);
+  });
+
+  it('serves MCP initialize, tool list, and status tool calls', async () => {
+    const headers = {
+      Authorization: 'Bearer test-token',
+      'Content-Type': 'application/json',
+    };
+
+    const initialize = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+    });
+    assert.equal(initialize.status, 200);
+    const initializeJson = await initialize.json();
+    assert.equal(initializeJson.result.serverInfo.name, 'winnow');
+    assert.equal(typeof initializeJson.result.capabilities.tools, 'object');
+
+    const tools = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+    const toolsJson = await tools.json();
+    assert.ok(toolsJson.result.tools.some(tool => tool.name === 'winnow_status'));
+    assert.ok(toolsJson.result.tools.some(tool => tool.name === 'winnow_scan'));
+
+    const status = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'winnow_status', arguments: {} },
+      }),
+    });
+    const statusJson = await status.json();
+    assert.equal(statusJson.result.structuredContent.ok, true);
+    assert.equal(statusJson.result.structuredContent.accounts[0].email, 'me@example.com');
   });
 
   it('returns a client error for invalid JSON bodies', async () => {
