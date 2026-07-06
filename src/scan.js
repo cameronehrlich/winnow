@@ -120,6 +120,7 @@ export async function scan(account, opts = {}) {
   const shouldPostToFeed = opts.postToFeed ?? true;
   const shouldSendPush = opts.sendPush ?? true;
   const shouldRecordProcessing = opts.recordProcessing ?? true;
+  const shouldClaimProcessing = !dryRun && shouldRecordProcessing;
 
   let totalProcessed = 0;
   let results = [];
@@ -148,10 +149,11 @@ export async function scan(account, opts = {}) {
 
   for (const msg of messages) {
     const messageKey = msg.id || msg.threadId;
-    if (!skipProcessedCheck && isProcessed(messageKey)) {
+    if (!skipProcessedCheck && shouldClaimProcessing && isProcessed(messageKey)) {
       continue;
     }
-    if (!skipProcessedCheck && !claimProcessing(messageKey)) {
+    const claimedProcessing = !skipProcessedCheck && shouldClaimProcessing;
+    if (claimedProcessing && !claimProcessing(messageKey)) {
       continue;
     }
 
@@ -251,7 +253,7 @@ export async function scan(account, opts = {}) {
       results.push(result);
       totalProcessed++;
     } catch (err) {
-      if (!skipProcessedCheck) releaseProcessing(messageKey);
+      if (claimedProcessing) releaseProcessing(messageKey);
       throw err;
     }
   }

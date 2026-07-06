@@ -58,6 +58,30 @@ describe('scan execution controls', () => {
     assert.equal(listEmailItems({ limit: 10 }).items.length, 0);
   });
 
+  it('does not leave processing claims behind after dry-run scans', async () => {
+    const messages = [{
+      id: 'm-dry-run',
+      threadId: 't-dry-run',
+      subject: 'Dry run message',
+      from: 'Sender <sender@example.com>',
+      snippet: 'hello',
+      headers: {},
+    }];
+
+    const results = await scan('me@example.com', {
+      adapter: makeAdapter(messages),
+      config: { scan: { max_messages: 10 } },
+      dryRun: true,
+      classifyEmailFn: async () => ({ archive: false, confidence: 90, summary: 'keep' }),
+    });
+
+    assert.equal(results.length, 1);
+    const state = loadState();
+    assert.deepEqual(state.processingIds, {});
+    assert.equal(state.processedIds.includes('m-dry-run'), false);
+    assert.equal(listEmailItems({ limit: 10 }).items.length, 0);
+  });
+
   it('suppresses hooks, push, and feed when those side effects are disabled', async () => {
     const messages = [{
       id: 'm-rescan',
