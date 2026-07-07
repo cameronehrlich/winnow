@@ -1,7 +1,6 @@
 import { Command } from 'commander';
 import { scan } from './scan.js';
 import { watch } from './watch.js';
-import { generateAndPostDigest } from './digest.js';
 import { loadConfig, setConfigField, getAccountEmails, getAdapter } from './config.js';
 import { addRule, removeRule, listRules } from './rules.js';
 import { getStats, recordUnsubscribe, getUnsubscribes } from './state.js';
@@ -104,25 +103,6 @@ program
       }
     } catch (err) {
       console.error('❌ Rescan failed:', err.message);
-      process.exit(1);
-    }
-  });
-
-program
-  .command('digest')
-  .description('Generate and post daily digest')
-  .option('--preview', 'Preview digest without posting to Slack')
-  .action(async (opts) => {
-    try {
-      const digest = await generateAndPostDigest({ preview: opts.preview });
-      if (opts.preview) {
-        console.log('\n📋 Digest Preview:\n');
-        console.log(digest);
-      } else {
-        console.log('✅ Digest posted to Slack');
-      }
-    } catch (err) {
-      console.error('❌ Digest failed:', err.message);
       process.exit(1);
     }
   });
@@ -295,7 +275,6 @@ program
 
       console.log('\n📊 Winnow Stats\n');
       console.log(`  Last scan:    ${stats.lastScanTime || 'never'}`);
-      console.log(`  Last digest:  ${stats.lastDigestTime || 'never'}`);
       console.log(`  Total emails: ${stats.totalProcessed}`);
 
       const totalArchived = (stats.byPriority?.low || 0);

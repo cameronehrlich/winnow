@@ -19,7 +19,6 @@ const DEFAULT_STATE = {
   lastScanTime: null,
   lastScanByAccount: {},
   lastScanCountsByAccount: {},
-  lastDigestTime: null,
   scanResults: [],
   stats: {
     totalProcessed: 0,
@@ -218,27 +217,6 @@ export function markProcessed(messageId, result) {
   });
 }
 
-export function getResultsSinceLastDigest() {
-  const state = loadState();
-  const since = state.lastDigestTime;
-  let results = since
-    ? state.scanResults.filter(r => r.processedAt > since)
-    : state.scanResults;
-
-  // Deduplicate by messageId — keep the latest entry (most recent classification)
-  const seen = new Map();
-  for (const r of results) {
-    seen.set(r.messageId, r);
-  }
-  return Array.from(seen.values());
-}
-
-export function markDigestSent() {
-  const state = loadState();
-  state.lastDigestTime = new Date().toISOString();
-  saveState(state);
-}
-
 export function recordUnsubscribe(entry) {
   const state = loadState();
   if (!state.stats) state.stats = {};
@@ -352,7 +330,6 @@ export function getStats() {
   return {
     ...state.stats,
     lastScanTime: state.lastScanTime,
-    lastDigestTime: state.lastDigestTime,
   };
 }
 

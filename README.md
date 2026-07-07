@@ -285,7 +285,6 @@ If the AI's confidence is below 70%, the email stays in your inbox no matter wha
 | `winnow daemon` | Run scanner, Slack actions, local API, and mailbox reconciliation |
 | `winnow run` | Scan all accounts + print today's structured summary |
 | `winnow rescan --since 7d` | Re-classify emails with current rules |
-| `winnow digest --preview` | Preview legacy archive report for debugging |
 | `winnow summary --today` | Show daily action counters and lists |
 | `winnow summary --date YYYY-MM-DD --json` | Export structured daily analytics |
 | `winnow rules` | List all active rules |
@@ -330,7 +329,6 @@ winnow/
 │   ├── status.js           # Shared runtime/account status helpers
 │   ├── daemon.js           # Combined runtime process
 │   ├── store.js            # SQLite feed/event/analytics store
-│   ├── digest.js           # Legacy manual archive report
 │   ├── config.js           # Config & account routing
 │   ├── state.js            # Persistent state (processed IDs, stats)
 │   ├── check.js            # Health checks & auto-fix
@@ -386,7 +384,7 @@ pm2 restart ecosystem.config.cjs --only winnow-watch --update-env
 pm2 save
 ```
 
-Scheduled Slack archive digests are intentionally disabled. The legacy `winnow digest` command remains available for manual debugging, while daily analytics should come from `winnow summary` or the local API.
+Scheduled Slack archive digests are retired. Use `winnow summary` or the local API for on-demand daily analytics.
 
 ## Local API
 
