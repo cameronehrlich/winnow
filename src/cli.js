@@ -130,10 +130,10 @@ program
 program
   .command('daemon')
   .description('Run scanner, Slack actions, local API, and mailbox reconciliation')
-  .option('-i, --interval <seconds>', 'Scan interval in seconds', '30')
+  .option('-i, --interval <seconds>', 'Scan interval in seconds')
   .action(async (opts) => {
     try {
-      await startDaemon({ interval: parseInt(opts.interval, 10) });
+      await startDaemon({ interval: opts.interval === undefined ? undefined : parseInt(opts.interval, 10) });
     } catch (err) {
       console.error('❌ Daemon failed:', err.message);
       process.exit(1);

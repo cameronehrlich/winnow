@@ -13,6 +13,13 @@ function interval(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+export function resolveDaemonIntervals(opts = {}, config = {}) {
+  return {
+    scanIntervalSec: interval(opts.interval ?? config.daemon?.scan_interval_seconds, DEFAULT_SCAN_INTERVAL_SEC),
+    reconcileIntervalSec: interval(config.reconcile?.interval_seconds, DEFAULT_RECONCILE_INTERVAL_SEC),
+  };
+}
+
 async function runScanCycle(accounts) {
   for (const account of accounts) {
     try {
@@ -62,8 +69,7 @@ export async function startDaemon(opts = {}) {
   ensureStore();
   const config = loadConfig();
   const accounts = getAccounts().map(a => a.email);
-  const scanIntervalSec = interval(opts.interval ?? config.daemon?.scan_interval_seconds, DEFAULT_SCAN_INTERVAL_SEC);
-  const reconcileIntervalSec = interval(config.reconcile?.interval_seconds, DEFAULT_RECONCILE_INTERVAL_SEC);
+  const { scanIntervalSec, reconcileIntervalSec } = resolveDaemonIntervals(opts, config);
 
   if (!accounts.length) throw new Error('No accounts configured');
 
