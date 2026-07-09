@@ -106,6 +106,7 @@ async function handleArchive(web, payload, action) {
       messageId: data.messageId,
       emailItemId: data.emailItemId,
       source: 'slack',
+      syncSlack: false,
       from: data.from,
       subject: data.subject,
       reason: 'Slack Archive button',
@@ -132,6 +133,7 @@ async function handleUnarchive(web, payload, action) {
       messageId: data.messageId,
       emailItemId: data.emailItemId,
       source: 'slack',
+      syncSlack: false,
       reason: 'Slack Move to Inbox button',
     });
 

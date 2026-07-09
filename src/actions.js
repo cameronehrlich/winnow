@@ -56,6 +56,7 @@ export async function archiveEmail({
   messageId = '',
   emailItemId = '',
   source = 'cli',
+  syncSlack = true,
   from = '',
   subject = '',
   summary = '',
@@ -76,7 +77,7 @@ export async function archiveEmail({
     reason,
   });
   appendEmailEvent('email.manual_archived', updated, { source, reason });
-  await syncSlackDeliveryForItem(updated, reason);
+  if (syncSlack) await syncSlackDeliveryForItem(updated, reason);
   return updated;
 }
 
@@ -86,6 +87,7 @@ export async function moveEmailToInbox({
   messageId = '',
   emailItemId = '',
   source = 'cli',
+  syncSlack = true,
   from = '',
   subject = '',
   summary = '',
@@ -105,7 +107,7 @@ export async function moveEmailToInbox({
     reason,
   });
   appendEmailEvent('email.restored_to_inbox', updated, { source, reason });
-  await syncSlackDeliveryForItem(updated, reason);
+  if (syncSlack) await syncSlackDeliveryForItem(updated, reason);
   return updated;
 }
 
