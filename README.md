@@ -373,7 +373,7 @@ pm2 save
 pm2 startup  # auto-start on boot
 ```
 
-`ecosystem.config.cjs` loads `.env` automatically, so normal PM2 restarts pick up local credentials without hardcoded secrets in the tracked config. It runs `winnow daemon --interval 10`, which starts scanning, Slack actions, the local API, and mailbox reconciliation.
+`ecosystem.config.cjs` loads `.env` automatically, so normal PM2 restarts pick up local credentials without hardcoded secrets in the tracked config. It runs `winnow daemon`, which starts scanning, Slack actions, the local API, and mailbox reconciliation using the configured daemon interval.
 
 After updating `gogcli`, run:
 

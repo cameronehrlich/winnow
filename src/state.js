@@ -92,6 +92,16 @@ export function saveState(state) {
   renameSync(tmpPath, path);
 }
 
+export function updateState(mutator) {
+  return withStateLock(() => {
+    const state = loadState();
+    cleanupExpiredClaims(state);
+    const result = mutator(state);
+    saveState(state);
+    return result;
+  });
+}
+
 function lockPath() {
   return `${statePath()}.lock`;
 }
@@ -218,73 +228,75 @@ export function markProcessed(messageId, result) {
 }
 
 export function recordUnsubscribe(entry) {
-  const state = loadState();
-  if (!state.stats) state.stats = {};
-  if (!state.stats.unsubscribes) {
-    state.stats.unsubscribes = {
-      total: 0,
-      byStatus: { succeeded: 0, failed: 0, attempted: 0 },
-      entries: [],
-      daily: {},
-    };
-  }
-
-  const unsubscribes = state.stats.unsubscribes;
-  if (!Array.isArray(unsubscribes.entries)) unsubscribes.entries = [];
-  if (!unsubscribes.byStatus) unsubscribes.byStatus = { succeeded: 0, failed: 0, attempted: 0 };
-  if (!unsubscribes.daily) unsubscribes.daily = {};
-
   const now = new Date().toISOString();
-  const normalized = {
-    id: entry.id || `unsub-${Date.now()}`,
-    timestamp: entry.timestamp || now,
-    status: entry.status || 'succeeded',
-    sender: entry.sender || '',
-    subject: entry.subject || '',
-    account: entry.account || '',
-    threadId: entry.threadId || '',
-    source: entry.source || 'manual',
-    method: entry.method || 'unknown',
-    note: entry.note || '',
-    sourceMessageId: entry.sourceMessageId || '',
-    urlHost: entry.urlHost || '',
-  };
+  const { normalized, isDuplicateEvent } = updateState(state => {
+    if (!state.stats) state.stats = {};
+    if (!state.stats.unsubscribes) {
+      state.stats.unsubscribes = {
+        total: 0,
+        byStatus: { succeeded: 0, failed: 0, attempted: 0 },
+        entries: [],
+        daily: {},
+      };
+    }
 
-  const existingIndex = unsubscribes.entries.findIndex(e =>
-    (normalized.sourceMessageId && e.sourceMessageId === normalized.sourceMessageId) ||
-    (normalized.threadId && normalized.sender && e.threadId === normalized.threadId && e.sender === normalized.sender) ||
-    (e.id === normalized.id)
-  );
+    const unsubscribes = state.stats.unsubscribes;
+    if (!Array.isArray(unsubscribes.entries)) unsubscribes.entries = [];
+    if (!unsubscribes.byStatus) unsubscribes.byStatus = { succeeded: 0, failed: 0, attempted: 0 };
+    if (!unsubscribes.daily) unsubscribes.daily = {};
 
-  const previous = existingIndex >= 0 ? unsubscribes.entries[existingIndex] : null;
-  if (previous?.id) normalized.id = previous.id;
-  const isDuplicateEvent = previous
-    && previous.status === normalized.status
-    && previous.method === normalized.method
-    && previous.note === normalized.note
-    && previous.source === normalized.source;
-  if (isDuplicateEvent && previous?.timestamp) normalized.timestamp = previous.timestamp;
+    const normalized = {
+      id: entry.id || `unsub-${Date.now()}`,
+      timestamp: entry.timestamp || now,
+      status: entry.status || 'succeeded',
+      sender: entry.sender || '',
+      subject: entry.subject || '',
+      account: entry.account || '',
+      threadId: entry.threadId || '',
+      source: entry.source || 'manual',
+      method: entry.method || 'unknown',
+      note: entry.note || '',
+      sourceMessageId: entry.sourceMessageId || '',
+      urlHost: entry.urlHost || '',
+    };
 
-  if (existingIndex >= 0) {
-    unsubscribes.entries[existingIndex] = { ...unsubscribes.entries[existingIndex], ...normalized };
-  } else {
-    unsubscribes.entries.push(normalized);
-  }
+    const existingIndex = unsubscribes.entries.findIndex(e =>
+      (normalized.sourceMessageId && e.sourceMessageId === normalized.sourceMessageId) ||
+      (normalized.threadId && normalized.sender && e.threadId === normalized.threadId && e.sender === normalized.sender) ||
+      (e.id === normalized.id)
+    );
 
-  // Recompute counters from entries so backfills/updates stay consistent.
-  unsubscribes.total = unsubscribes.entries.length;
-  unsubscribes.byStatus = { succeeded: 0, failed: 0, attempted: 0 };
-  unsubscribes.daily = {};
-  for (const e of unsubscribes.entries) {
-    const status = e.status || 'succeeded';
-    unsubscribes.byStatus[status] = (unsubscribes.byStatus[status] || 0) + 1;
-    const day = (e.timestamp || now).slice(0, 10);
-    if (!unsubscribes.daily[day]) unsubscribes.daily[day] = { total: 0, byStatus: {} };
-    unsubscribes.daily[day].total++;
-    unsubscribes.daily[day].byStatus[status] = (unsubscribes.daily[day].byStatus[status] || 0) + 1;
-  }
+    const previous = existingIndex >= 0 ? unsubscribes.entries[existingIndex] : null;
+    if (previous?.id) normalized.id = previous.id;
+    const isDuplicateEvent = previous
+      && previous.status === normalized.status
+      && previous.method === normalized.method
+      && previous.note === normalized.note
+      && previous.source === normalized.source;
+    if (isDuplicateEvent && previous?.timestamp) normalized.timestamp = previous.timestamp;
 
-  saveState(state);
+    if (existingIndex >= 0) {
+      unsubscribes.entries[existingIndex] = { ...unsubscribes.entries[existingIndex], ...normalized };
+    } else {
+      unsubscribes.entries.push(normalized);
+    }
+
+    // Recompute counters from entries so backfills/updates stay consistent.
+    unsubscribes.total = unsubscribes.entries.length;
+    unsubscribes.byStatus = { succeeded: 0, failed: 0, attempted: 0 };
+    unsubscribes.daily = {};
+    for (const e of unsubscribes.entries) {
+      const status = e.status || 'succeeded';
+      unsubscribes.byStatus[status] = (unsubscribes.byStatus[status] || 0) + 1;
+      const day = (e.timestamp || now).slice(0, 10);
+      if (!unsubscribes.daily[day]) unsubscribes.daily[day] = { total: 0, byStatus: {} };
+      unsubscribes.daily[day].total++;
+      unsubscribes.daily[day].byStatus[status] = (unsubscribes.daily[day].byStatus[status] || 0) + 1;
+    }
+
+    return { normalized, isDuplicateEvent };
+  });
+
   if (isDuplicateEvent) return normalized;
 
   const existing = normalized.account || normalized.threadId
@@ -334,14 +346,13 @@ export function getStats() {
 }
 
 export function pruneOldResults(daysToKeep = 7) {
-  const state = loadState();
-  const cutoff = new Date(Date.now() - daysToKeep * 86400000).toISOString();
-  state.scanResults = state.scanResults.filter(r => r.processedAt > cutoff);
+  updateState(state => {
+    const cutoff = new Date(Date.now() - daysToKeep * 86400000).toISOString();
+    state.scanResults = state.scanResults.filter(r => r.processedAt > cutoff);
 
-  // Also prune processedIds to prevent unbounded growth — keep last 5000
-  if (state.processedIds.length > 5000) {
-    state.processedIds = state.processedIds.slice(-5000);
-  }
-
-  saveState(state);
+    // Also prune processedIds to prevent unbounded growth — keep last 5000
+    if (state.processedIds.length > 5000) {
+      state.processedIds = state.processedIds.slice(-5000);
+    }
+  });
 }

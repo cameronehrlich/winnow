@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { claimProcessing, loadState, markProcessed, recordUnsubscribe, releaseProcessing } from '../src/state.js';
+import { claimProcessing, loadState, markProcessed, recordUnsubscribe, releaseProcessing, updateState } from '../src/state.js';
 import {
   closeStoreForTests,
   configureDatabaseForTests,
@@ -87,5 +87,21 @@ describe('processing claims', () => {
     assert.equal(claimProcessing('m-release'), true);
     assert.equal(releaseProcessing('m-release'), true);
     assert.equal(claimProcessing('m-release'), true);
+  });
+
+  it('preserves processing data during unrelated locked state updates', () => {
+    assert.equal(claimProcessing('m-active'), true);
+    markProcessed('m-done', { archive: true, confidence: 91 });
+
+    updateState(state => {
+      state.lastScanTime = '2026-07-09T12:00:00.000Z';
+      if (!state.lastScanByAccount) state.lastScanByAccount = {};
+      state.lastScanByAccount['me@example.com'] = state.lastScanTime;
+    });
+
+    const state = loadState();
+    assert.equal(state.lastScanTime, '2026-07-09T12:00:00.000Z');
+    assert.ok(state.processedIds.includes('m-done'));
+    assert.equal(typeof state.processingIds['m-active'], 'string');
   });
 });

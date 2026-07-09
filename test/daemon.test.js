@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { resolveDaemonIntervals } from '../src/daemon.js';
+
+const require = createRequire(import.meta.url);
 
 describe('daemon interval resolution', () => {
   it('uses configured daemon scan interval when CLI interval is omitted', () => {
@@ -27,5 +30,12 @@ describe('daemon interval resolution', () => {
       scanIntervalSec: 30,
       reconcileIntervalSec: 300,
     });
+  });
+
+  it('lets PM2 use the configured daemon scan interval', () => {
+    const ecosystem = require('../ecosystem.config.cjs');
+    const winnow = ecosystem.apps.find(app => app.name === 'winnow-watch');
+
+    assert.equal(winnow.args, 'daemon');
   });
 });

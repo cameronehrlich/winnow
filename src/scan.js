@@ -4,7 +4,7 @@ import { GogAdapter } from './adapters/gog.js';
 import { classifyEmail } from './classify.js';
 import { loadConfig, getAdapter } from './config.js';
 import { loadAllRules } from './rules.js';
-import { loadState, saveState, isProcessed, markProcessed, pruneOldResults, claimProcessing, releaseProcessing } from './state.js';
+import { loadState, updateState, isProcessed, markProcessed, pruneOldResults, claimProcessing, releaseProcessing } from './state.js';
 import { postEmailFeed } from './notify.js';
 import { maybeSendPushForEmail } from './push.js';
 import { appendEmailEvent, upsertEmailItemFromResult } from './store.js';
@@ -137,9 +137,10 @@ export async function scan(account, opts = {}) {
         if (!ok) verified = false;
       }
       if (verified) {
-        if (!state.labelsVerified) state.labelsVerified = {};
-        state.labelsVerified[account] = new Date().toISOString();
-        saveState(state);
+        updateState(latest => {
+          if (!latest.labelsVerified) latest.labelsVerified = {};
+          latest.labelsVerified[account] = new Date().toISOString();
+        });
       }
     }
   }
@@ -261,27 +262,27 @@ export async function scan(account, opts = {}) {
   if (!dryRun) {
     pruneOldResults();
     // Track scan time + count for health checks and daily stats
-    const state = loadState();
-    const now = new Date().toISOString();
-    const today = now.split('T')[0];
-    state.lastScanTime = now;
-    if (!state.lastScanByAccount) state.lastScanByAccount = {};
-    if (!state.lastScanCountsByAccount) state.lastScanCountsByAccount = {};
-    state.lastScanByAccount[account] = now;
-    state.lastScanCountsByAccount[account] = {
-      scannedAt: now,
-      unreadFound: messages.length,
-      processed: totalProcessed,
-    };
-    if (!state.stats.daily) state.stats.daily = {};
-    if (!state.stats.daily[today]) state.stats.daily[today] = {};
-    if (!state.stats.daily[today].byPriority) state.stats.daily[today].byPriority = { low: 0, normal: 0, urgent: 0 };
-    if (!state.stats.daily[today].rulesTriggered) state.stats.daily[today].rulesTriggered = {};
-    state.stats.daily[today].processed = state.stats.daily[today].processed || 0;
-    state.stats.daily[today].ephemeral = state.stats.daily[today].ephemeral || 0;
-    state.stats.daily[today].bumped = state.stats.daily[today].bumped || 0;
-    state.stats.daily[today].scansRun = (state.stats.daily[today].scansRun || 0) + 1;
-    saveState(state);
+    updateState(state => {
+      const now = new Date().toISOString();
+      const today = now.split('T')[0];
+      state.lastScanTime = now;
+      if (!state.lastScanByAccount) state.lastScanByAccount = {};
+      if (!state.lastScanCountsByAccount) state.lastScanCountsByAccount = {};
+      state.lastScanByAccount[account] = now;
+      state.lastScanCountsByAccount[account] = {
+        scannedAt: now,
+        unreadFound: messages.length,
+        processed: totalProcessed,
+      };
+      if (!state.stats.daily) state.stats.daily = {};
+      if (!state.stats.daily[today]) state.stats.daily[today] = {};
+      if (!state.stats.daily[today].byPriority) state.stats.daily[today].byPriority = { low: 0, normal: 0, urgent: 0 };
+      if (!state.stats.daily[today].rulesTriggered) state.stats.daily[today].rulesTriggered = {};
+      state.stats.daily[today].processed = state.stats.daily[today].processed || 0;
+      state.stats.daily[today].ephemeral = state.stats.daily[today].ephemeral || 0;
+      state.stats.daily[today].bumped = state.stats.daily[today].bumped || 0;
+      state.stats.daily[today].scansRun = (state.stats.daily[today].scansRun || 0) + 1;
+    });
   }
 
   console.log(`[winnow] Scan complete. Processed ${totalProcessed} new emails.`);
