@@ -2,7 +2,7 @@ import { execFile, exec as execRaw, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { GogAdapter } from './adapters/gog.js';
 import { classifyEmail } from './classify.js';
-import { loadConfig, getAdapter } from './config.js';
+import { loadConfig, getAdapter, getScanSearchQuery } from './config.js';
 import { loadAllRules } from './rules.js';
 import { loadState, updateState, isProcessed, markProcessed, pruneOldResults, claimProcessing, releaseProcessing } from './state.js';
 import { postEmailFeed } from './notify.js';
@@ -112,7 +112,7 @@ export async function scan(account, opts = {}) {
   const postFeed = opts.postEmailFeedFn || postEmailFeed;
   const sendPush = opts.maybeSendPushFn || maybeSendPushForEmail;
   const runHooksFn = opts.runActionHooksFn || runActionHooks;
-  const searchQuery = opts.searchQuery || config.scan?.search_query || 'in:inbox is:unread newer_than:1d';
+  const searchQuery = opts.searchQuery || getScanSearchQuery(config);
   const maxMessages = config.scan?.max_messages || 50;
   const dryRun = opts.dryRun || false;
   const skipProcessedCheck = opts.skipProcessedCheck || false;

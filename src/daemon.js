@@ -1,5 +1,5 @@
 import { scan } from './scan.js';
-import { getAccounts, loadConfig } from './config.js';
+import { getAccounts, getScanSearchQuery, loadConfig } from './config.js';
 import { startActionListener, stopActionListener } from './slack-actions.js';
 import { startApiServer } from './api.js';
 import { reconcileMailbox } from './reconcile.js';
@@ -20,10 +20,10 @@ export function resolveDaemonIntervals(opts = {}, config = {}) {
   };
 }
 
-async function runScanCycle(accounts) {
+async function runScanCycle(accounts, searchQuery) {
   for (const account of accounts) {
     try {
-      await scan(account, { searchQuery: 'in:inbox is:unread newer_than:1h' });
+      await scan(account, { searchQuery });
     } catch (err) {
       console.error(`[winnow/daemon] Scan error (${account}): ${err.message}`);
     }
@@ -70,6 +70,7 @@ export async function startDaemon(opts = {}) {
   const config = loadConfig();
   const accounts = getAccounts().map(a => a.email);
   const { scanIntervalSec, reconcileIntervalSec } = resolveDaemonIntervals(opts, config);
+  const scanSearchQuery = getScanSearchQuery(config);
 
   if (!accounts.length) throw new Error('No accounts configured');
 
@@ -77,7 +78,7 @@ export async function startDaemon(opts = {}) {
   const apiServer = await startApiServer();
   startSlackActionsInBackground();
 
-  const scanCycle = guarded(() => runScanCycle(accounts), 'scan');
+  const scanCycle = guarded(() => runScanCycle(accounts, scanSearchQuery), 'scan');
   const reconcileCycle = guarded(() => runReconcileCycle(accounts), 'reconcile');
 
   await scanCycle();

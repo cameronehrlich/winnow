@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import {
   getSlackActionRoutings,
   getSlackRoutingForAccount,
+  getScanSearchQuery,
   reloadConfig,
 } from '../src/config.js';
 
@@ -79,5 +80,23 @@ describe('Slack routing config', () => {
     const actionRoutes = getSlackActionRoutings();
     assert.equal(actionRoutes.length, 1);
     assert.equal(actionRoutes[0].botToken, 'xoxb-default');
+  });
+});
+
+describe('scan query config', () => {
+  it('uses the configured scan search query', () => {
+    writeFileSync(process.env.WINNOW_CONFIG_PATH, `
+accounts:
+  - email: me@example.com
+scan:
+  search_query: in:inbox is:unread newer_than:3d
+`, 'utf8');
+    const config = reloadConfig();
+
+    assert.equal(getScanSearchQuery(config), 'in:inbox is:unread newer_than:3d');
+  });
+
+  it('defaults to the broad unread inbox query when scan config is missing', () => {
+    assert.equal(getScanSearchQuery({}), 'in:inbox is:unread newer_than:1d');
   });
 });

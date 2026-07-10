@@ -142,6 +142,10 @@ export function getAccountEmails() {
   return getAccounts().map(a => a.email);
 }
 
+export function getScanSearchQuery(config = loadConfig()) {
+  return config.scan?.search_query || 'in:inbox is:unread newer_than:1d';
+}
+
 export function getChannelForAccount(email) {
   return getSlackRoutingForAccount(email).channelId;
 }

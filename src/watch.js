@@ -1,5 +1,5 @@
 import { scan } from './scan.js';
-import { getAccounts } from './config.js';
+import { getAccounts, getScanSearchQuery, loadConfig } from './config.js';
 import { startActionListener, stopActionListener } from './slack-actions.js';
 
 const DEFAULT_INTERVAL_SEC = 30;
@@ -16,6 +16,7 @@ export async function watch(opts = {}) {
   }
 
   const emails = accounts.map(a => a.email);
+  const searchQuery = getScanSearchQuery(loadConfig());
   console.log(`[winnow] 👁️  Watch mode started — polling every ${intervalSec}s`);
   console.log(`[winnow] Accounts: ${emails.join(', ')}`);
 
@@ -32,7 +33,7 @@ export async function watch(opts = {}) {
     }
     running = true;
     try {
-      await runCycle(emails);
+      await runCycle(emails, searchQuery);
     } finally {
       running = false;
     }
@@ -55,12 +56,10 @@ export async function watch(opts = {}) {
   process.on('SIGTERM', shutdown);
 }
 
-async function runCycle(accounts) {
+async function runCycle(accounts, searchQuery) {
   for (const account of accounts) {
     try {
-      const results = await scan(account, {
-        searchQuery: 'in:inbox is:unread newer_than:1h',
-      });
+      const results = await scan(account, { searchQuery });
       if (results.length > 0) {
         const archived = results.filter(r => r.archive).length;
         const kept = results.length - archived;
