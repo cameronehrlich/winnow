@@ -4,7 +4,7 @@ import { GogAdapter } from './adapters/gog.js';
 import { classifyEmail } from './classify.js';
 import { loadConfig, getAdapter, getScanSearchQuery } from './config.js';
 import { loadAllRules } from './rules.js';
-import { loadState, updateState, isProcessed, markProcessed, pruneOldResults, claimProcessing, releaseProcessing } from './state.js';
+import { loadState, updateState, isProcessed, markProcessed, pruneOldResults, claimProcessing, releaseProcessing, localDateString } from './state.js';
 import { postEmailFeed } from './notify.js';
 import { maybeSendPushForEmail } from './push.js';
 import { appendEmailEvent, upsertEmailItemFromResult } from './store.js';
@@ -264,7 +264,7 @@ export async function scan(account, opts = {}) {
     // Track scan time + count for health checks and daily stats
     updateState(state => {
       const now = new Date().toISOString();
-      const today = now.split('T')[0];
+      const today = localDateString(now);
       state.lastScanTime = now;
       if (!state.lastScanByAccount) state.lastScanByAccount = {};
       if (!state.lastScanCountsByAccount) state.lastScanCountsByAccount = {};

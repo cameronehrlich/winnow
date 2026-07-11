@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { claimProcessing, loadState, markProcessed, recordUnsubscribe, releaseProcessing, updateState } from '../src/state.js';
+import { claimProcessing, loadState, localDateString, markProcessed, recordUnsubscribe, releaseProcessing, updateState } from '../src/state.js';
 import {
   closeStoreForTests,
   configureDatabaseForTests,
@@ -28,6 +28,25 @@ afterEach(() => {
 });
 
 describe('unsubscribe state tracking', () => {
+  it('buckets unsubscribe counters by Los Angeles day', () => {
+    recordUnsubscribe({
+      sender: 'Sender <sender@example.com>',
+      subject: 'Promo',
+      account: 'me@example.com',
+      threadId: 't-la-day',
+      source: 'manual',
+      method: 'form',
+      status: 'succeeded',
+      note: 'Backfilled near UTC midnight',
+      timestamp: '2026-07-11T06:30:00.000Z',
+    });
+
+    const daily = loadState().stats.unsubscribes.daily;
+    assert.equal(localDateString('2026-07-11T06:30:00.000Z'), '2026-07-10');
+    assert.equal(daily['2026-07-10'].total, 1);
+    assert.equal(daily['2026-07-11'], undefined);
+  });
+
   it('does not append duplicate events for the same unsubscribe action', () => {
     upsertEmailItemFromResult({
       account: 'me@example.com',

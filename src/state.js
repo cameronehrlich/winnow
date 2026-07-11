@@ -8,6 +8,7 @@ const DEFAULT_STATE_PATH = join(__dirname, '..', 'data', 'state.json');
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_RETRY_MS = 25;
 const CLAIM_TTL_MS = 10 * 60 * 1000;
+const STATE_TIME_ZONE = 'America/Los_Angeles';
 
 function statePath() {
   return process.env.WINNOW_STATE_PATH || DEFAULT_STATE_PATH;
@@ -35,6 +36,17 @@ const DEFAULT_STATE = {
 
 function cloneDefaultState() {
   return JSON.parse(JSON.stringify(DEFAULT_STATE));
+}
+
+export function localDateString(dateLike = Date.now(), timeZone = STATE_TIME_ZONE) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(dateLike));
+  const get = type => parts.find(p => p.type === type)?.value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
 function normalizeState(state) {
@@ -205,7 +217,7 @@ export function markProcessed(messageId, result) {
       if (result.ephemeral) state.stats.ephemeralCount = (state.stats.ephemeralCount || 0) + 1;
 
       // Daily stats tracking
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateString();
       if (!state.stats.daily) state.stats.daily = {};
       if (!state.stats.daily[today]) state.stats.daily[today] = {};
       const day = state.stats.daily[today];
@@ -288,7 +300,7 @@ export function recordUnsubscribe(entry) {
     for (const e of unsubscribes.entries) {
       const status = e.status || 'succeeded';
       unsubscribes.byStatus[status] = (unsubscribes.byStatus[status] || 0) + 1;
-      const day = (e.timestamp || now).slice(0, 10);
+      const day = localDateString(e.timestamp || now);
       if (!unsubscribes.daily[day]) unsubscribes.daily[day] = { total: 0, byStatus: {} };
       unsubscribes.daily[day].total++;
       unsubscribes.daily[day].byStatus[status] = (unsubscribes.daily[day].byStatus[status] || 0) + 1;
