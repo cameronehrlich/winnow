@@ -337,6 +337,22 @@ export async function followUnsubscribeLink(unsubscribeLink) {
   const formMatch = body.match(/<form\b[\s\S]*?<\/form>/i);
   if (!formMatch) {
     if (getRes.ok) return { status: 'succeeded', method: 'one-click', note: `GET ${getRes.status}`, urlHost: new URL(finalUrl).hostname };
+    if (getRes.status === 405) {
+      const postRes = await safeFetch(finalUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'List-Unsubscribe=One-Click',
+      }, MAX_UNSUBSCRIBE_REDIRECTS, cookieJar);
+      if (postRes.ok) {
+        return {
+          status: 'succeeded',
+          method: 'one-click',
+          note: `POST List-Unsubscribe=One-Click returned HTTP ${postRes.status}`,
+          urlHost: new URL(postRes.url || finalUrl).hostname,
+        };
+      }
+      throw new Error(`One-click POST returned HTTP ${postRes.status}`);
+    }
     throw new Error(`GET returned HTTP ${getRes.status}`);
   }
 

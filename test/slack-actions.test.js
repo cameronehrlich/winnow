@@ -86,4 +86,32 @@ describe('unsubscribe URL safety', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('retries one-click unsubscribe links with POST when GET is not allowed', async () => {
+    const originalFetch = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (url, opts = {}) => {
+      calls.push({ url: url.toString(), opts });
+      if (calls.length === 1) {
+        return new Response('', { status: 405 });
+      }
+      return new Response('accepted', { status: 202 });
+    };
+
+    try {
+      const result = await followUnsubscribeLink('https://example.com/list-unsubscribe');
+
+      assert.equal(result.status, 'succeeded');
+      assert.equal(result.method, 'one-click');
+      assert.equal(result.note, 'POST List-Unsubscribe=One-Click returned HTTP 202');
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0].opts.method, 'GET');
+      assert.equal(calls[1].url, 'https://example.com/list-unsubscribe');
+      assert.equal(calls[1].opts.method, 'POST');
+      assert.equal(calls[1].opts.headers.get('Content-Type'), 'application/x-www-form-urlencoded');
+      assert.equal(calls[1].opts.body, 'List-Unsubscribe=One-Click');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
