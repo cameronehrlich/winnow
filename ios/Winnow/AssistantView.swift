@@ -3,6 +3,7 @@ import UIKit
 
 struct AssistantMailboxView: View {
     @EnvironmentObject private var model: AppModel
+    let openSettings: () -> Void
     @State private var selectedAccount = ""
 
     var body: some View {
@@ -25,16 +26,7 @@ struct AssistantMailboxView: View {
             .navigationTitle("Ask Winnow")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if #available(iOS 26.0, *) {
-                    ToolbarItem(placement: .topBarLeading) {
-                        WinnowMark(size: 32)
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .topBarLeading) {
-                        WinnowMark(size: 32)
-                    }
-                }
+                WinnowSettingsToolbarItem(action: openSettings)
             }
         }
     }

@@ -80,6 +80,34 @@ struct WinnowMark: View {
     }
 }
 
+struct WinnowSettingsToolbarItem: ToolbarContent {
+    let action: () -> Void
+
+    @ToolbarContentBuilder
+    var body: some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .topBarLeading) {
+                settingsButton
+            }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .topBarLeading) {
+                settingsButton
+            }
+        }
+    }
+
+    private var settingsButton: some View {
+        Button(action: action) {
+            WinnowMark(size: 32)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open Settings")
+        .accessibilityHint("Shows Winnow settings")
+    }
+}
+
 struct SenderAvatar: View {
     let initials: String
     let seed: String

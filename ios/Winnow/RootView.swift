@@ -3,35 +3,19 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
-    @State private var selectedTab = 0
+    @State private var selectedTab: RootTab = .inbox
+    @State private var lastMailboxTab: MailboxTab = .inbox
+    @State private var searchMailbox: MailboxTab = .inbox
+    @State private var settingsPresented = false
+
+    private enum RootTab: Hashable {
+        case inbox, archived, ask, stats, search
+    }
 
     var body: some View {
         Group {
             if model.isConfigured {
-                TabView(selection: $selectedTab) {
-                    InboxView(mailbox: .inbox)
-                        .tabItem { Label("Inbox", systemImage: "tray.full") }
-                        .badge(model.inboxBadgeCount)
-                        .tag(0)
-
-                    InboxView(mailbox: .archived)
-                        .tabItem { Label("Archived", systemImage: "archivebox") }
-                        .badge(model.archivedBadgeCount)
-                        .tag(1)
-
-                    AssistantMailboxView()
-                        .tabItem { Label("Ask", systemImage: "sparkles") }
-                        .tag(2)
-
-                    StatsView()
-                        .tabItem { Label("Stats", systemImage: "chart.bar.xaxis") }
-                        .tag(3)
-
-                    SettingsView()
-                        .tabItem { Label("Settings", systemImage: "gearshape") }
-                        .tag(4)
-                }
-                .transition(.opacity)
+                configuredTabs.transition(.opacity)
             } else {
                 OnboardingView()
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
@@ -50,8 +34,13 @@ struct RootView: View {
                 model.stopAutoRefresh()
             }
         }
-        .onChange(of: selectedTab) { _, tab in
-            model.setArchivedVisible(tab == 1)
+        .onChange(of: selectedTab) { oldTab, newTab in
+            if oldTab == .inbox { lastMailboxTab = .inbox }
+            if oldTab == .archived { lastMailboxTab = .archived }
+            if newTab == .inbox { lastMailboxTab = .inbox }
+            if newTab == .archived { lastMailboxTab = .archived }
+            if newTab == .search { searchMailbox = lastMailboxTab }
+            model.setArchivedVisible(newTab == .archived)
         }
         .onChange(of: model.isConfigured) { _, isConfigured in
             if isConfigured, scenePhase == .active {
@@ -79,8 +68,82 @@ struct RootView: View {
                         guard model.toast?.id == toast.id else { return }
                         withAnimation { model.toast = nil }
                     }
+                }
+            }
+        .sheet(isPresented: $settingsPresented) {
+            SettingsView()
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(30)
+        }
+    }
+
+    @ViewBuilder
+    private var configuredTabs: some View {
+        if #available(iOS 26.0, *) {
+            modernTabs
+                .tabViewSearchActivation(.searchTabSelection)
+        } else if #available(iOS 18.0, *) {
+            modernTabs
+        } else {
+            legacyTabs
+        }
+    }
+
+    @available(iOS 18.0, *)
+    private var modernTabs: some View {
+        TabView(selection: $selectedTab) {
+            Tab("Inbox", systemImage: "tray.full", value: RootTab.inbox) {
+                InboxView(mailbox: .inbox, openSettings: openSettings)
+            }
+            .badge(model.inboxBadgeCount)
+
+            Tab("Archived", systemImage: "archivebox", value: RootTab.archived) {
+                InboxView(mailbox: .archived, openSettings: openSettings)
+            }
+            .badge(model.archivedBadgeCount)
+
+            Tab("Ask", systemImage: "sparkles", value: RootTab.ask) {
+                AssistantMailboxView(openSettings: openSettings)
+            }
+
+            Tab("Stats", systemImage: "chart.bar.xaxis", value: RootTab.stats) {
+                StatsView(openSettings: openSettings)
+            }
+
+            Tab("Search", systemImage: "magnifyingglass", value: RootTab.search, role: .search) {
+                EmailSearchView(mailbox: $searchMailbox, openSettings: openSettings)
             }
         }
+    }
+
+    private var legacyTabs: some View {
+        TabView(selection: $selectedTab) {
+            InboxView(mailbox: .inbox, openSettings: openSettings)
+                .tabItem { Label("Inbox", systemImage: "tray.full") }
+                .badge(model.inboxBadgeCount)
+                .tag(RootTab.inbox)
+
+            InboxView(mailbox: .archived, openSettings: openSettings)
+                .tabItem { Label("Archived", systemImage: "archivebox") }
+                .badge(model.archivedBadgeCount)
+                .tag(RootTab.archived)
+
+            AssistantMailboxView(openSettings: openSettings)
+                .tabItem { Label("Ask", systemImage: "sparkles") }
+                .tag(RootTab.ask)
+
+            StatsView(openSettings: openSettings)
+                .tabItem { Label("Stats", systemImage: "chart.bar.xaxis") }
+                .tag(RootTab.stats)
+
+            EmailSearchView(mailbox: $searchMailbox, openSettings: openSettings)
+                .tabItem { Label("Search", systemImage: "magnifyingglass") }
+                .tag(RootTab.search)
+        }
+    }
+
+    private func openSettings() {
+        settingsPresented = true
     }
 
     private func handleDeepLink(_ url: URL) {
@@ -91,12 +154,12 @@ struct RootView: View {
             let mailbox = components?.queryItems?.first(where: { $0.name == "mailbox" })?.value ?? "inbox"
             open(emailID: emailID, mailbox: mailbox)
         } else if url.host == "mailbox" {
-            selectedTab = url.pathComponents.contains("archived") ? 1 : 0
+            selectedTab = url.pathComponents.contains("archived") ? .archived : .inbox
         }
     }
 
     private func open(emailID: String, mailbox: String) {
-        selectedTab = mailbox == "archived" ? 1 : 0
+        selectedTab = mailbox == "archived" ? .archived : .inbox
         guard !emailID.isEmpty else { return }
         Task {
             await model.refresh(silent: true)

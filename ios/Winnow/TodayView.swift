@@ -2,6 +2,7 @@ import SwiftUI
 
 struct StatsView: View {
     @EnvironmentObject private var model: AppModel
+    let openSettings: () -> Void
 
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
@@ -78,6 +79,7 @@ struct StatsView: View {
             }
             .navigationTitle("Stats")
             .toolbar {
+                WinnowSettingsToolbarItem(action: openSettings)
                 ToolbarItem(placement: .topBarTrailing) {
                     ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
                 }

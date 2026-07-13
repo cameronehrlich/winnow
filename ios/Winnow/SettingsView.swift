@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
     @State private var serverURL = ""
     @State private var token = ""
     @State private var isTesting = false
@@ -145,6 +146,11 @@ struct SettingsView: View {
                 .scrollContentBackground(.hidden)
             }
             .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
             .onAppear {
                 serverURL = model.configuration.serverURL
                 token = model.configuration.token

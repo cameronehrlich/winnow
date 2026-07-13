@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum MailboxTab {
+enum MailboxTab: Hashable {
     case inbox
     case archived
 
@@ -43,25 +43,15 @@ enum MailboxTab {
 struct InboxView: View {
     @EnvironmentObject private var model: AppModel
     let mailbox: MailboxTab
+    let openSettings: () -> Void
 
     @State private var account = ""
-    @State private var searchText = ""
     @State private var navigationPath: [String] = []
 
     private var filteredEmails: [EmailItem] {
         model.emails.filter { item in
             let matchesAccount = account.isEmpty || item.account == account
-            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let matchesSearch = query.isEmpty || [
-                item.subject,
-                item.senderDisplayName,
-                item.fromEmail,
-                item.summary,
-                item.action,
-                item.deadline,
-                item.impact,
-            ].contains(where: { $0.localizedCaseInsensitiveContains(query) })
-            return mailbox.includes(item) && matchesAccount && matchesSearch
+            return mailbox.includes(item) && matchesAccount
         }
     }
 
@@ -112,22 +102,8 @@ struct InboxView: View {
             .navigationDestination(for: String.self) { emailID in
                 EmailDetailView(emailID: emailID)
             }
-            .searchable(
-                text: $searchText,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Sender, subject, or summary"
-            )
             .toolbar {
-                if #available(iOS 26.0, *) {
-                    ToolbarItem(placement: .topBarLeading) {
-                        WinnowMark(size: 32)
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .topBarLeading) {
-                        WinnowMark(size: 32)
-                    }
-                }
+                WinnowSettingsToolbarItem(action: openSettings)
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if model.accounts.count > 1 {
                         Menu {
@@ -154,17 +130,14 @@ struct InboxView: View {
     }
 
     private var emptyTitle: String {
-        if !searchText.isEmpty { return "No Matches" }
         return mailbox == .inbox ? "Inbox Clear" : "Nothing Archived Yet"
     }
 
     private var emptySymbol: String {
-        if !searchText.isEmpty { return "magnifyingglass" }
         return mailbox == .inbox ? "checkmark.circle" : "archivebox"
     }
 
     private var emptyDescription: String {
-        if !searchText.isEmpty { return "Try a different sender, subject, or summary." }
         return mailbox == .inbox
             ? "Nothing needs your attention right now."
             : "Messages handled by Winnow will appear here."
@@ -175,7 +148,110 @@ struct InboxView: View {
     }
 }
 
-private struct EmailCard: View {
+struct EmailSearchView: View {
+    @EnvironmentObject private var model: AppModel
+    @Binding var mailbox: MailboxTab
+    let openSettings: () -> Void
+
+    @State private var account = ""
+    @State private var searchText = ""
+    @State private var navigationPath: [String] = []
+
+    private var query: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var results: [EmailItem] {
+        guard !query.isEmpty else { return [] }
+        return model.emails.filter { item in
+            let matchesAccount = account.isEmpty || item.account == account
+            let matchesQuery = [
+                item.subject,
+                item.senderDisplayName,
+                item.fromEmail,
+                item.summary,
+                item.snippet,
+                item.action,
+                item.deadline,
+                item.impact,
+            ].contains(where: { $0.localizedCaseInsensitiveContains(query) })
+            return mailbox.includes(item) && matchesAccount && matchesQuery
+        }
+    }
+
+    var body: some View {
+        NavigationStack(path: $navigationPath) {
+            ZStack {
+                AppBackdrop()
+
+                if query.isEmpty {
+                    ContentUnavailableView {
+                        Label("Search \(mailbox.title)", systemImage: "magnifyingglass")
+                    } description: {
+                        Text("Find messages by sender, subject, summary, or content preview.")
+                    }
+                } else if results.isEmpty {
+                    ContentUnavailableView.search(text: query)
+                } else {
+                    List {
+                        ForEach(results) { item in
+                            EmailCard(
+                                item: item,
+                                account: model.account(email: item.account),
+                                isPerforming: model.performingEmailIDs.contains(item.id),
+                                openAction: { navigationPath.append(item.id) }
+                            )
+                            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .swipeActions(edge: mailbox.swipeEdge, allowsFullSwipe: true) {
+                                Button {
+                                    Task { _ = await model.perform(mailbox.primaryAction, on: item) }
+                                } label: {
+                                    Label(mailbox.primaryAction.label, systemImage: mailbox.primaryAction.systemImage)
+                                }
+                                .tint(mailbox == .inbox ? WinnowDesign.amber : WinnowDesign.indigo)
+                            }
+                        }
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .refreshable { await model.refresh() }
+                }
+            }
+            .navigationTitle("Search")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(for: String.self) { emailID in
+                EmailDetailView(emailID: emailID)
+            }
+            .searchable(text: $searchText, prompt: "Sender, subject, or summary")
+            .searchScopes($mailbox, activation: .onSearchPresentation) {
+                Text("Inbox").tag(MailboxTab.inbox)
+                Text("Archived").tag(MailboxTab.archived)
+            }
+            .toolbar {
+                WinnowSettingsToolbarItem(action: openSettings)
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if model.accounts.count > 1 {
+                        Menu {
+                            Button("All Accounts") { account = "" }
+                            Divider()
+                            ForEach(model.accounts) { item in
+                                Button(item.email) { account = item.email }
+                            }
+                        } label: {
+                            Image(systemName: account.isEmpty ? "person.2" : "person.crop.circle")
+                        }
+                        .accessibilityLabel("Filter search account")
+                    }
+                    ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
+                }
+            }
+        }
+    }
+}
+
+struct EmailCard: View {
     let item: EmailItem
     let account: AccountStatus?
     let isPerforming: Bool
