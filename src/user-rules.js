@@ -32,18 +32,26 @@ function rulesDirectory() {
   return process.env.WINNOW_RULES_DIR || DEFAULT_RULES_DIR;
 }
 
-function readRulesFile(path) {
+function readRulesFile(path, { strict = false } = {}) {
   try {
-    if (!existsSync(path)) return [];
+    if (!existsSync(path)) {
+      if (strict) throw new Error(`required rules file is missing: ${path}`);
+      return [];
+    }
     const parsed = yaml.load(readFileSync(path, 'utf8'));
-    return Array.isArray(parsed?.rules) ? parsed.rules : [];
-  } catch {
+    if (!Array.isArray(parsed?.rules)) {
+      if (strict) throw new TypeError(`required rules file must contain a rules array: ${path}`);
+      return [];
+    }
+    return parsed.rules;
+  } catch (err) {
+    if (strict) throw err;
     return [];
   }
 }
 
 function baselineRows() {
-  return readRulesFile(join(rulesDirectory(), 'baseline-rules.yaml'));
+  return readRulesFile(join(rulesDirectory(), 'baseline-rules.yaml'), { strict: true });
 }
 
 function accountRows(account) {
@@ -110,6 +118,12 @@ function baselineById(id) {
   return listBaselineRules().find(rule => rule.id === id) || null;
 }
 
+function withCurrentBaselineMatch(rule) {
+  if (!rule?.baselineRuleId) return rule;
+  const baseline = baselineById(rule.baselineRuleId);
+  return baseline ? { ...rule, type: 'semantic', match: baseline.match } : rule;
+}
+
 export function normalizeUserRule(input, { source = 'api', existing = null } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('rule must be an object');
   const unexpected = Object.keys(input).find(field => !USER_RULE_INPUT_FIELDS.has(field));
@@ -129,9 +143,16 @@ export function normalizeUserRule(input, { source = 'api', existing = null } = {
   if (!['exact', 'semantic'].includes(inferredType)) throw new TypeError('type must be exact or semantic');
   if (baseline && inferredType !== 'semantic') throw new TypeError('baseline overrides must be semantic rules');
   const effect = effectFrom({ ...existing, ...input });
-  const description = String(input.description ?? existing?.description ?? '').trim().slice(0, 1000);
+  const rawDescription = input.description ?? existing?.description ?? '';
+  if (typeof rawDescription !== 'string') throw new TypeError('description must be a string');
+  const description = rawDescription.trim().slice(0, 1000);
   const enabled = input.enabled ?? existing?.enabled ?? true;
   if (typeof enabled !== 'boolean') throw new TypeError('enabled must be a boolean');
+  if (baseline && !enabled) throw new TypeError('baseline overrides cannot be disabled; reset the override instead');
+  const rawSourceEmailItemId = input.sourceEmailItemId ?? existing?.sourceEmailItemId ?? null;
+  const sourceEmailItemId = rawSourceEmailItemId === null
+    ? null
+    : requiredText(rawSourceEmailItemId, 'sourceEmailItemId', 500);
 
   if (inferredType === 'exact') {
     const exact = validateAssistantRule({
@@ -153,7 +174,7 @@ export function normalizeUserRule(input, { source = 'api', existing = null } = {
       enabled,
       source: normalizedSource,
       baselineRuleId: null,
-      sourceEmailItemId: input.sourceEmailItemId ?? existing?.sourceEmailItemId ?? null,
+      sourceEmailItemId,
       conflictKey: `exact:${exact.matcherKind}:${exact.matcherValue}`,
     };
   }
@@ -176,12 +197,13 @@ export function normalizeUserRule(input, { source = 'api', existing = null } = {
     enabled,
     source: normalizedSource,
     baselineRuleId: baseline?.id || null,
-    sourceEmailItemId: input.sourceEmailItemId ?? existing?.sourceEmailItemId ?? null,
+    sourceEmailItemId,
     conflictKey: baseline ? `baseline:${baseline.id}` : semanticConflictKey(match),
   };
 }
 
 function toApiRule(rule, scope = 'user') {
+  rule = withCurrentBaselineMatch(rule);
   return {
     id: rule.id,
     account: rule.account ?? null,
@@ -218,6 +240,10 @@ export function updateUserRule(id, patch, { source = 'api' } = {}) {
 }
 
 export function disableUserRule(id) {
+  const existing = getUserRuleRecord(id);
+  if (existing?.baselineRuleId) {
+    throw new TypeError('baseline overrides cannot be disabled; reset the override instead');
+  }
   const rule = setUserRuleEnabled(id, false);
   return rule ? toApiRule(rule) : null;
 }
@@ -288,7 +314,9 @@ function legacySemanticRules(account, { operatorOnly = false } = {}) {
 
 export function listEffectiveSemanticRules(account) {
   const normalized = normalizedAccount(account);
-  const persisted = listUserRuleRecords({ account: normalized }).filter(rule => rule.type === 'semantic');
+  const persisted = listUserRuleRecords({ account: normalized })
+    .filter(rule => rule.type === 'semantic')
+    .map(withCurrentBaselineMatch);
   const operator = legacySemanticRules(normalized, { operatorOnly: true });
   const importComplete = getSyncState(`${IMPORT_STATE_PREFIX}${normalized}`, '') === 'complete';
   const legacy = importComplete ? [] : legacySemanticRules(normalized);
@@ -358,18 +386,39 @@ export function planUserRuleImport(account) {
 export function importUserRules(account, { dryRun = true } = {}) {
   const plan = planUserRuleImport(account);
   if (dryRun) return plan;
-  const imported = plan.candidates.map(candidate => upsertUserRule({
-    id: candidate.id,
-    account: candidate.account,
-    type: candidate.type,
-    effect: candidate.effect,
-    match: candidate.match,
-    description: candidate.description,
-    enabled: candidate.enabled,
-    baselineRuleId: candidate.baselineRuleId,
-  }, { source: 'import' }));
+  if (plan.skipped.length) {
+    throw new TypeError(`cannot apply YAML migration while ${plan.skipped.length} rule(s) are skipped`);
+  }
+  if (plan.alreadyImported) {
+    return { ...plan, dryRun: false, imported: [], preservedExisting: [], candidates: undefined };
+  }
+  const existingByConflict = new Map(listUserRuleRecords({ account: plan.account })
+    .map(rule => [rule.conflictKey, rule]));
+  const imported = [];
+  const preservedExisting = [];
+  for (const candidate of plan.candidates) {
+    const input = {
+      id: candidate.id,
+      account: candidate.account,
+      type: candidate.type,
+      effect: candidate.effect,
+      match: candidate.match,
+      description: candidate.description,
+      enabled: candidate.enabled,
+      baselineRuleId: candidate.baselineRuleId,
+    };
+    const normalized = normalizeUserRule(input, { source: 'import' });
+    const existing = existingByConflict.get(normalized.conflictKey);
+    if (existing) {
+      preservedExisting.push(toApiRule(existing));
+      continue;
+    }
+    const saved = upsertUserRule(input, { source: 'import' });
+    imported.push(saved);
+    existingByConflict.set(normalized.conflictKey, getUserRuleRecord(saved.id));
+  }
   setSyncState(`${IMPORT_STATE_PREFIX}${plan.account}`, 'complete');
-  return { ...plan, dryRun: false, imported, candidates: undefined };
+  return { ...plan, dryRun: false, imported, preservedExisting, candidates: undefined };
 }
 
 export function previewUserRule(input, { limit = 10 } = {}) {

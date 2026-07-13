@@ -28,7 +28,10 @@ struct MailRulesView: View {
     private var defaultRules: [MailRule] {
         let defaults = visibleRules.filter(\.belongsWithDefaults)
         guard !selectedAccount.isEmpty else { return defaults }
-        let overriddenIDs = Set(defaults.compactMap(\.baselineRuleId))
+        let overriddenIDs = Set(model.mailRules.filter { rule in
+            rule.isBaselineCustomization
+                && rule.account?.caseInsensitiveCompare(selectedAccount) == .orderedSame
+        }.compactMap(\.baselineRuleId))
         return defaults.filter { rule in
             !rule.isBaseline || !overriddenIDs.contains(rule.baselineRuleId ?? rule.id)
         }
@@ -113,7 +116,7 @@ struct MailRulesView: View {
             if model.isLoadingMailRules && model.mailRules.isEmpty { ProgressView("Loading rules…") }
         }
         .task {
-            if model.mailRules.isEmpty { await model.loadMailRules() }
+            await model.loadMailRules(showsError: model.mailRules.isEmpty)
         }
         .refreshable { await model.loadMailRules() }
         .toolbar {
@@ -199,10 +202,12 @@ private struct MailRuleRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(rule.description.isEmpty ? rule.matcherTitle : rule.description)
                         .font(.subheadline.weight(.semibold))
-                    Text(rule.matcherTitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                    if !rule.description.isEmpty && rule.description != rule.matcherTitle {
+                        Text(rule.matcherTitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                     HStack(spacing: 6) {
                         Text(rule.actionTitle)
                         Text("•")
@@ -265,7 +270,7 @@ private struct MailRuleEditorView: View {
     }
 
     private var canReview: Bool {
-        let matcherIsPresent = rule.isBaseline || (draft.type == "semantic"
+        let matcherIsPresent = rule.belongsWithDefaults || (draft.type == "semantic"
             ? draft.match?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             : draft.matcherValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
         let accountIsScoped = !rule.isBaseline
@@ -304,7 +309,7 @@ private struct MailRuleEditorView: View {
                 }
 
                 Section("Match") {
-                    if rule.isBaseline {
+                    if rule.belongsWithDefaults {
                         LabeledContent("Winnow default", value: rule.matcherTitle)
                         Label("The default’s match definition is managed by Winnow. You can customize its action.", systemImage: "lock.fill")
                             .font(.caption)
@@ -315,12 +320,12 @@ private struct MailRuleEditorView: View {
                             Text("Semantic").tag("semantic")
                         }
                     }
-                    if !rule.isBaseline && draft.type == "semantic" {
+                    if !rule.belongsWithDefaults && draft.type == "semantic" {
                         TextField("Messages matching…", text: Binding(
                             get: { draft.match ?? "" },
                             set: { draft.match = $0 }
                         ), axis: .vertical)
-                    } else if !rule.isBaseline {
+                    } else if !rule.belongsWithDefaults {
                         Picker("Field", selection: Binding(
                             get: { draft.matcherKind ?? "sender" },
                             set: { draft.matcherKind = $0 }
@@ -357,7 +362,7 @@ private struct MailRuleEditorView: View {
                     Text("Winnow validates every change and shows recent matches for exact rules before saving.")
                 }
             }
-            .navigationTitle(rule.isBaseline ? "Customize Default" : "Edit Rule")
+            .navigationTitle(rule.belongsWithDefaults ? "Customize Default" : "Edit Rule")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -367,6 +372,11 @@ private struct MailRuleEditorView: View {
             .onAppear {
                 if rule.isBaseline, draft.account == nil, model.accounts.count == 1 {
                     draft.account = model.accounts[0].email
+                }
+            }
+            .onChange(of: draft.type) { _, type in
+                if type == "exact", draft.matcherKind == nil {
+                    draft.matcherKind = "sender"
                 }
             }
             .sheet(isPresented: $showingReview) {

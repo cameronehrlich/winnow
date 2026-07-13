@@ -52,7 +52,8 @@ struct RootView: View {
         }
         .onChange(of: model.askNavigationRequest) { _, request in
             guard let request else { return }
-            selectedTab = 2
+            settingsPresented = false
+            selectedTab = .ask
             model.consumeAskNavigation(request)
         }
         .onOpenURL(perform: handleDeepLink)

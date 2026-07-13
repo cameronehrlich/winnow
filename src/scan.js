@@ -210,7 +210,7 @@ export async function scan(account, opts = {}) {
       // uses the best available headers, and evaluate newest rules first.
       const assistantRules = listAssistantRulesFn({ account, enabledOnly: true });
       const matchedAssistantRule = findMatchingAssistantRule(
-        [...assistantRules].reverse(),
+        assistantRules,
         { ...enrichedMsg, account },
       );
       const classification = matchedAssistantRule

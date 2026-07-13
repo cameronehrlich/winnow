@@ -99,15 +99,15 @@ describe('scan execution controls', () => {
       adapter,
       config: { scan: { max_messages: 10 } },
       dryRun: true,
-      // Store returns oldest first; scan must evaluate a reversed copy.
+      // Unified rule storage returns highest-precedence (newest) rules first.
       listAssistantRulesFn: () => [
-        {
-          id: 'rule-old-archive', account: 'me@example.com', effect: 'archive',
-          matcherKind: 'sender', matcherValue: 'person@example.com', enabled: true,
-        },
         {
           id: 'rule-new-keep', account: 'me@example.com', effect: 'keep',
           matcherKind: 'list_id', matcherValue: 'important.example.com', enabled: true,
+        },
+        {
+          id: 'rule-old-archive', account: 'me@example.com', effect: 'archive',
+          matcherKind: 'sender', matcherValue: 'person@example.com', enabled: true,
         },
       ],
       classifyEmailFn: async () => {

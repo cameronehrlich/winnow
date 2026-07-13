@@ -295,13 +295,13 @@ final class AppModel: ObservableObject {
         defer { performingRuleIDs.remove(rule.id) }
         do {
             let client = APIClient(configuration: configuration)
-            if rule.isBaseline {
+            if rule.belongsWithDefaults {
                 _ = try await client.customizeBaselineRule(draft)
             } else {
                 _ = try await client.updateMailRule(id: rule.id, candidate: draft)
             }
             await loadMailRules(showsError: false)
-            toast = ToastMessage(text: rule.isBaseline ? "Default customized" : "Rule updated", symbol: "checkmark.circle.fill")
+            toast = ToastMessage(text: rule.belongsWithDefaults ? "Default customized" : "Rule updated", symbol: "checkmark.circle.fill")
             return true
         } catch {
             presentedError = PresentedError(title: "Couldn’t save rule", message: error.localizedDescription)

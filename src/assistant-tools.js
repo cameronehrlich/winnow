@@ -432,6 +432,13 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
   if (name === 'rules.disable' || name === 'rules.reset') {
     const rule = getUserRuleRecord(args.ruleId);
     if (!rule || rule.account !== args.account) throw new AssistantToolError('rule_not_found', 'Assistant rule not found', 404);
+    if (name === 'rules.disable' && rule.baselineRuleId) {
+      throw new AssistantToolError(
+        'baseline_override_requires_reset',
+        'A baseline customization must be reset instead of disabled',
+        400,
+      );
+    }
     args = {
       ...args,
       type: rule.type,

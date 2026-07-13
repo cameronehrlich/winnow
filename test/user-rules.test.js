@@ -14,11 +14,15 @@ import {
 import {
   closeStoreForTests,
   configureDatabaseForTests,
+  getUserRuleRecord,
   listUserRuleRecords,
 } from '../src/store.js';
 import {
+  disableUserRule,
   importUserRules,
+  listBaselineRules,
   listEffectiveExactRules,
+  listEffectiveSemanticRules,
   listOperatorActionRules,
   listRulesForApi,
   planUserRuleImport,
@@ -107,6 +111,25 @@ describe('unified user rules', () => {
     assert.equal(listEffectiveExactRules('me@example.com').length, 1);
   });
 
+  it('returns exact rules in newest-first precedence order', () => {
+    const older = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'archive',
+      matcherKind: 'domain', matcherValue: 'example.com',
+    });
+    const newer = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'keep',
+      matcherKind: 'sender', matcherValue: 'person@example.com',
+    });
+    const database = new DatabaseSync(databasePath);
+    database.prepare('UPDATE user_rules SET updated_at = ? WHERE id = ?')
+      .run('2026-01-01T00:00:00.000Z', older.id);
+    database.prepare('UPDATE user_rules SET updated_at = ? WHERE id = ?')
+      .run('2026-02-01T00:00:00.000Z', newer.id);
+    database.close();
+
+    assert.deepEqual(listEffectiveExactRules('me@example.com').map(rule => rule.id), [newer.id, older.id]);
+  });
+
   it('customizes a read-only baseline through an override and reset restores it', () => {
     importUserRules('me@example.com', { dryRun: false });
     const override = upsertUserRule({
@@ -127,6 +150,43 @@ describe('unified user rules', () => {
     assert.equal(restored.scope, 'baseline');
     assert.equal(restored.editable, false);
     assert.equal(loadAllRules('me@example.com').rules.find(rule => rule.id === 'baseline-news').archive, true);
+  });
+
+  it('requires reset instead of disabling a baseline customization', () => {
+    const override = upsertUserRule({
+      account: 'me@example.com', type: 'semantic', effect: 'keep',
+      baselineRuleId: 'baseline-news',
+    });
+    assert.throws(
+      () => disableUserRule(override.id),
+      /baseline overrides cannot be disabled/i,
+    );
+    assert.throws(
+      () => upsertUserRule({
+        id: override.id, account: override.account, type: override.type,
+        effect: override.effect, baselineRuleId: override.baselineRuleId, enabled: false,
+      }),
+      /baseline overrides cannot be disabled/i,
+    );
+    assert.equal(getUserRuleRecord(override.id).enabled, true);
+  });
+
+  it('keeps a customization attached to the current versioned baseline match', () => {
+    const override = upsertUserRule({
+      account: 'me@example.com', type: 'semantic', effect: 'keep',
+      baselineRuleId: 'baseline-news',
+    });
+    writeFileSync(join(process.env.WINNOW_RULES_DIR, 'baseline-rules.yaml'), `
+rules:
+  - id: baseline-news
+    match: Updated newsletter guidance
+    archive: true
+`, 'utf8');
+
+    const apiRule = listRulesForApi('me@example.com').rules.find(rule => rule.id === override.id);
+    assert.equal(apiRule.match, 'Updated newsletter guidance');
+    assert.equal(loadAllRules('me@example.com').rules.find(rule => rule.id === override.id).match,
+      'Updated newsletter guidance');
   });
 
   it('exposes unified assistant rule tools and keeps mutations proposal-gated', async () => {
@@ -180,5 +240,55 @@ describe('unified user rules', () => {
     assert.equal(migrated.length, 1);
     assert.equal(migrated[0].id, 'newer-keep');
     assert.equal(migrated[0].effect, 'keep');
+  });
+
+  it('does not let YAML import overwrite newer persisted intent or repeat after completion', () => {
+    const existing = upsertUserRule({
+      account: 'me@example.com', type: 'semantic', effect: 'archive',
+      match: 'Messages about personal projects', description: 'Created in the app',
+    });
+
+    const first = importUserRules('me@example.com', { dryRun: false });
+    assert.equal(first.preservedExisting.length, 1);
+    assert.equal(first.preservedExisting[0].id, existing.id);
+    assert.equal(listEffectiveSemanticRules('me@example.com')
+      .find(rule => rule.id === existing.id).effect, 'archive');
+
+    const edited = upsertUserRule({
+      id: existing.id, account: existing.account, type: existing.type,
+      effect: 'keep', match: existing.match, description: 'Edited after migration',
+    });
+    const repeated = importUserRules('me@example.com', { dryRun: false });
+    assert.equal(repeated.alreadyImported, true);
+    assert.equal(repeated.imported.length, 0);
+    assert.equal(getUserRuleRecord(edited.id).description, 'Edited after migration');
+  });
+
+  it('fails closed when the versioned baseline file is malformed', () => {
+    writeFileSync(join(process.env.WINNOW_RULES_DIR, 'baseline-rules.yaml'), 'rules: [', 'utf8');
+    assert.throws(() => listBaselineRules());
+  });
+
+  it('fails closed when the versioned baseline file has the wrong schema', () => {
+    writeFileSync(join(process.env.WINNOW_RULES_DIR, 'baseline-rules.yaml'), 'rule: []\n', 'utf8');
+    assert.throws(() => listBaselineRules(), /must contain a rules array/i);
+  });
+
+  it('refuses to complete YAML migration when a legacy customization cannot be preserved', () => {
+    writeFileSync(join(process.env.WINNOW_RULES_DIR, 'rules-me@example.com.yaml'), `
+rules:
+  - id: baseline-news
+    match: A personalized newsletter definition
+    archive: false
+`, 'utf8');
+    const plan = planUserRuleImport('me@example.com');
+    assert.equal(plan.skipped.length, 1);
+    assert.throws(
+      () => importUserRules('me@example.com', { dryRun: false }),
+      /cannot apply YAML migration/i,
+    );
+    assert.equal(listRulesForApi('me@example.com').migrationPending, true);
+    assert.equal(loadAllRules('me@example.com').rules.find(rule => rule.id === 'baseline-news').match,
+      'A personalized newsletter definition');
   });
 });

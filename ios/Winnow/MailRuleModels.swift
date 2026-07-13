@@ -38,7 +38,7 @@ struct MailRule: Decodable, Identifiable, Equatable {
     var belongsWithDefaults: Bool { isBaseline || isBaselineCustomization }
     var canCustomize: Bool { isBaseline && !isLockedAutomation }
     var canReset: Bool { isBaselineCustomization }
-    var canToggle: Bool { editable && !isBaseline }
+    var canToggle: Bool { editable && !isBaseline && !isBaselineCustomization }
 
     var actionTitle: String { effect == "archive" ? "Archive" : "Keep" }
     var actionSymbol: String { effect == "archive" ? "archivebox" : "tray" }
@@ -97,6 +97,27 @@ struct MailRuleDraft: Encodable, Equatable {
         description = rule.description
         enabled = rule.enabled
         baselineRuleId = rule.baselineRuleId ?? (rule.isBaseline ? rule.id : nil)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case account, type, effect, match, matcherKind, matcherValue
+        case description, enabled, baselineRuleId
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encodeIfPresent(account, forKey: .account)
+        try values.encode(type, forKey: .type)
+        try values.encode(effect, forKey: .effect)
+        try values.encode(description, forKey: .description)
+        try values.encode(enabled, forKey: .enabled)
+        try values.encodeIfPresent(baselineRuleId, forKey: .baselineRuleId)
+        if type == "exact" {
+            try values.encode(matcherKind ?? "sender", forKey: .matcherKind)
+            try values.encodeIfPresent(matcherValue, forKey: .matcherValue)
+        } else {
+            try values.encodeIfPresent(match, forKey: .match)
+        }
     }
 }
 

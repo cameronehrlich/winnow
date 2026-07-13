@@ -301,7 +301,7 @@ async function handleAuthed(req, res, url) {
 
   const disableRuleMatch = route(url.pathname, '/v1/rules/:id/disable');
   if (req.method === 'POST' && disableRuleMatch) {
-    const rule = disableUserRule(disableRuleMatch.id);
+    const rule = ruleRequest(() => disableUserRule(disableRuleMatch.id));
     if (!rule) throw new HttpError(404, 'rule_not_found');
     sendJson(res, 200, { rule });
     return;

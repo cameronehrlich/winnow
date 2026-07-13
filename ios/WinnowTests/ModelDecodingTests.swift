@@ -203,6 +203,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(response.rules[0].accountTitle, "All accounts")
         XCTAssertTrue(response.rules[1].isBaselineCustomization)
         XCTAssertTrue(response.rules[1].canReset)
+        XCTAssertFalse(response.rules[1].canToggle)
         XCTAssertTrue(response.rules[2].isLockedAutomation)
         XCTAssertEqual(response.rules[2].matcherTitle, "Sender: robot@example.com")
     }
@@ -224,6 +225,21 @@ final class ModelDecodingTests: XCTestCase {
         let preview = try JSONDecoder().decode(MailRulePreviewResponse.self, from: json)
         XCTAssertNil(preview.matchCount)
         XCTAssertEqual(preview.note, "Semantic rules are evaluated by the classifier.")
+    }
+
+    func testExactRuleDraftEncodesDefaultFieldAndOmitsSemanticMatch() throws {
+        let json = #"{"id":"rule-1","account":"me@example.com","type":"semantic","effect":"archive","match":"Routine receipts","description":"Receipts","enabled":true,"scope":"user","source":"api","editable":true}"#.data(using: .utf8)!
+        let rule = try JSONDecoder().decode(MailRule.self, from: json)
+        var draft = MailRuleDraft(rule: rule)
+        draft.type = "exact"
+        draft.matcherValue = "billing@example.com"
+
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any]
+        )
+        XCTAssertEqual(payload["matcherKind"] as? String, "sender")
+        XCTAssertEqual(payload["matcherValue"] as? String, "billing@example.com")
+        XCTAssertNil(payload["match"])
     }
 
     func testRuleAPIUsesUnifiedRoutesAndCandidateShapes() async throws {
