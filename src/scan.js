@@ -79,6 +79,13 @@ function enrichMessageFromFull(msg, full) {
   };
 }
 
+function inferReadState(message, searchQuery = '') {
+  const labels = Array.isArray(message?.labelIds) ? message.labelIds : [];
+  if (labels.includes('UNREAD')) return 'unread';
+  if (labels.length) return 'read';
+  return /(?:^|\s)is:unread(?:\s|$)/i.test(searchQuery) ? 'unread' : 'unknown';
+}
+
 async function getUnsubscribeLink(adapter, account, msg, fullMessage = null) {
   const fromSearchResult = extractUnsubscribeLink(msg.headers);
   if (fromSearchResult) return fromSearchResult;
@@ -174,6 +181,7 @@ export async function scan(account, opts = {}) {
         threadId: msg.threadId,
         unsubscribeLink,
         account,
+        readState: inferReadState(enrichedMsg, searchQuery),
       };
 
       if (dryRun) {
@@ -186,6 +194,7 @@ export async function scan(account, opts = {}) {
             add: [LABEL_MAP.archived],
             remove: ['INBOX', 'UNREAD'],
           });
+          result.readState = 'read';
         }
         // Non-archived emails: leave completely untouched in inbox
 
@@ -203,6 +212,7 @@ export async function scan(account, opts = {}) {
               remove: ['INBOX', 'UNREAD'],
             });
             result.archive = true;
+            result.readState = 'read';
           }
         }
 

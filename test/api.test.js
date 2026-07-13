@@ -51,6 +51,8 @@ api:
     subject: 'Hello',
     summary: 'A useful email',
     archive: false,
+    readState: 'unread',
+    unsubscribeLink: 'mailto:unsubscribe@example.com',
     confidence: 88,
   }, {
     account: 'me@example.com',
@@ -80,7 +82,10 @@ describe('local API', () => {
   it('allows health without auth and protects v1 routes', async () => {
     const health = await fetch(`${baseUrl}/health`);
     assert.equal(health.status, 200);
-    assert.equal((await health.json()).ok, true);
+    const healthJson = await health.json();
+    assert.equal(healthJson.ok, true);
+    assert.equal(healthJson.store.ok, true);
+    assert.equal(healthJson.store.path, undefined);
 
     const denied = await fetch(`${baseUrl}/v1/emails`);
     assert.equal(denied.status, 401);
@@ -93,6 +98,8 @@ describe('local API', () => {
     const emailJson = await emails.json();
     assert.equal(emailJson.items.length, 1);
     assert.equal(emailJson.items[0].subject, 'Hello');
+    assert.equal(emailJson.items[0].readState, 'unread');
+    assert.equal(emailJson.items[0].isRead, false);
 
     const summary = await fetch(`${baseUrl}/v1/summaries/daily?date=2026-06-29`, { headers });
     assert.equal(summary.status, 200);
@@ -120,6 +127,22 @@ describe('local API', () => {
     assert.equal(statusJson.ok, true);
     assert.equal(statusJson.accounts[0].email, 'me@example.com');
     assert.equal(statusJson.slack.actionRouteCount, 1);
+  });
+
+  it('bootstraps the native client with stable defaults and capabilities', async () => {
+    const headers = { Authorization: 'Bearer test-token' };
+    const response = await fetch(`${baseUrl}/v1/bootstrap`, { headers });
+    assert.equal(response.status, 200);
+
+    const body = await response.json();
+    assert.equal(body.apiVersion, 1);
+    assert.equal(body.defaultAccount, 'me@example.com');
+    assert.equal(body.defaults.emailState, 'all');
+    assert.equal(body.defaults.pageSize, 50);
+    assert.deepEqual(body.capabilities.emailStates, ['all', 'inbox', 'archived']);
+    assert.ok(body.capabilities.emailActions.includes('mark-read'));
+    assert.equal(body.capabilities.push.deviceRegistration, true);
+    assert.equal(body.capabilities.push.delivery, false);
   });
 
   it('serves MCP initialize, tool list, and status tool calls', async () => {
@@ -162,6 +185,63 @@ describe('local API', () => {
     assert.equal(statusJson.result.structuredContent.accounts[0].email, 'me@example.com');
   });
 
+  it('preserves JSON-RPC batch and invalid-request handling on MCP', async () => {
+    const headers = {
+      Authorization: 'Bearer test-token',
+      'Content-Type': 'application/json',
+    };
+    const batch = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify([
+        { jsonrpc: '2.0', id: 10, method: 'ping' },
+        { jsonrpc: '2.0', id: 11, method: 'tools/list' },
+      ]),
+    });
+    assert.equal(batch.status, 200);
+    const batchJson = await batch.json();
+    assert.equal(batchJson.length, 2);
+    assert.deepEqual(batchJson.map(response => response.id), [10, 11]);
+
+    const primitive = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: 'null',
+    });
+    assert.equal(primitive.status, 200);
+    assert.equal((await primitive.json()).error.code, -32600);
+  });
+
+  it('reports mailto unsubscribe as manual and deduplicates repeat taps', async () => {
+    const headers = { Authorization: 'Bearer test-token' };
+    const feed = await fetch(`${baseUrl}/v1/emails?limit=1`, { headers });
+    const feedJson = await feed.json();
+    const item = feedJson.items[0];
+    assert.equal(item.unsubscribeState, 'available');
+
+    const first = await fetch(`${baseUrl}/v1/emails/${encodeURIComponent(item.id)}/unsubscribe`, {
+      method: 'POST',
+      headers,
+    });
+    assert.equal(first.status, 200);
+    const firstJson = await first.json();
+    assert.equal(firstJson.ok, false);
+    assert.equal(firstJson.outcome, 'attempted');
+    assert.equal(firstJson.requiresManualAction, true);
+    assert.equal(firstJson.item.unsubscribeState, 'attempted');
+
+    const second = await fetch(`${baseUrl}/v1/emails/${encodeURIComponent(item.id)}/unsubscribe`, {
+      method: 'POST',
+      headers,
+    });
+    const secondJson = await second.json();
+    assert.equal(secondJson.outcome, 'attempted');
+    assert.equal(secondJson.deduplicated, true);
+
+    const refreshed = await fetch(`${baseUrl}/v1/emails/${encodeURIComponent(item.id)}`, { headers });
+    assert.equal((await refreshed.json()).item.unsubscribeState, 'attempted');
+  });
+
   it('returns a client error for invalid JSON bodies', async () => {
     const res = await fetch(`${baseUrl}/v1/push/devices`, {
       method: 'POST',
@@ -173,5 +253,36 @@ describe('local API', () => {
     });
     assert.equal(res.status, 400);
     assert.equal((await res.json()).error, 'invalid_json');
+
+    const nonObject = await fetch(`${baseUrl}/v1/push/devices`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'application/json',
+      },
+      body: 'null',
+    });
+    assert.equal(nonObject.status, 400);
+    assert.equal((await nonObject.json()).error, 'invalid_json_body');
+  });
+
+  it('rejects invalid feed filters and non-boolean scan controls', async () => {
+    const headers = { Authorization: 'Bearer test-token' };
+
+    const state = await fetch(`${baseUrl}/v1/emails?state=trash`, { headers });
+    assert.equal(state.status, 400);
+    assert.equal((await state.json()).error, 'invalid_state');
+
+    const limit = await fetch(`${baseUrl}/v1/emails?limit=500`, { headers });
+    assert.equal(limit.status, 400);
+    assert.equal((await limit.json()).error, 'invalid_limit');
+
+    const scan = await fetch(`${baseUrl}/v1/scans`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dryRun: 'false' }),
+    });
+    assert.equal(scan.status, 400);
+    assert.equal((await scan.json()).error, 'invalid_dryRun');
   });
 });

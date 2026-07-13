@@ -16,7 +16,7 @@ import { WebClient } from '@slack/web-api';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { getSlackActionRoutings } from './config.js';
-import { findUnsubscribeBySourceMessageId, recordUnsubscribe } from './state.js';
+import { findUnsubscribeBySourceMessageId, findUnsubscribeForEmail, recordUnsubscribe } from './state.js';
 import { archiveEmail, moveEmailToInbox } from './actions.js';
 import { formatEmailFeedMessage } from './notify.js';
 import { getEmailItem } from './store.js';
@@ -398,9 +398,16 @@ async function handleUnsubscribe(web, payload, action) {
 
   console.log(`[winnow/actions] Unsubscribe: ${data.threadId || '(no thread)'} (${data.account || 'no account'})`);
   try {
-    const existing = findUnsubscribeBySourceMessageId(ts);
+    const existing = findUnsubscribeBySourceMessageId(ts) || findUnsubscribeForEmail({
+      account: data.account,
+      threadId: data.threadId,
+      sender: data.from,
+    });
     if (existing && existing.status !== 'failed') {
-      await markMessageDone(web, channelId, ts, `🚫 ${cleanSubject}\n_Already unsubscribed_`);
+      const existingStatusText = existing.status === 'attempted'
+        ? '_Manual unsubscribe required_'
+        : '_Already unsubscribed_';
+      await markMessageDone(web, channelId, ts, `🚫 ${cleanSubject}\n${existingStatusText}`);
       console.log('[winnow/actions] Unsubscribe already recorded for this Slack card; skipping duplicate request');
       return;
     }

@@ -386,9 +386,9 @@ pm2 save
 
 Scheduled Slack archive digests are retired. Use `winnow summary` or the local API for on-demand daily analytics.
 
-## Local API
+## Private API and iOS access
 
-The daemon exposes a private local API for the future iOS app. Set `WINNOW_API_TOKEN` in `.env`, then call API routes with `Authorization: Bearer <token>`.
+The daemon exposes a private API for the native iOS app and other personal clients. Set a long random `WINNOW_API_TOKEN` in `.env`, then call API routes with `Authorization: Bearer <token>`.
 
 Defaults:
 
@@ -398,10 +398,22 @@ api:
   port: 3777
 ```
 
+Keep Winnow bound to `127.0.0.1`. For a physical iPhone on the same private tailnet, expose that loopback service through Tailscale Serve instead of binding the API to every network interface:
+
+```bash
+tailscale serve --bg --https=9443 http://127.0.0.1:3777
+tailscale serve status
+curl "https://<mac-hostname>.<tailnet>.ts.net:9443/health"
+```
+
+Use `https://<mac-hostname>.<tailnet>.ts.net:9443` as the app's server URL and the same bearer token from `.env`. The iPhone must be signed into the tailnet. Do not use Tailscale Funnel for this personal API.
+
 Useful endpoints:
 
 ```bash
 curl http://127.0.0.1:3777/health
+curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
+  "http://127.0.0.1:3777/v1/bootstrap"
 curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
   "http://127.0.0.1:3777/v1/status"
 curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
@@ -411,6 +423,19 @@ curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
 curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
   "http://127.0.0.1:3777/v1/emails?state=all&limit=50"
 ```
+
+The mobile feed supports `state=all|inbox|archived`, optional `account`, cursor pagination, and limits from 1–200. Email items include stable `readState` (`read`, `unread`, or `unknown`) plus nullable `isRead`. Detail and action routes are:
+
+```text
+GET  /v1/emails/:id
+POST /v1/emails/:id/archive
+POST /v1/emails/:id/move-to-inbox
+POST /v1/emails/:id/mark-read
+POST /v1/emails/:id/mark-unread
+POST /v1/emails/:id/unsubscribe
+```
+
+Successful actions return `{ ok, action, item }`, with the refreshed item included so clients do not need to guess local state. Items also expose `unsubscribeState` (`available`, `succeeded`, `attempted`, `failed`, or `unavailable`). Unsubscribe responses add `outcome` and `requiresManualAction`; mailto links are reported as attempted/manual rather than falsely reported as complete, and repeated completed attempts are deduplicated across the API and Slack. `GET /v1/bootstrap` returns the configured accounts, defaults, and server capabilities. APNs device registration is scaffolded, but push delivery remains disabled until credentials and dispatch are deliberately enabled; the V1 app should refresh or poll.
 
 `POST /v1/scans` defaults to `dryRun: true`; pass `{"dryRun": false}` only when an API client should apply Gmail/Slack side effects.
 The same bearer token also protects `/mcp`, a Streamable-HTTP-style JSON-RPC endpoint exposing Winnow status, account routing, email lists, summaries, events, dry-run scans, and email actions as MCP tools.

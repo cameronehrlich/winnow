@@ -35,27 +35,55 @@ export async function syncSlackDeliveryForItem(item, reason = 'Mailbox state cha
   return { updated, reason };
 }
 
-export async function reconcileMailbox({ account = '', days = 7, limit = 100 } = {}) {
-  const adapter = new GogAdapter();
+export async function reconcileMailbox({ account = '', days = 7, limit = 100, adapter = new GogAdapter() } = {}) {
   const items = listRecentTrackedEmailItems({ account, days, limit });
   const changes = [];
 
   for (const item of items) {
     try {
       const state = await adapter.getMailboxState(item.account, item.messageId);
-      if (!state.mailboxState || state.mailboxState === item.mailboxState) continue;
+      const nextMailboxState = state.mailboxState || item.mailboxState;
+      const nextReadState = typeof state.unread === 'boolean'
+        ? (state.unread ? 'unread' : 'read')
+        : item.readState;
+      const mailboxChanged = nextMailboxState !== item.mailboxState;
+      const readStateChanged = nextReadState !== item.readState;
+      if (!mailboxChanged && !readStateChanged) continue;
+
+      const changeDescriptions = [];
+      if (mailboxChanged) changeDescriptions.push(`mailbox ${item.mailboxState} to ${nextMailboxState}`);
+      if (readStateChanged) changeDescriptions.push(`read state ${item.readState} to ${nextReadState}`);
+      const reason = `Gmail changed ${changeDescriptions.join(' and ')}`;
 
       const updated = updateEmailItemState(item.id, {
-        mailboxState: state.mailboxState,
-        triageState: state.mailboxState === 'archived' ? 'manual_archived' : 'restored',
-        reason: `Gmail labels changed to ${state.mailboxState}`,
+        mailboxState: nextMailboxState,
+        readState: nextReadState,
+        triageState: mailboxChanged
+          ? (nextMailboxState === 'archived' ? 'manual_archived' : 'restored')
+          : item.triageState,
+        reason: mailboxChanged ? `Gmail labels changed to ${nextMailboxState}` : item.reason,
       });
+
+      // The read_state column was added after Winnow had already accumulated a
+      // sizeable local history. Hydrate those migrated `unknown` values from
+      // Gmail without presenting hundreds of old messages as fresh activity.
+      const isSilentReadStateHydration = !mailboxChanged
+        && item.readState === 'unknown'
+        && nextReadState !== 'unknown';
+      if (isSilentReadStateHydration) continue;
+
       appendEmailEvent('mailbox.state_changed', updated, {
         source: 'gmail_sync',
-        reason: `Mailbox state changed from ${item.mailboxState} to ${state.mailboxState}`,
-        metadata: { previousMailboxState: item.mailboxState, labels: state.labels },
+        reason,
+        metadata: {
+          previousMailboxState: item.mailboxState,
+          previousReadState: item.readState,
+          mailboxState: nextMailboxState,
+          readState: nextReadState,
+          labels: state.labels,
+        },
       });
-      await syncSlackDeliveryForItem(updated, 'Mailbox reconciliation');
+      if (mailboxChanged) await syncSlackDeliveryForItem(updated, 'Mailbox reconciliation');
       changes.push(updated);
     } catch (err) {
       console.error(`[winnow/reconcile] Failed to reconcile ${item.account}/${item.messageId}: ${err.message}`);

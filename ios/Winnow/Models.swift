@@ -1,0 +1,283 @@
+import Foundation
+
+struct EmailListResponse: Decodable {
+    var items: [EmailItem]
+    var nextCursor: String?
+}
+
+struct EmailItem: Decodable, Identifiable, Equatable {
+    let id: String
+    let account: String
+    let messageId: String
+    let threadId: String
+    let fromName: String
+    let fromEmail: String
+    let from: String
+    let subject: String
+    let snippet: String
+    let summary: String
+    let action: String
+    let deadline: String
+    let impact: String
+    let handling: String
+    let reason: String
+    let confidence: Int?
+    let ephemeral: Bool
+    let lowConfidenceKept: Bool
+    var triageState: String
+    var mailboxState: String
+    let archive: Bool
+    let unsubscribeLink: String
+    var unsubscribeState: String
+    let createdAt: String
+    let processedAt: String
+    let updatedAt: String
+    var readState: String
+
+    var isArchived: Bool { mailboxState == "archived" || archive }
+    var canOpenInGmail: Bool { !threadId.isEmpty }
+    var canUnsubscribe: Bool {
+        !unsubscribeLink.isEmpty && !["succeeded", "attempted"].contains(unsubscribeState)
+    }
+    var isUnread: Bool { readState == "unread" }
+
+    var senderDisplayName: String {
+        if !fromName.isEmpty { return fromName }
+        if !fromEmail.isEmpty { return fromEmail }
+        if !from.isEmpty { return from }
+        return "Unknown sender"
+    }
+
+    var senderInitials: String {
+        let components = senderDisplayName
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .prefix(2)
+        let initials = components.compactMap(\.first).map(String.init).joined()
+        return initials.isEmpty ? "?" : initials.uppercased()
+    }
+
+    var displayDate: Date? { processedAt.winnowDate ?? createdAt.winnowDate }
+
+    var gmailURL: URL? {
+        guard canOpenInGmail else { return nil }
+        var components = URLComponents(string: "https://mail.google.com/mail/u/")
+        if !account.isEmpty {
+            components?.queryItems = [URLQueryItem(name: "authuser", value: account)]
+        }
+        components?.fragment = "all/\(threadId)"
+        return components?.url
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, account, messageId, threadId, fromName, fromEmail, from, subject, snippet
+        case summary, action, deadline, impact, handling, reason, confidence, ephemeral
+        case lowConfidenceKept, triageState, mailboxState, archive, unsubscribeLink
+        case createdAt, processedAt, updatedAt, readState, isRead, unsubscribeState
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        account = try values.decodeIfPresent(String.self, forKey: .account) ?? ""
+        messageId = try values.decodeIfPresent(String.self, forKey: .messageId) ?? ""
+        threadId = try values.decodeIfPresent(String.self, forKey: .threadId) ?? ""
+        fromName = try values.decodeIfPresent(String.self, forKey: .fromName) ?? ""
+        fromEmail = try values.decodeIfPresent(String.self, forKey: .fromEmail) ?? ""
+        from = try values.decodeIfPresent(String.self, forKey: .from) ?? ""
+        subject = try values.decodeIfPresent(String.self, forKey: .subject) ?? "(no subject)"
+        snippet = try values.decodeIfPresent(String.self, forKey: .snippet) ?? ""
+        summary = try values.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        action = try values.decodeIfPresent(String.self, forKey: .action) ?? ""
+        deadline = try values.decodeIfPresent(String.self, forKey: .deadline) ?? ""
+        impact = try values.decodeIfPresent(String.self, forKey: .impact) ?? ""
+        handling = try values.decodeIfPresent(String.self, forKey: .handling) ?? ""
+        reason = try values.decodeIfPresent(String.self, forKey: .reason) ?? ""
+        confidence = try values.decodeIfPresent(Int.self, forKey: .confidence)
+        ephemeral = try values.decodeIfPresent(Bool.self, forKey: .ephemeral) ?? false
+        lowConfidenceKept = try values.decodeIfPresent(Bool.self, forKey: .lowConfidenceKept) ?? false
+        triageState = try values.decodeIfPresent(String.self, forKey: .triageState) ?? "kept"
+        mailboxState = try values.decodeIfPresent(String.self, forKey: .mailboxState) ?? "unknown"
+        archive = try values.decodeIfPresent(Bool.self, forKey: .archive) ?? (mailboxState == "archived")
+        unsubscribeLink = try values.decodeIfPresent(String.self, forKey: .unsubscribeLink) ?? ""
+        unsubscribeState = try values.decodeIfPresent(String.self, forKey: .unsubscribeState)
+            ?? (unsubscribeLink.isEmpty ? "unavailable" : "available")
+        createdAt = try values.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+        processedAt = try values.decodeIfPresent(String.self, forKey: .processedAt) ?? ""
+        updatedAt = try values.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
+
+        if let state = try values.decodeIfPresent(String.self, forKey: .readState) {
+            readState = state
+        } else if let isRead = try values.decodeIfPresent(Bool.self, forKey: .isRead) {
+            readState = isRead ? "read" : "unread"
+        } else {
+            readState = "unknown"
+        }
+    }
+}
+
+struct DailySummary: Decodable, Equatable {
+    let date: String
+    let timeZone: String
+    let account: String
+    let counters: SummaryCounters
+    let lists: SummaryLists
+
+    static let empty = DailySummary(
+        date: "",
+        timeZone: "America/Los_Angeles",
+        account: "all",
+        counters: .empty,
+        lists: .empty
+    )
+}
+
+struct SummaryCounters: Decodable, Equatable {
+    let processed: Int
+    let kept: Int
+    let autoArchived: Int
+    let manualArchived: Int
+    let restoredToInbox: Int
+    let unsubscribedSucceeded: Int
+    let unsubscribedFailed: Int
+    let unsubscribedAttempted: Int
+    let ephemeral: Int
+    let lowConfidenceKept: Int
+
+    static let empty = SummaryCounters(
+        processed: 0,
+        kept: 0,
+        autoArchived: 0,
+        manualArchived: 0,
+        restoredToInbox: 0,
+        unsubscribedSucceeded: 0,
+        unsubscribedFailed: 0,
+        unsubscribedAttempted: 0,
+        ephemeral: 0,
+        lowConfidenceKept: 0
+    )
+
+    var totalArchived: Int { autoArchived + manualArchived }
+}
+
+struct SummaryLists: Decodable, Equatable {
+    let actedOn: [SummaryItem]
+    let archived: [SummaryItem]
+    let kept: [SummaryItem]
+    let restored: [SummaryItem]
+    let unsubscribed: [SummaryItem]
+
+    static let empty = SummaryLists(actedOn: [], archived: [], kept: [], restored: [], unsubscribed: [])
+}
+
+struct SummaryItem: Decodable, Equatable, Identifiable {
+    let eventId: Int
+    let timestamp: String
+    let account: String
+    let threadId: String
+    let messageId: String
+    let from: String
+    let subject: String
+    let summary: String
+    let actionType: String
+    let source: String
+    let reason: String
+    let confidence: Int?
+
+    var id: Int { eventId }
+    var displayDate: Date? { timestamp.winnowDate }
+}
+
+struct RuntimeStatus: Decodable, Equatable {
+    let ok: Bool
+    let timestamp: String
+    let process: RuntimeProcess
+    let scans: RuntimeScans
+    let accounts: [AccountStatus]
+}
+
+struct RuntimeProcess: Decodable, Equatable {
+    let pid: Int
+    let uptimeSeconds: Int
+    let node: String
+}
+
+struct RuntimeScans: Decodable, Equatable {
+    let lastScanTime: String?
+    let lastScanByAccount: [String: String]
+}
+
+struct AccountListResponse: Decodable {
+    let accounts: [AccountStatus]
+}
+
+struct AccountStatus: Decodable, Equatable, Identifiable {
+    let email: String
+    let scan: AccountScan
+    let latestEvent: LatestEvent?
+
+    var id: String { email }
+}
+
+struct AccountScan: Decodable, Equatable {
+    let lastScanAt: String?
+    let lastScanFound: Int?
+    let lastScanProcessed: Int?
+}
+
+struct LatestEvent: Decodable, Equatable {
+    let id: Int
+    let eventType: String
+    let timestamp: String
+    let subject: String
+}
+
+struct ActionResponse: Decodable {
+    let ok: Bool
+    let action: String?
+    let item: EmailItem?
+    let outcome: String?
+    let requiresManualAction: Bool?
+}
+
+enum EmailAction: String, CaseIterable {
+    case archive = "archive"
+    case moveToInbox = "move-to-inbox"
+    case markRead = "mark-read"
+    case markUnread = "mark-unread"
+    case unsubscribe = "unsubscribe"
+
+    var label: String {
+        switch self {
+        case .archive: "Archive"
+        case .moveToInbox: "Move to Inbox"
+        case .markRead: "Mark Read"
+        case .markUnread: "Mark Unread"
+        case .unsubscribe: "Unsubscribe"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .archive: "archivebox"
+        case .moveToInbox: "tray.and.arrow.down"
+        case .markRead: "envelope.open"
+        case .markUnread: "envelope.badge"
+        case .unsubscribe: "person.crop.circle.badge.minus"
+        }
+    }
+}
+
+extension String {
+    fileprivate var winnowDate: Date? {
+        if let date = Self.preciseISO8601.date(from: self) { return date }
+        return Self.basicISO8601.date(from: self)
+    }
+
+    private static let preciseISO8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let basicISO8601 = ISO8601DateFormatter()
+}

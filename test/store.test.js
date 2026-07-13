@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import {
   appendEmailEvent,
   closeStoreForTests,
   configureDatabaseForTests,
+  ensureStore,
   getDailyActionSummary,
   listDeliveryRecords,
   recordDelivery,
@@ -28,6 +30,71 @@ afterEach(() => {
 });
 
 describe('daily action summary', () => {
+  it('migrates an existing email store to add read state', () => {
+    const path = join(tempDir, 'winnow.db');
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE email_items (
+        id TEXT PRIMARY KEY,
+        account TEXT NOT NULL,
+        gmail_message_id TEXT,
+        gmail_thread_id TEXT,
+        from_name TEXT,
+        from_email TEXT,
+        subject TEXT,
+        snippet TEXT,
+        summary TEXT,
+        action TEXT,
+        deadline TEXT,
+        impact TEXT,
+        handling TEXT,
+        reason TEXT,
+        confidence INTEGER,
+        ephemeral INTEGER NOT NULL DEFAULT 0,
+        low_confidence_kept INTEGER NOT NULL DEFAULT 0,
+        triage_state TEXT NOT NULL DEFAULT 'kept',
+        mailbox_state TEXT NOT NULL DEFAULT 'unknown',
+        unsubscribe_url TEXT,
+        created_at TEXT NOT NULL,
+        processed_at TEXT,
+        updated_at TEXT NOT NULL,
+        UNIQUE(account, gmail_message_id)
+      )
+    `);
+    legacy.close();
+
+    ensureStore();
+    const inspector = new DatabaseSync(path, { readOnly: true });
+    const columns = inspector.prepare('PRAGMA table_info(email_items)').all();
+    inspector.close();
+    assert.ok(columns.some(column => column.name === 'read_state'));
+  });
+
+  it('round-trips native-client read state without guessing unknown values', () => {
+    const unread = upsertEmailItemFromResult({
+      account: 'me@example.com',
+      messageId: 'm-unread',
+      threadId: 't-unread',
+      from: 'Sender <sender@example.com>',
+      subject: 'Unread',
+      archive: false,
+      readState: 'unread',
+    });
+    const unknown = upsertEmailItemFromResult({
+      account: 'me@example.com',
+      messageId: 'm-unknown',
+      threadId: 't-unknown',
+      from: 'Sender <sender@example.com>',
+      subject: 'Unknown',
+      archive: false,
+    });
+
+    assert.equal(unread.readState, 'unread');
+    assert.equal(unread.isRead, false);
+    assert.equal(unknown.readState, 'unknown');
+    assert.equal(unknown.isRead, null);
+  });
+
   it('counts scan, archive, kept, restore, and unsubscribe events by Los Angeles day', () => {
     const archived = upsertEmailItemFromResult({
       account: 'me@example.com',

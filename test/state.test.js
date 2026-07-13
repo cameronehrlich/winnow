@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { claimProcessing, loadState, localDateString, markProcessed, recordUnsubscribe, releaseProcessing, updateState } from '../src/state.js';
+import { claimProcessing, findUnsubscribeForEmail, loadState, localDateString, markProcessed, recordUnsubscribe, releaseProcessing, updateState } from '../src/state.js';
 import {
   closeStoreForTests,
   configureDatabaseForTests,
@@ -86,6 +86,11 @@ describe('unsubscribe state tracking', () => {
     assert.equal(second.id, first.id);
     assert.equal(entries[0].timestamp, '2026-06-29T17:00:00.000Z');
     assert.equal(listEvents({ limit: 10 }).length, 1);
+    assert.equal(findUnsubscribeForEmail({
+      account: entry.account,
+      threadId: entry.threadId,
+      sender: entry.sender,
+    })?.status, 'succeeded');
   });
 });
 

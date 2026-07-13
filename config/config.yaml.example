@@ -24,7 +24,8 @@ slack:
   # all = keep current Slack feed behavior; kept = only inbox-worthy emails; off = no Slack feed
   feed_mode: all
 
-# Local API for the future iOS app
+# Private API for the personal iOS app
+# Keep this loopback-only; use Tailscale Serve HTTPS for physical-device access.
 # Set WINNOW_API_TOKEN in .env. The same token protects /v1/* and /mcp.
 api:
   host: 127.0.0.1

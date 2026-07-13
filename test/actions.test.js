@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { archiveEmail, moveEmailToInbox } from '../src/actions.js';
+import { archiveEmail, markEmailRead, markEmailUnread, moveEmailToInbox } from '../src/actions.js';
 import {
   closeStoreForTests,
   configureDatabaseForTests,
@@ -184,5 +184,44 @@ describe('email actions', () => {
 
     assert.equal(result.id, item.id);
     assert.equal(listEvents({ limit: 10 }).length, 0);
+  });
+
+  it('persists read and unread actions for API refreshes', async () => {
+    installFakeGog();
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com',
+      messageId: 'm-read-state',
+      threadId: 't-read-state',
+      from: 'Sender <sender@example.com>',
+      subject: 'Read state',
+      archive: false,
+      readState: 'unread',
+    }, {
+      account: 'me@example.com',
+      messageId: 'm-read-state',
+      threadId: 't-read-state',
+      timestamp: '2026-07-12T16:00:00.000Z',
+    });
+
+    const read = await markEmailRead({
+      emailItemId: item.id,
+      account: item.account,
+      threadId: item.threadId,
+      messageId: item.messageId,
+      source: 'api',
+    });
+    assert.equal(read.readState, 'read');
+    assert.equal(read.isRead, true);
+
+    const unread = await markEmailUnread({
+      emailItemId: item.id,
+      account: item.account,
+      threadId: item.threadId,
+      messageId: item.messageId,
+      source: 'api',
+    });
+    assert.equal(unread.readState, 'unread');
+    assert.equal(unread.isRead, false);
+    assert.equal(listEvents({ limit: 10 }).filter(event => event.eventType === 'mailbox.state_changed').length, 2);
   });
 });

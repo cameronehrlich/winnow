@@ -64,7 +64,7 @@ export async function archiveEmail({
 } = {}) {
   if (!account || !threadId) throw new Error('account and threadId are required');
   const existing = lookupItem({ emailItemId, account, threadId, messageId });
-  if (existing?.mailboxState === 'archived') return existing;
+  if (existing?.mailboxState === 'archived' && existing.readState === 'read') return existing;
 
   const adapter = adapterFor();
   await adapter.archive(account, threadId);
@@ -74,6 +74,7 @@ export async function archiveEmail({
   const updated = updateEmailItemState(item.id, {
     triageState: 'manual_archived',
     mailboxState: 'archived',
+    readState: 'read',
     reason,
   });
   appendEmailEvent('email.manual_archived', updated, { source, reason });
@@ -123,15 +124,18 @@ export async function markEmailRead({
   reason = 'Marked read',
 } = {}) {
   if (!account || !threadId) throw new Error('account and threadId are required');
+  const existing = lookupItem({ emailItemId, account, threadId, messageId });
+  if (existing?.readState === 'read') return existing;
   const adapter = adapterFor();
   await adapter.markRead(account, threadId);
-  const item = resolveItem({ emailItemId, account, threadId, messageId, from, subject, summary });
-  appendEmailEvent('mailbox.state_changed', item, {
+  const item = existing || resolveItem({ emailItemId, account, threadId, messageId, from, subject, summary });
+  const updated = updateEmailItemState(item.id, { readState: 'read' });
+  appendEmailEvent('mailbox.state_changed', updated, {
     source,
     reason,
     metadata: { readState: 'read' },
   });
-  return item;
+  return updated;
 }
 
 export async function markEmailUnread({
@@ -146,13 +150,16 @@ export async function markEmailUnread({
   reason = 'Marked unread',
 } = {}) {
   if (!account || !threadId) throw new Error('account and threadId are required');
+  const existing = lookupItem({ emailItemId, account, threadId, messageId });
+  if (existing?.readState === 'unread') return existing;
   const adapter = adapterFor();
   await adapter.modifyLabels(account, threadId, { add: ['UNREAD'] });
-  const item = resolveItem({ emailItemId, account, threadId, messageId, from, subject, summary });
-  appendEmailEvent('mailbox.state_changed', item, {
+  const item = existing || resolveItem({ emailItemId, account, threadId, messageId, from, subject, summary });
+  const updated = updateEmailItemState(item.id, { readState: 'unread' });
+  appendEmailEvent('mailbox.state_changed', updated, {
     source,
     reason,
     metadata: { readState: 'unread' },
   });
-  return item;
+  return updated;
 }

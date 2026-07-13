@@ -7,6 +7,16 @@ function apnsConfigured() {
   );
 }
 
+export function getPushCapabilities() {
+  const configured = apnsConfigured();
+  return {
+    deviceRegistration: true,
+    delivery: false,
+    configured,
+    reason: configured ? 'apns_dispatch_not_enabled' : 'apns_not_configured',
+  };
+}
+
 export async function maybeSendPushForEmail(item) {
   if (!item || item.archive || item.mailboxState === 'archived') {
     return { sent: false, reason: 'not_kept' };

@@ -349,6 +349,16 @@ export function findUnsubscribeBySourceMessageId(sourceMessageId) {
   return entries.find(entry => entry.sourceMessageId === sourceMessageId) || null;
 }
 
+export function findUnsubscribeForEmail({ account = '', threadId = '', sender = '' } = {}) {
+  if (!account || !threadId) return null;
+  const entries = getUnsubscribes().entries || [];
+  return entries.find(entry => (
+    entry.account === account
+    && entry.threadId === threadId
+    && (!sender || !entry.sender || entry.sender === sender)
+  )) || null;
+}
+
 export function getStats() {
   const state = loadState();
   return {

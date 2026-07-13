@@ -38,6 +38,7 @@ const EVENT_JOIN_SELECT = `
   i.low_confidence_kept AS item_low_confidence_kept,
   i.triage_state AS item_triage_state,
   i.mailbox_state AS item_mailbox_state,
+  i.read_state AS item_read_state,
   i.unsubscribe_url AS item_unsubscribe_url,
   i.created_at AS item_created_at,
   i.processed_at AS item_processed_at,
@@ -119,6 +120,7 @@ function migrate() {
       low_confidence_kept INTEGER NOT NULL DEFAULT 0,
       triage_state TEXT NOT NULL DEFAULT 'kept',
       mailbox_state TEXT NOT NULL DEFAULT 'unknown',
+      read_state TEXT NOT NULL DEFAULT 'unknown',
       unsubscribe_url TEXT,
       created_at TEXT NOT NULL,
       processed_at TEXT,
@@ -196,6 +198,13 @@ function migrate() {
       updated_at TEXT NOT NULL
     );
   `);
+
+  // Older personal databases predate native-client read state. This additive
+  // migration lets a normal daemon restart upgrade them in place.
+  const emailColumns = database.prepare('PRAGMA table_info(email_items)').all();
+  if (!emailColumns.some(column => column.name === 'read_state')) {
+    database.exec("ALTER TABLE email_items ADD COLUMN read_state TEXT NOT NULL DEFAULT 'unknown'");
+  }
 }
 
 function getMeta(key) {
@@ -233,6 +242,10 @@ export function resultToEmailItem(result, opts = {}) {
   const archived = Boolean(result.archive);
   const triageState = opts.triageState || (archived ? 'auto_archived' : 'kept');
   const mailboxState = opts.mailboxState || (archived ? 'archived' : 'inbox');
+  const requestedReadState = opts.readState || result.readState;
+  const readState = ['read', 'unread', 'unknown'].includes(requestedReadState)
+    ? requestedReadState
+    : (archived ? 'read' : 'unknown');
   const confidence = Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : null;
   const lowConfidenceKept = !archived && confidence !== null && confidence < 70;
   const timestamp = opts.timestamp || result.processedAt || nowIso();
@@ -257,6 +270,7 @@ export function resultToEmailItem(result, opts = {}) {
     lowConfidenceKept: lowConfidenceKept ? 1 : 0,
     triageState,
     mailboxState,
+    readState,
     unsubscribeUrl: result.unsubscribeLink || result.unsubscribe_url || '',
     createdAt: timestamp,
     processedAt: timestamp,
@@ -287,6 +301,8 @@ function rowToEmailItem(row) {
     lowConfidenceKept: Boolean(row.low_confidence_kept),
     triageState: row.triage_state,
     mailboxState: row.mailbox_state,
+    readState: row.read_state || 'unknown',
+    isRead: row.read_state === 'read' ? true : row.read_state === 'unread' ? false : null,
     archive: row.mailbox_state === 'archived' || row.triage_state === 'auto_archived' || row.triage_state === 'manual_archived',
     unsubscribeLink: row.unsubscribe_url || '',
     createdAt: row.created_at,
@@ -301,12 +317,12 @@ export function upsertEmailItem(item) {
     INSERT INTO email_items (
       id, account, gmail_message_id, gmail_thread_id, from_name, from_email, subject, snippet,
       summary, action, deadline, impact, handling, reason, confidence, ephemeral, low_confidence_kept,
-      triage_state, mailbox_state, unsubscribe_url, created_at, processed_at, updated_at
+      triage_state, mailbox_state, read_state, unsubscribe_url, created_at, processed_at, updated_at
     )
     VALUES (
       @id, @account, @gmailMessageId, @gmailThreadId, @fromName, @fromEmail, @subject, @snippet,
       @summary, @action, @deadline, @impact, @handling, @reason, @confidence, @ephemeral, @lowConfidenceKept,
-      @triageState, @mailboxState, @unsubscribeUrl, @createdAt, @processedAt, @updatedAt
+      @triageState, @mailboxState, @readState, @unsubscribeUrl, @createdAt, @processedAt, @updatedAt
     )
     ON CONFLICT(id) DO UPDATE SET
       gmail_message_id = COALESCE(excluded.gmail_message_id, email_items.gmail_message_id),
@@ -326,6 +342,7 @@ export function upsertEmailItem(item) {
       low_confidence_kept = excluded.low_confidence_kept,
       triage_state = excluded.triage_state,
       mailbox_state = excluded.mailbox_state,
+      read_state = excluded.read_state,
       unsubscribe_url = excluded.unsubscribe_url,
       processed_at = COALESCE(excluded.processed_at, email_items.processed_at),
       updated_at = excluded.updated_at
@@ -349,19 +366,24 @@ export function findEmailItemByGmail({ account, messageId, threadId }) {
   return rowToEmailItem(row);
 }
 
-export function updateEmailItemState(id, { triageState, mailboxState, reason } = {}) {
+export function updateEmailItemState(id, { triageState, mailboxState, readState, reason } = {}) {
   const existing = getEmailItem(id);
   if (!existing) return null;
+  const normalizedReadState = ['read', 'unread', 'unknown'].includes(readState)
+    ? readState
+    : existing.readState;
   const updates = {
     id,
     triageState: triageState || existing.triageState,
     mailboxState: mailboxState || existing.mailboxState,
+    readState: normalizedReadState,
     reason: reason || existing.reason,
     updatedAt: nowIso(),
   };
   getDb().prepare(`
     UPDATE email_items
-    SET triage_state = @triageState, mailbox_state = @mailboxState, reason = @reason, updated_at = @updatedAt
+    SET triage_state = @triageState, mailbox_state = @mailboxState, read_state = @readState,
+        reason = @reason, updated_at = @updatedAt
     WHERE id = @id
   `).run(updates);
   return getEmailItem(id);
@@ -449,6 +471,7 @@ function rowToEvent(row) {
       low_confidence_kept: row.item_low_confidence_kept,
       triage_state: row.item_triage_state,
       mailbox_state: row.item_mailbox_state,
+      read_state: row.item_read_state,
       unsubscribe_url: row.item_unsubscribe_url,
       created_at: row.item_created_at,
       processed_at: row.item_processed_at,
