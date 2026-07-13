@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
     private var autoRefreshTask: Task<Void, Never>?
     private var refreshInFlight = false
     private var refreshGeneration = 0
+    private var pendingOptimisticActions: [String: EmailAction] = [:]
     private var archivedIsVisible = false
     private let archivedViewedKey = "winnow.archived-last-viewed"
 
@@ -83,7 +84,12 @@ final class AppModel: ObservableObject {
                 fetchedAccounts
             )
             guard generation == refreshGeneration else { return }
-            emails = inboxPage.items + archivedPage.items
+            var refreshedEmails = inboxPage.items + archivedPage.items
+            for (emailID, action) in pendingOptimisticActions {
+                guard let index = refreshedEmails.firstIndex(where: { $0.id == emailID }) else { continue }
+                refreshedEmails[index].applyOptimistic(action)
+            }
+            emails = refreshedEmails
             summary = dailySummary
             lifetimeSummary = lifetime
             status = runtimeStatus
@@ -171,17 +177,32 @@ final class AppModel: ObservableObject {
 
     func perform(_ action: EmailAction, on item: EmailItem, showsConfirmation: Bool = true) async -> Bool {
         guard !performingEmailIDs.contains(item.id) else { return false }
+        let originalItem = email(id: item.id) ?? item
+        let appliesOptimistically = action.supportsOptimisticUpdate
+
         performingEmailIDs.insert(item.id)
         defer { performingEmailIDs.remove(item.id) }
 
+        if appliesOptimistically {
+            refreshGeneration &+= 1
+            pendingOptimisticActions[item.id] = action
+            applyOptimistic(action, to: item.id)
+            publishEmailState()
+            if showsConfirmation {
+                toast = ToastMessage(text: successMessage(for: action), symbol: action.systemImage)
+            }
+        }
+
         do {
             let response = try await APIClient(configuration: configuration).perform(action, emailID: item.id)
+            pendingOptimisticActions.removeValue(forKey: item.id)
             refreshGeneration &+= 1
             if let updated = response.item {
                 replace(updated)
-            } else {
+            } else if !appliesOptimistically {
                 applyOptimistic(action, to: item.id)
             }
+            publishEmailState()
 
             let requiresManualUnsubscribe = action == .unsubscribe &&
                 (response.requiresManualAction == true || response.outcome == "attempted")
@@ -196,11 +217,18 @@ final class AppModel: ObservableObject {
                 )
                 return true
             }
-            if showsConfirmation {
+            if showsConfirmation && !appliesOptimistically {
                 toast = ToastMessage(text: successMessage(for: action), symbol: action.systemImage)
             }
             return true
         } catch {
+            if appliesOptimistically {
+                pendingOptimisticActions.removeValue(forKey: item.id)
+                refreshGeneration &+= 1
+                replace(originalItem)
+                publishEmailState()
+                toast = nil
+            }
             presentedError = PresentedError(title: "Action failed", message: error.localizedDescription)
             return false
         }
@@ -281,20 +309,12 @@ final class AppModel: ObservableObject {
 
     private func applyOptimistic(_ action: EmailAction, to id: String) {
         guard let index = emails.firstIndex(where: { $0.id == id }) else { return }
-        switch action {
-        case .archive:
-            emails[index].mailboxState = "archived"
-            emails[index].triageState = "manual_archived"
-        case .moveToInbox:
-            emails[index].mailboxState = "inbox"
-            emails[index].triageState = "restored"
-        case .markRead:
-            emails[index].readState = "read"
-        case .markUnread:
-            emails[index].readState = "unread"
-        case .unsubscribe:
-            break
-        }
+        emails[index].applyOptimistic(action)
+    }
+
+    private func publishEmailState() {
+        WidgetSnapshotStore.save(emails: emails)
+        PushNotificationManager.shared.setAppIconBadge(inboxBadgeCount)
     }
 
     private func waitForRefreshToFinish() async {

@@ -34,7 +34,13 @@ struct EmailItem: Decodable, Identifiable, Equatable {
     let updatedAt: String
     var readState: String
 
-    var isArchived: Bool { mailboxState == "archived" || archive }
+    var isArchived: Bool {
+        switch mailboxState {
+        case "archived": true
+        case "inbox": false
+        default: archive
+        }
+    }
     var canOpenInGmail: Bool { !threadId.isEmpty }
     var canUnsubscribe: Bool {
         !unsubscribeLink.isEmpty && !["succeeded", "attempted"].contains(unsubscribeState)
@@ -376,6 +382,32 @@ enum EmailAction: String, CaseIterable {
         case .markRead: "envelope.open"
         case .markUnread: "envelope.badge"
         case .unsubscribe: "person.crop.circle.badge.minus"
+        }
+    }
+
+    var supportsOptimisticUpdate: Bool {
+        switch self {
+        case .archive, .moveToInbox, .markRead, .markUnread: true
+        case .unsubscribe: false
+        }
+    }
+}
+
+extension EmailItem {
+    mutating func applyOptimistic(_ action: EmailAction) {
+        switch action {
+        case .archive:
+            mailboxState = "archived"
+            triageState = "manual_archived"
+        case .moveToInbox:
+            mailboxState = "inbox"
+            triageState = "restored"
+        case .markRead:
+            readState = "read"
+        case .markUnread:
+            readState = "unread"
+        case .unsubscribe:
+            break
         }
     }
 }

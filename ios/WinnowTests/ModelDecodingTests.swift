@@ -45,6 +45,22 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(item.meaningfulAction)
     }
 
+    func testOptimisticMailboxActionsTakePrecedenceOverLegacyArchiveFlag() throws {
+        let json = #"{"id":"abc","mailboxState":"archived","archive":true,"readState":"unread"}"#.data(using: .utf8)!
+        var item = try JSONDecoder().decode(EmailItem.self, from: json)
+
+        item.applyOptimistic(.moveToInbox)
+        XCTAssertFalse(item.isArchived)
+        XCTAssertEqual(item.triageState, "restored")
+
+        item.applyOptimistic(.archive)
+        XCTAssertTrue(item.isArchived)
+        XCTAssertEqual(item.triageState, "manual_archived")
+
+        item.applyOptimistic(.markRead)
+        XCTAssertFalse(item.isUnread)
+    }
+
     func testNoActionLanguageIsHiddenFromCompactCards() throws {
         let json = #"{"id":"abc","action":"No action needed from the user."}"#.data(using: .utf8)!
         let item = try JSONDecoder().decode(EmailItem.self, from: json)
