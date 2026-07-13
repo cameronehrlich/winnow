@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { loadConfig } from './config.js';
+import { normalizeMessageContent } from './message-content.js';
 import { loadAllRules, formatRulesForPrompt } from './rules.js';
 
 let geminiClient;
@@ -13,7 +14,7 @@ function getClient() {
   return geminiClient;
 }
 
-const SYSTEM_PROMPT = `You are an email triage assistant. Decide whether each email should be archived or kept in the inbox based on the triage rules provided.
+export const SYSTEM_PROMPT = `You are an email triage assistant. Decide whether each email should be archived or kept in the inbox based on the triage rules provided.
 
 DECISION:
 - "archive": true — Auto-archive and mark read. Low-priority: marketing, notifications, newsletters, automated messages, anything the user doesn't need to act on.
@@ -44,6 +45,9 @@ Respond with ONLY valid JSON, no markdown fences:
 {"archive": true|false, "confidence": 0-100, "reason": "brief reason", "summary": "concise triage summary (see rules below)", "action": "required action or No action needed", "deadline": "explicit deadline/timing or No deadline found", "impact": "money/legal/account/customer impact or None found", "handling": "archive|keep|reply|task|calendar|read later", "ephemeral": false, "extractedCode": null}
 
 SUMMARY RULES (these are critical — the summary is the only thing the user sees before deciding whether to open the email):
+- The "Newest authored content" field is the PRIMARY message. Classify and summarize what that newest content says, not the earlier conversation it quotes.
+- "Earlier thread context" is BACKGROUND ONLY. Use it only to resolve references in the newest content (for example, what "yes" agrees to). Never describe an earlier request, offer, or sent message as though it were the new reply.
+- When the newest content is a brief reply, say what the reply communicates. Do not replace it with a summary of the longer quoted message.
 - The summary should answer: "What do I need to do, by when, and what happens if I ignore this?"
 - For KEPT emails: Be specific and actionable. In 1-2 sentences, state exactly what this email means for the user, the required action, the deadline/timing, and concrete details like amounts, dates, names, account names, URLs/domains, confirmation numbers, or reference IDs. Example: "GitHub annual subscription for @StartEngine renews on July 10, 2026; make billing/cancellation changes by July 9 if needed. Impact: account billing."
 - For ARCHIVED emails: 1 sentence explaining what it was and why no action is needed (e.g. "Product Hunt weekly newsletter with no account, money, or deadline impact.")
@@ -62,6 +66,7 @@ Keep "reason" factual and brief.`;
 const MAX_SUBJECT_LEN = 300;
 const MAX_SNIPPET_LEN = 1000;
 const MAX_BODY_LEN = 5000;
+const MAX_THREAD_CONTEXT_LEN = 1500;
 const MAX_FROM_LEN = 200;
 
 function truncate(str, max) {
@@ -96,34 +101,43 @@ function normalizeConfidence(value) {
   return Math.max(0, Math.min(100, confidence));
 }
 
-export async function classifyEmail(email, { account } = {}) {
-  const config = loadConfig();
-  const { rules } = loadAllRules(account);
-  const rulesText = formatRulesForPrompt(rules);
-
-  // Sanitize inputs — cap lengths to reduce prompt injection surface area
+export function buildClassificationPrompt(email, rulesText) {
+  const normalizedContent = normalizeMessageContent(email.body, { fallback: email.snippet });
   const safeFrom = truncate(email.from, MAX_FROM_LEN);
   const safeSubject = truncate(email.subject, MAX_SUBJECT_LEN);
   const safeSnippet = truncate(email.snippet, MAX_SNIPPET_LEN);
-  const safeBody = truncate(email.body, MAX_BODY_LEN);
+  const safeBody = truncate(normalizedContent.latestContent, MAX_BODY_LEN);
+  const safeThreadContext = truncate(
+    email.threadContext || normalizedContent.threadContext,
+    MAX_THREAD_CONTEXT_LEN
+  );
 
-  // Wrap email in XML tags so the model can clearly distinguish
-  // triage instructions (above) from untrusted external content (below)
+  // Wrap email in XML tags so the model can clearly distinguish triage
+  // instructions from untrusted external content.
   const emailText = [
     `From: ${safeFrom}`,
     `Subject: ${safeSubject}`,
-    `Snippet: ${safeSnippet}`,
-    safeBody ? `Body: ${safeBody}` : '',
+    safeBody ? `Newest authored content (PRIMARY): ${safeBody}` : '',
+    safeThreadContext ? `Earlier thread context (BACKGROUND ONLY): ${safeThreadContext}` : '',
+    !safeBody && safeSnippet ? `Snippet (fallback): ${safeSnippet}` : '',
     `Date: ${email.date}`,
     email.to ? `To: ${email.to}` : '',
   ].filter(Boolean).join('\n');
 
-  const userPrompt = `TRIAGE RULES (custom rules take precedence over baseline):
+  return `TRIAGE RULES (custom rules take precedence over baseline):
 ${rulesText}
 
 <email>
 ${emailText}
 </email>`;
+}
+
+export async function classifyEmail(email, { account } = {}) {
+  const config = loadConfig();
+  const { rules } = loadAllRules(account);
+  const rulesText = formatRulesForPrompt(rules);
+
+  const userPrompt = buildClassificationPrompt(email, rulesText);
 
   const modelName = config.model?.name || 'gemini-2.0-flash';
   const model = getClient().getGenerativeModel({

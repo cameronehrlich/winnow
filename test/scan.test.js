@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { scan } from '../src/scan.js';
+import { normalizeMessageContent } from '../src/message-content.js';
 import { claimProcessing, loadState } from '../src/state.js';
 import { closeStoreForTests, configureDatabaseForTests, listEvents, listEmailItems } from '../src/store.js';
 
@@ -36,6 +37,38 @@ afterEach(() => {
 });
 
 describe('scan execution controls', () => {
+  it('passes the latest authored reply to classification instead of quoted history', async () => {
+    const messages = [{
+      id: 'm-reply',
+      threadId: 't-reply',
+      subject: 'Re: Account renewal',
+      from: 'Customer <customer@example.com>',
+      snippet: 'Please cancel the renewal.',
+      body: `Please cancel the renewal.
+
+On Mon, Jul 13, 2026 at 8:14 AM Account Team <accounts@example.com> wrote:
+> Your account will renew for $1,200 on August 1.`,
+      headers: {},
+    }];
+
+    let classifiedMessage;
+    await scan('me@example.com', {
+      adapter: makeAdapter(messages),
+      config: { scan: { max_messages: 10 } },
+      dryRun: true,
+      classifyEmailFn: async message => {
+        classifiedMessage = message;
+        return { archive: false, confidence: 95, summary: 'Customer asked to cancel the renewal.' };
+      },
+    });
+
+    // The scan retains the full fetched body for deterministic hooks; the
+    // classifier's own normalization layer is responsible for separating it.
+    const { latestContent, threadContext } = normalizeMessageContent(classifiedMessage.body);
+    assert.equal(latestContent, 'Please cancel the renewal.');
+    assert.match(threadContext, /renew for \$1,200/);
+  });
+
   it('skips messages already claimed by another scan', async () => {
     const messages = [{
       id: 'm-claimed',
