@@ -71,10 +71,14 @@ api:
   });
 
   responses = [];
-  calls = { search: 0, unsubscribe: 0, reply: 0, archive: 0, model: 0, lastReply: null };
+  calls = {
+    search: 0, unsubscribe: 0, reply: 0, archive: 0, model: 0,
+    lastReply: null, lastChatMessages: null,
+  };
   setAssistantModelFactoryForTests(() => ({
-    async respond() {
+    async respond(request) {
       calls.model += 1;
+      calls.lastChatMessages = request.chatMessages;
       const response = responses.shift();
       if (!response) throw new Error('missing_fake_model_response');
       if (response.delay) await new Promise(resolve => setTimeout(resolve, response.delay));
@@ -205,6 +209,36 @@ describe('assistant API', () => {
     const reopened = await createConversation({ scope: 'email', emailItemId: item.id });
     assert.equal(reopened.conversation.id, 'recently-active');
     assert.deepEqual(reopened.messages.map(message => message.text), ['Keep this history']);
+  });
+
+  it('returns the newest bounded history and includes the latest turn in model context', async () => {
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const start = Date.parse('2026-01-01T00:00:00.000Z');
+    for (let index = 0; index < 201; index += 1) {
+      addAssistantMessage({
+        id: `history-${index}`,
+        conversationId: created.conversation.id,
+        role: 'user',
+        text: `Historical turn ${index}`,
+        createdAt: new Date(start + index).toISOString(),
+      });
+    }
+
+    const reopened = await createConversation({ scope: 'email', emailItemId: item.id });
+    assert.equal(reopened.messages.length, 200);
+    assert.equal(reopened.messages[0].text, 'Historical turn 1');
+    assert.equal(reopened.messages.at(-1).text, 'Historical turn 200');
+
+    responses.push({ text: 'Latest answer.', toolCalls: [], draft: null });
+    const answered = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Newest turn', idempotencyKey: 'post-window-turn',
+    });
+    assert.equal(answered.status, 200);
+    const envelope = await answered.json();
+    assert.equal(calls.lastChatMessages.at(-1).text, 'Newest turn');
+    assert.equal(envelope.messages.length, 200);
+    assert.equal(envelope.messages.at(-2).text, 'Newest turn');
+    assert.equal(envelope.messages.at(-1).text, 'Latest answer.');
   });
 
   it('searches all configured mailbox data and returns bounded evidence cards', async () => {

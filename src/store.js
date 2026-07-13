@@ -1271,12 +1271,16 @@ export function getAssistantMessage(id) {
 export function listAssistantMessages(conversationId, limit = 200) {
   const boundedLimit = Math.min(Math.max(Number(limit) || 200, 1), 500);
   return getDb().prepare(`
-    SELECT ${ASSISTANT_MESSAGE_SELECT}
-    FROM assistant_messages m
-    LEFT JOIN assistant_proposals p ON p.id = m.proposal_id
-    WHERE m.conversation_id = ?
-    ORDER BY m.created_at, m.rowid
-    LIMIT ?
+    SELECT *
+    FROM (
+      SELECT ${ASSISTANT_MESSAGE_SELECT}, m.rowid AS message_rowid
+      FROM assistant_messages m
+      LEFT JOIN assistant_proposals p ON p.id = m.proposal_id
+      WHERE m.conversation_id = ?
+      ORDER BY m.created_at DESC, m.rowid DESC
+      LIMIT ?
+    ) recent
+    ORDER BY created_at, message_rowid
   `).all(conversationId, boundedLimit).map(rowToAssistantMessage);
 }
 
