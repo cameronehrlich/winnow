@@ -140,10 +140,11 @@ struct SettingsView: View {
 
                     Section("Sync") {
                         LabeledContent("Foreground refresh", value: "Every 30 seconds")
+                        LabeledContent("Push delivery", value: "APNs")
                         if let lastRefresh = model.lastRefresh {
                             LabeledContent("Last app refresh", value: lastRefresh.relativeWinnowTime)
                         }
-                        Text("Push delivery is not enabled in V1. Slack remains the notification fallback; this app refreshes while open and whenever it becomes active.")
+                        Text("When notifications are allowed, Winnow alerts you about new Inbox email and silently refreshes automatically archived mail. Slack remains available as a fallback.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

@@ -57,8 +57,13 @@ describe('daily action summary', () => {
     assert.equal(devices[0].appVersion, '1.1 (2)');
   });
 
-  it('reports inbox and archived counts for badge payloads', () => {
-    upsertEmailItemFromResult({ account: 'me@example.com', messageId: 'm-in', threadId: 't-in', archive: false });
+  it('reports unread inbox and archived counts for badge payloads', () => {
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-in', threadId: 't-in', archive: false, readState: 'unread',
+    });
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-read', threadId: 't-read', archive: false, readState: 'read',
+    });
     upsertEmailItemFromResult({ account: 'me@example.com', messageId: 'm-arch', threadId: 't-arch', archive: true });
     assert.deepEqual(getMailboxCounts(), { inbox: 1, archived: 1 });
   });

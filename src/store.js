@@ -902,7 +902,8 @@ export function getMailboxCounts() {
   const rows = getDb().prepare(`
     SELECT mailbox_state, COUNT(*) AS count
     FROM email_items
-    WHERE mailbox_state IN ('inbox', 'archived')
+    WHERE mailbox_state = 'archived'
+       OR (mailbox_state = 'inbox' AND read_state = 'unread')
     GROUP BY mailbox_state
   `).all();
   const counts = { inbox: 0, archived: 0 };

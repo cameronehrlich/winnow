@@ -38,7 +38,7 @@ final class AppModel: ObservableObject {
 
     var isConfigured: Bool { configuration.isComplete }
     var isOnline: Bool { status?.ok == true }
-    var inboxBadgeCount: Int { emails.lazy.filter { !$0.isArchived }.count }
+    var inboxBadgeCount: Int { emails.lazy.filter { !$0.isArchived && $0.isUnread }.count }
     var archivedBadgeCount: Int {
         guard let viewedAt = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date else { return 0 }
         return emails.lazy.filter { item in
