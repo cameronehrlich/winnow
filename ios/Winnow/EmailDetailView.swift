@@ -10,6 +10,10 @@ struct EmailDetailView: View {
 
     private var item: EmailItem? { model.email(id: emailID) }
 
+    private var normalizedEmptyValues: Set<String> {
+        ["", "n/a", "none", "none found", "not found", "unknown"]
+    }
+
     var body: some View {
         ZStack {
             AppBackdrop()
@@ -21,35 +25,12 @@ struct EmailDetailView: View {
                         if !item.summary.isEmpty {
                             InsightBlock(title: "Summary", symbol: "text.alignleft", text: item.summary, color: WinnowDesign.indigo)
                         }
-                        if !item.action.isEmpty {
-                            InsightBlock(title: "Next action", symbol: "arrow.turn.down.right", text: item.action, color: WinnowDesign.brightIndigo)
+
+                        if hasDetails(item) {
+                            detailsCard(item)
                         }
 
-                        if !item.deadline.isEmpty || !item.impact.isEmpty || !item.handling.isEmpty {
-                            VStack(spacing: 0) {
-                                if !item.deadline.isEmpty { DetailRow(label: "Deadline", value: item.deadline, symbol: "clock", color: WinnowDesign.amber) }
-                                if !item.impact.isEmpty { DetailRow(label: "Impact", value: item.impact, symbol: "bolt", color: WinnowDesign.rose) }
-                                if !item.handling.isEmpty { DetailRow(label: "Handling", value: item.handling, symbol: "hand.raised", color: WinnowDesign.mint) }
-                            }
-                            .winnowCard(padding: 4)
-                        }
-
-                        if !item.reason.isEmpty || item.confidence != nil {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("WINNOW'S READ").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-                                if !item.reason.isEmpty { Text(item.reason).font(.subheadline) }
-                                if let confidence = item.confidence {
-                                    HStack {
-                                        Text("Confidence").foregroundStyle(.secondary)
-                                        Spacer()
-                                        Text("\(confidence)%").fontWeight(.semibold)
-                                    }
-                                    .font(.subheadline)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .winnowCard()
-                        }
+                        actionsCard(item)
 
                         if !item.snippet.isEmpty, item.snippet != item.summary {
                             InsightBlock(title: "Message preview", symbol: "quote.opening", text: item.snippet, color: .secondary)
@@ -78,22 +59,12 @@ struct EmailDetailView: View {
                             InsightBlock(title: "Unsubscribed", symbol: "checkmark.circle.fill", text: "Winnow completed the unsubscribe request.", color: WinnowDesign.mint)
                         } else if item.unsubscribeState == "attempted" {
                             InsightBlock(title: "Manual step needed", symbol: "envelope.badge", text: "This sender requires an email-based unsubscribe. Open the message in Gmail to finish.", color: WinnowDesign.amber)
-                        } else if item.canUnsubscribe {
-                            Button(role: .destructive) { confirmUnsubscribe = true } label: {
-                                Label("Unsubscribe from sender", systemImage: "person.crop.circle.badge.minus")
-                                    .font(.subheadline.weight(.semibold))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 13)
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(WinnowDesign.rose)
                         }
 
-                        Spacer(minLength: 90)
+                        Spacer(minLength: 24)
                     }
                     .padding(16)
                 }
-                .safeAreaInset(edge: .bottom) { actionBar(item) }
                 .confirmationDialog(
                     "Unsubscribe from this sender?",
                     isPresented: $confirmUnsubscribe,
@@ -167,18 +138,6 @@ struct EmailDetailView: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-
-            if item.gmailDestination != nil {
-                Button { openInGmail(item) } label: {
-                    Label("Open in Gmail", systemImage: "envelope.open.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 4)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(WinnowDesign.indigo)
-                .accessibilityHint("Opens this conversation in the \(item.account) Gmail account.")
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .winnowCard()
@@ -194,30 +153,162 @@ struct EmailDetailView: View {
         }
     }
 
-    private func actionBar(_ item: EmailItem) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                Task { _ = await model.perform(item.isUnread ? .markRead : .markUnread, on: item) }
-            } label: {
-                Label(item.isUnread ? "Read" : "Unread", systemImage: item.isUnread ? "envelope.open" : "envelope.badge")
-                    .frame(maxWidth: .infinity)
+    @ViewBuilder
+    private func detailsCard(_ item: EmailItem) -> some View {
+        let rows = detailRows(item)
+        VStack(spacing: 0) {
+            ForEach(rows.indices, id: \.self) { index in
+                if index > 0 { DetailDivider() }
+                let row = rows[index]
+                DetailRow(
+                    label: row.label,
+                    value: row.value,
+                    symbol: row.symbol,
+                    color: row.color,
+                    trailingValue: row.trailingValue,
+                    trailingAccessibilityLabel: row.trailingAccessibilityLabel
+                )
             }
-            .buttonStyle(.bordered)
+        }
+        .winnowCard(padding: 4)
+    }
 
-            Button {
-                Task { _ = await model.perform(item.isArchived ? .moveToInbox : .archive, on: item) }
-            } label: {
-                Label(item.isArchived ? "Inbox" : "Archive", systemImage: item.isArchived ? "tray.and.arrow.down" : "archivebox")
-                    .frame(maxWidth: .infinity)
+    private func actionsCard(_ item: EmailItem) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("ACTIONS")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+
+            AdaptiveActionPair {
+                Button {
+                    Task { _ = await model.perform(item.isArchived ? .moveToInbox : .archive, on: item) }
+                } label: {
+                    DetailActionLabel(
+                        title: item.isArchived ? "Move to Inbox" : "Archive",
+                        symbol: item.isArchived ? "tray.and.arrow.down" : "archivebox"
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(WinnowDesign.indigo)
+            } trailing: {
+                Button {
+                    Task { _ = await model.perform(item.isUnread ? .markRead : .markUnread, on: item) }
+                } label: {
+                    DetailActionLabel(
+                        title: item.isUnread ? "Mark Read" : "Mark Unread",
+                        symbol: item.isUnread ? "envelope.open" : "envelope.badge"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(WinnowDesign.indigo)
             }
-            .buttonStyle(.borderedProminent)
+
+            if item.gmailDestination != nil, item.canUnsubscribe {
+                AdaptiveActionPair {
+                    gmailButton(item)
+                } trailing: {
+                    unsubscribeButton
+                }
+            } else if item.gmailDestination != nil {
+                gmailButton(item)
+            } else if item.canUnsubscribe {
+                unsubscribeButton
+            }
         }
         .font(.subheadline.weight(.semibold))
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(.ultraThinMaterial)
+        .winnowCard(padding: 14)
         .disabled(model.performingEmailIDs.contains(item.id))
     }
+
+    private func gmailButton(_ item: EmailItem) -> some View {
+        Button { openInGmail(item) } label: {
+            DetailActionLabel(title: "Open in Gmail", symbol: "envelope.open.fill")
+        }
+        .buttonStyle(.bordered)
+        .tint(WinnowDesign.indigo)
+        .accessibilityHint("Opens this conversation in the \(item.account) Gmail account.")
+    }
+
+    private var unsubscribeButton: some View {
+        Button(role: .destructive) { confirmUnsubscribe = true } label: {
+            DetailActionLabel(title: "Unsubscribe", symbol: "person.crop.circle.badge.minus")
+        }
+        .buttonStyle(.bordered)
+        .tint(WinnowDesign.rose)
+    }
+
+    private func hasDetails(_ item: EmailItem) -> Bool {
+        !detailRows(item).isEmpty
+    }
+
+    private func detailRows(_ item: EmailItem) -> [DetailValue] {
+        var rows: [DetailValue] = []
+        if let action = item.meaningfulAction {
+            rows.append(DetailValue(
+                label: "Next step",
+                value: action,
+                symbol: "arrow.turn.down.right",
+                color: WinnowDesign.brightIndigo
+            ))
+        }
+        if let deadline = meaningfulDeadline(item.deadline) {
+            rows.append(DetailValue(label: "Deadline", value: deadline, symbol: "clock", color: WinnowDesign.amber))
+        }
+        if let impact = meaningfulImpact(item.impact) {
+            rows.append(DetailValue(label: "Impact", value: impact, symbol: "bolt", color: WinnowDesign.rose))
+        }
+        if let handling = meaningfulValue(item.handling) {
+            rows.append(DetailValue(
+                label: "Handling",
+                value: humanizedHandling(handling),
+                symbol: "hand.raised",
+                color: WinnowDesign.mint,
+                trailingValue: item.confidence.map { "\($0)%" },
+                trailingAccessibilityLabel: item.confidence.map { "\($0) percent confidence" }
+            ))
+        }
+        return rows
+    }
+
+    private func meaningfulDeadline(_ value: String) -> String? {
+        meaningfulValue(value, additionallyIgnoring: ["no deadline", "no deadline found"])
+    }
+
+    private func meaningfulImpact(_ value: String) -> String? {
+        meaningfulValue(value, additionallyIgnoring: ["no impact", "no impact found"])
+    }
+
+    private func meaningfulValue(_ value: String, additionallyIgnoring ignored: Set<String> = []) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.lowercased()
+        guard !normalizedEmptyValues.union(ignored).contains(normalized) else { return nil }
+        return trimmed
+    }
+
+    private func humanizedHandling(_ value: String) -> String {
+        switch value.lowercased() {
+        case "archive": "Archive"
+        case "keep": "Keep in Inbox"
+        case "reply": "Reply"
+        case "task": "Follow up as a task"
+        case "calendar": "Add to calendar"
+        case "read later": "Read later"
+        default:
+            value
+                .replacingOccurrences(of: "_", with: " ")
+                .replacingOccurrences(of: "-", with: " ")
+                .capitalized
+        }
+    }
+}
+
+private struct DetailValue {
+    let label: String
+    let value: String
+    let symbol: String
+    let color: Color
+    var trailingValue: String? = nil
+    var trailingAccessibilityLabel: String? = nil
 }
 
 private struct InsightBlock: View {
@@ -244,6 +335,8 @@ private struct DetailRow: View {
     let value: String
     let symbol: String
     let color: Color
+    var trailingValue: String? = nil
+    var trailingAccessibilityLabel: String? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -255,7 +348,60 @@ private struct DetailRow: View {
                 Text(value).font(.subheadline.weight(.medium))
             }
             Spacer()
+            if let trailingValue {
+                Text(trailingValue)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityLabel(trailingAccessibilityLabel ?? trailingValue)
+            }
         }
-        .padding(13)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+}
+
+private struct DetailDivider: View {
+    var body: some View {
+        Divider().padding(.leading, 46)
+    }
+}
+
+private struct DetailActionLabel: View {
+    let title: String
+    let symbol: String
+
+    var body: some View {
+        Label(title, systemImage: symbol)
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .frame(maxWidth: .infinity, minHeight: 34)
+    }
+}
+
+private struct AdaptiveActionPair<Leading: View, Trailing: View>: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    private let leading: Leading
+    private let trailing: Trailing
+
+    init(
+        @ViewBuilder leading: () -> Leading,
+        @ViewBuilder trailing: () -> Trailing
+    ) {
+        self.leading = leading()
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(spacing: 10) {
+                leading
+                trailing
+            }
+        } else {
+            HStack(spacing: 10) {
+                leading
+                trailing
+            }
+        }
     }
 }
