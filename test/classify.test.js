@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildClassificationPrompt, SYSTEM_PROMPT } from '../src/classify.js';
+import { buildClassificationPrompt, normalizeClassificationResult, SYSTEM_PROMPT } from '../src/classify.js';
+import { formatRulesForPrompt } from '../src/rules.js';
 
 describe('classification prompt', () => {
   it('labels the newest reply as primary and quoted history as background only', () => {
@@ -42,5 +43,54 @@ On Mon, Jul 13, 2026 at 8:00 AM Support <support@example.com> wrote:
     assert.match(prompt, /Earlier thread context \(BACKGROUND ONLY\):/);
     assert.match(prompt, /\[truncated\]/);
     assert.ok(prompt.length < 3000);
+  });
+
+  it('includes semantic rule IDs and accepts only effect-consistent model citations', () => {
+    const rules = [{
+      id: 'routine-receipts', match: 'Routine receipts', archive: true,
+      source: 'assistant', description: 'Routine receipts', scope: 'user', editable: true,
+    }];
+    assert.match(formatRulesForPrompt(rules), /\[rule:routine-receipts\]/);
+
+    const valid = normalizeClassificationResult({
+      archive: true, confidence: 92, reason: 'Routine receipt', summary: 'Receipt',
+      matchedRuleId: 'routine-receipts',
+    }, { subject: 'Receipt', snippet: '' }, rules);
+    assert.equal(valid.decisionBasis, 'semantic_rule');
+    assert.equal(valid.appliedRule.id, 'routine-receipts');
+    assert.equal(valid.appliedRule.attribution, 'model_cited');
+
+    const wrongEffect = normalizeClassificationResult({
+      archive: false, confidence: 92, reason: 'Keep', summary: 'Receipt',
+      matchedRuleId: 'routine-receipts',
+    }, { subject: 'Receipt', snippet: '' }, rules);
+    assert.equal(wrongEffect.decisionBasis, 'classifier');
+    assert.equal(wrongEffect.appliedRule, undefined);
+
+    const unknown = normalizeClassificationResult({
+      archive: true, confidence: 92, reason: 'Archive', summary: 'Receipt',
+      matchedRuleId: 'invented-rule',
+    }, { subject: 'Receipt', snippet: '' }, rules);
+    assert.equal(unknown.decisionBasis, 'classifier');
+    assert.equal(unknown.appliedRule, undefined);
+
+    const safetyOverride = normalizeClassificationResult({
+      archive: true, confidence: 60, reason: 'Maybe a receipt', summary: 'Receipt',
+      matchedRuleId: 'routine-receipts',
+    }, { subject: 'Receipt', snippet: '' }, rules);
+    assert.equal(safetyOverride.archive, false);
+    assert.equal(safetyOverride.decisionBasis, 'classifier');
+    assert.equal(safetyOverride.appliedRule, undefined);
+
+    const operator = normalizeClassificationResult({
+      archive: true, confidence: 95, reason: 'Server policy', summary: 'Automated notice',
+      matchedRuleId: 'operator-policy',
+    }, { subject: 'Notice', snippet: '' }, [{
+      id: 'operator-policy', match: 'Automated notices', archive: true,
+      source: 'operator', description: 'Server-managed notice policy', scope: 'server', editable: false,
+    }]);
+    assert.equal(operator.decisionBasis, 'server_automation');
+    assert.equal(operator.appliedRule.editable, false);
+    assert.equal(operator.appliedRule.attribution, 'model_cited');
   });
 });

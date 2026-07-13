@@ -12,6 +12,7 @@ import {
   getDailyActionSummary,
   getLifetimeActionSummary,
   getMailboxCounts,
+  getRuleActivity,
   listPushDevices,
   listDeliveryRecords,
   registerPushDevice,
@@ -68,7 +69,7 @@ describe('daily action summary', () => {
     assert.deepEqual(getMailboxCounts(), { inbox: 1, archived: 1 });
   });
 
-  it('migrates an existing email store to add read state', () => {
+  it('migrates an existing email store to add read state and handling decisions', () => {
     const path = join(tempDir, 'winnow.db');
     const legacy = new DatabaseSync(path);
     legacy.exec(`
@@ -104,8 +105,54 @@ describe('daily action summary', () => {
     ensureStore();
     const inspector = new DatabaseSync(path, { readOnly: true });
     const columns = inspector.prepare('PRAGMA table_info(email_items)').all();
+    const indexes = inspector.prepare('PRAGMA index_list(email_items)').all();
     inspector.close();
     assert.ok(columns.some(column => column.name === 'read_state'));
+    assert.ok(columns.some(column => column.name === 'handling_decision_json'));
+    assert.ok(columns.some(column => column.name === 'handling_undo_status'));
+    assert.ok(indexes.some(index => index.name === 'idx_email_items_rule_activity'));
+  });
+
+  it('round-trips typed handling decisions and derives forward-only rule activity', () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com',
+      messageId: 'm-decision',
+      threadId: 't-decision',
+      from: 'Receipts <receipts@example.com>',
+      subject: 'Receipt',
+      archive: true,
+      handlingDecision: {
+        effect: 'archive',
+        basis: 'exact_rule',
+        explanation: 'Matched the confirmed sender rule',
+        confidence: 100,
+        handledAt: new Date().toISOString(),
+        appliedRule: {
+          id: 'rule-receipts',
+          description: 'Receipt sender',
+          scope: 'user',
+          source: 'assistant',
+          editable: true,
+          attribution: 'deterministic',
+          effect: 'archive',
+          revision: 'revision-1',
+        },
+      },
+    });
+
+    assert.equal(item.handlingDecision.basis, 'exact_rule');
+    assert.equal(item.handlingDecision.appliedRule.attribution, 'deterministic');
+    const activity = getRuleActivity('me@example.com', 'rule-receipts');
+    assert.equal(activity.appliedCount30Days, 1);
+    assert.equal(activity.recent.length, 1);
+    assert.equal(activity.recent[0].emailItemId, item.id);
+
+    const legacy = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-legacy', threadId: 't-legacy',
+      archive: true, reason: 'Matched rule-receipts in old free text',
+    });
+    assert.equal(legacy.handlingDecision, null);
+    assert.equal(getRuleActivity('me@example.com', 'rule-receipts').appliedCount30Days, 1);
   });
 
   it('round-trips native-client read state without guessing unknown values', () => {

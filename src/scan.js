@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { execFile, exec as execRaw, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { GogAdapter } from './adapters/gog.js';
@@ -6,6 +7,7 @@ import { classifyEmail } from './classify.js';
 import { loadConfig, getAdapter, getScanSearchQuery } from './config.js';
 import { loadAllRules } from './rules.js';
 import { listEffectiveExactRules, listOperatorActionRules } from './user-rules.js';
+import { ruleRevision } from './rule-revisions.js';
 import { loadState, updateState, isProcessed, markProcessed, pruneOldResults, claimProcessing, releaseProcessing, localDateString } from './state.js';
 import { postEmailFeed } from './notify.js';
 import { maybeSendPushForEmail } from './push.js';
@@ -143,6 +145,17 @@ export function classificationForAssistantRule(rule) {
     handling: archive ? 'archive' : 'keep',
     ephemeral: false,
     extractedCode: null,
+    decisionBasis: 'exact_rule',
+    appliedRule: {
+      id: rule.id,
+      description: rule.description || `${rule.matcherKind} ${rule.matcherValue}`,
+      scope: 'user',
+      source: rule.source || 'assistant',
+      editable: true,
+      attribution: 'deterministic',
+      effect: rule.effect,
+      revision: ruleRevision(rule),
+    },
   };
 }
 
@@ -258,18 +271,30 @@ export async function scan(account, opts = {}) {
             });
             result.archive = true;
             result.readState = 'read';
+            result.handling = 'archive';
           }
         }
 
         let item = null;
         result.messageId = messageKey;
         if (shouldRecordProcessing) {
+          const handledAt = new Date().toISOString();
+          const decisionBasis = result.ephemeral ? 'ephemeral' : (result.decisionBasis || 'classifier');
+          result.handlingDecision = {
+            id: randomUUID(),
+            effect: result.archive ? 'archive' : 'keep',
+            basis: decisionBasis,
+            explanation: result.reason || '',
+            confidence: result.confidence,
+            handledAt,
+            ...(!result.ephemeral && result.appliedRule ? { appliedRule: result.appliedRule } : {}),
+          };
           markProcessed(messageKey, result);
           item = upsertEmailItemFromResult(result, {
             account,
             messageId: messageKey,
             threadId: msg.threadId,
-            timestamp: new Date().toISOString(),
+            timestamp: handledAt,
           });
           result.emailItemId = item.id;
           appendEmailEvent('email.scanned', item, { source: 'scan', reason: result.reason });

@@ -291,4 +291,54 @@ On Mon, Jul 13, 2026 at 8:14 AM Account Team <accounts@example.com> wrote:
       processed: 0,
     });
   });
+
+  it('persists deterministic exact-rule attribution for actual scan handling', async () => {
+    const messages = [{
+      id: 'm-attributed', threadId: 't-attributed', subject: 'Receipt',
+      from: 'Receipts <receipts@example.com>', snippet: 'Paid', headers: {},
+    }];
+    await scan('me@example.com', {
+      adapter: makeAdapter(messages),
+      config: { scan: { max_messages: 10 } },
+      listAssistantRulesFn: () => [{
+        id: 'rule-receipts', account: 'me@example.com', effect: 'archive',
+        matcherKind: 'sender', matcherValue: 'receipts@example.com',
+        description: 'Archive routine receipts', source: 'assistant', enabled: true,
+      }],
+      postToFeed: false, sendPush: false, runHooks: false,
+    });
+
+    const item = listEmailItems({ limit: 1 }).items[0];
+    assert.equal(item.handlingDecision.effect, 'archive');
+    assert.equal(item.handlingDecision.basis, 'exact_rule');
+    assert.equal(item.handlingDecision.appliedRule.id, 'rule-receipts');
+    assert.equal(item.handlingDecision.appliedRule.attribution, 'deterministic');
+  });
+
+  it('records ephemeral as the handling basis when it overrides a keep result', async () => {
+    const messages = [{
+      id: 'm-ephemeral', threadId: 't-ephemeral', subject: 'Code 123456',
+      from: 'Security <security@example.com>', snippet: 'Verification code 123456', headers: {},
+    }];
+    await scan('me@example.com', {
+      adapter: makeAdapter(messages),
+      config: { scan: { max_messages: 10 } },
+      classifyEmailFn: async () => ({
+        archive: false, confidence: 95, reason: 'Short-lived verification code',
+        summary: 'Verification code', handling: 'keep', ephemeral: true,
+        decisionBasis: 'semantic_rule',
+        appliedRule: {
+          id: 'semantic-code', description: 'Verification codes', scope: 'user',
+          source: 'assistant', editable: true, attribution: 'model_cited',
+        },
+      }),
+      postToFeed: false, sendPush: false, runHooks: false,
+    });
+
+    const item = listEmailItems({ limit: 1 }).items[0];
+    assert.equal(item.handlingDecision.effect, 'archive');
+    assert.equal(item.handlingDecision.basis, 'ephemeral');
+    assert.equal(item.handlingDecision.appliedRule, undefined);
+    assert.equal(item.handling, 'archive');
+  });
 });

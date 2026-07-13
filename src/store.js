@@ -3,6 +3,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
+import {
+  handlingDecisionKey,
+  handlingUndoAction,
+  normalizeHandlingDecision,
+} from './handling-decisions.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DB_PATH = join(__dirname, '..', 'data', 'winnow.db');
@@ -40,6 +45,7 @@ const EVENT_JOIN_SELECT = `
   i.mailbox_state AS item_mailbox_state,
   i.read_state AS item_read_state,
   i.unsubscribe_url AS item_unsubscribe_url,
+  i.handling_decision_json AS item_handling_decision_json,
   i.created_at AS item_created_at,
   i.processed_at AS item_processed_at,
   i.updated_at AS item_updated_at
@@ -75,6 +81,19 @@ function getDb() {
   migrate();
   importLegacyStateOnce();
   return db;
+}
+
+export function runImmediateTransaction(callback) {
+  const database = getDb();
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const result = callback();
+    database.exec('COMMIT');
+    return result;
+  } catch (err) {
+    try { database.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+    throw err;
+  }
 }
 
 export function configureDatabaseForTests(path) {
@@ -122,6 +141,11 @@ function migrate() {
       mailbox_state TEXT NOT NULL DEFAULT 'unknown',
       read_state TEXT NOT NULL DEFAULT 'unknown',
       unsubscribe_url TEXT,
+      handling_decision_json TEXT,
+      handling_undo_decision_id TEXT,
+      handling_undo_status TEXT,
+      handling_undo_claim_token TEXT,
+      handling_undo_updated_at TEXT,
       created_at TEXT NOT NULL,
       processed_at TEXT,
       updated_at TEXT NOT NULL,
@@ -377,6 +401,28 @@ function migrate() {
   if (!emailColumns.some(column => column.name === 'read_state')) {
     database.exec("ALTER TABLE email_items ADD COLUMN read_state TEXT NOT NULL DEFAULT 'unknown'");
   }
+  if (!emailColumns.some(column => column.name === 'handling_decision_json')) {
+    database.exec('ALTER TABLE email_items ADD COLUMN handling_decision_json TEXT');
+  }
+  for (const [name, definition] of [
+    ['handling_undo_decision_id', 'TEXT'],
+    ['handling_undo_status', 'TEXT'],
+    ['handling_undo_claim_token', 'TEXT'],
+    ['handling_undo_updated_at', 'TEXT'],
+  ]) {
+    if (!emailColumns.some(column => column.name === name)) {
+      database.exec(`ALTER TABLE email_items ADD COLUMN ${name} ${definition}`);
+    }
+  }
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_email_items_rule_activity
+    ON email_items(
+      account,
+      json_extract(handling_decision_json, '$.appliedRule.id'),
+      json_extract(handling_decision_json, '$.handledAt') DESC
+    )
+    WHERE handling_decision_json IS NOT NULL
+  `);
   const pushColumns = database.prepare('PRAGMA table_info(push_devices)').all();
   for (const [name, definition] of [
     ['installation_id', 'TEXT'],
@@ -433,6 +479,7 @@ export function resultToEmailItem(result, opts = {}) {
   const confidence = Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : null;
   const lowConfidenceKept = !archived && confidence !== null && confidence < 70;
   const timestamp = opts.timestamp || result.processedAt || nowIso();
+  const handlingDecision = normalizeHandlingDecision(result.handlingDecision);
 
   return {
     id,
@@ -456,6 +503,7 @@ export function resultToEmailItem(result, opts = {}) {
     mailboxState,
     readState,
     unsubscribeUrl: result.unsubscribeLink || result.unsubscribe_url || '',
+    handlingDecisionJson: handlingDecision ? safeJson(handlingDecision) : null,
     createdAt: timestamp,
     processedAt: timestamp,
     updatedAt: nowIso(),
@@ -489,6 +537,9 @@ function rowToEmailItem(row) {
     isRead: row.read_state === 'read' ? true : row.read_state === 'unread' ? false : null,
     archive: row.mailbox_state === 'archived' || row.triage_state === 'auto_archived' || row.triage_state === 'manual_archived',
     unsubscribeLink: row.unsubscribe_url || '',
+    handlingDecision: normalizeHandlingDecision(parseJson(row.handling_decision_json, null)),
+    handlingUndoDecisionId: row.handling_undo_decision_id || '',
+    handlingUndoStatus: row.handling_undo_status || '',
     createdAt: row.created_at,
     processedAt: row.processed_at,
     updatedAt: row.updated_at,
@@ -501,12 +552,14 @@ export function upsertEmailItem(item) {
     INSERT INTO email_items (
       id, account, gmail_message_id, gmail_thread_id, from_name, from_email, subject, snippet,
       summary, action, deadline, impact, handling, reason, confidence, ephemeral, low_confidence_kept,
-      triage_state, mailbox_state, read_state, unsubscribe_url, created_at, processed_at, updated_at
+      triage_state, mailbox_state, read_state, unsubscribe_url, handling_decision_json,
+      created_at, processed_at, updated_at
     )
     VALUES (
       @id, @account, @gmailMessageId, @gmailThreadId, @fromName, @fromEmail, @subject, @snippet,
       @summary, @action, @deadline, @impact, @handling, @reason, @confidence, @ephemeral, @lowConfidenceKept,
-      @triageState, @mailboxState, @readState, @unsubscribeUrl, @createdAt, @processedAt, @updatedAt
+      @triageState, @mailboxState, @readState, @unsubscribeUrl, @handlingDecisionJson,
+      @createdAt, @processedAt, @updatedAt
     )
     ON CONFLICT(id) DO UPDATE SET
       gmail_message_id = COALESCE(excluded.gmail_message_id, email_items.gmail_message_id),
@@ -528,6 +581,7 @@ export function upsertEmailItem(item) {
       mailbox_state = excluded.mailbox_state,
       read_state = excluded.read_state,
       unsubscribe_url = excluded.unsubscribe_url,
+      handling_decision_json = COALESCE(excluded.handling_decision_json, email_items.handling_decision_json),
       processed_at = COALESCE(excluded.processed_at, email_items.processed_at),
       updated_at = excluded.updated_at
   `).run(item);
@@ -571,6 +625,68 @@ export function updateEmailItemState(id, { triageState, mailboxState, readState,
     WHERE id = @id
   `).run(updates);
   return getEmailItem(id);
+}
+
+export function claimHandlingUndo(emailItemId, decisionId, claimToken) {
+  const database = getDb();
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const item = rowToEmailItem(database.prepare('SELECT * FROM email_items WHERE id = ?').get(emailItemId));
+    if (!item || handlingDecisionKey(item) !== decisionId || !handlingUndoAction(item)) {
+      database.exec('ROLLBACK');
+      return { claimed: false, reason: 'not_undoable', item };
+    }
+    const timestamp = nowIso();
+    const result = database.prepare(`
+      UPDATE email_items
+      SET handling_undo_decision_id = @decisionId,
+          handling_undo_status = 'executing',
+          handling_undo_claim_token = @claimToken,
+          handling_undo_updated_at = @timestamp,
+          updated_at = @timestamp
+      WHERE id = @emailItemId
+        AND (
+          handling_undo_decision_id IS NULL
+          OR handling_undo_decision_id != @decisionId
+        )
+    `).run({ emailItemId, decisionId, claimToken, timestamp });
+    if (result.changes !== 1) {
+      database.exec('ROLLBACK');
+      return { claimed: false, reason: 'already_claimed', item: getEmailItem(emailItemId) };
+    }
+    database.exec('COMMIT');
+    return { claimed: true, item: getEmailItem(emailItemId) };
+  } catch (err) {
+    try { database.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+    throw err;
+  }
+}
+
+export function finishHandlingUndo(emailItemId, decisionId, claimToken, { completed }) {
+  const timestamp = nowIso();
+  if (completed) {
+    getDb().prepare(`
+      UPDATE email_items
+      SET handling_undo_status = 'completed', handling_undo_claim_token = NULL,
+          handling_undo_updated_at = @timestamp, updated_at = @timestamp
+      WHERE id = @emailItemId
+        AND handling_undo_decision_id = @decisionId
+        AND handling_undo_claim_token = @claimToken
+        AND handling_undo_status = 'executing'
+    `).run({ emailItemId, decisionId, claimToken, timestamp });
+  } else {
+    getDb().prepare(`
+      UPDATE email_items
+      SET handling_undo_decision_id = NULL, handling_undo_status = NULL,
+          handling_undo_claim_token = NULL, handling_undo_updated_at = @timestamp,
+          updated_at = @timestamp
+      WHERE id = @emailItemId
+        AND handling_undo_decision_id = @decisionId
+        AND handling_undo_claim_token = @claimToken
+        AND handling_undo_status = 'executing'
+    `).run({ emailItemId, decisionId, claimToken, timestamp });
+  }
+  return getEmailItem(emailItemId);
 }
 
 export function listEmailItems({ state = 'all', account = '', cursor = '', limit = 50 } = {}) {
@@ -622,6 +738,65 @@ export function listRecentTrackedEmailItems({ account = '', days = 7, limit = 10
   `).all(params).map(rowToEmailItem);
 }
 
+function compactRuleApplication(item) {
+  return {
+    emailItemId: item.id,
+    account: item.account,
+    messageId: item.messageId,
+    threadId: item.threadId,
+    from: item.from,
+    subject: item.subject,
+    date: item.handlingDecision?.handledAt || item.processedAt,
+    snippet: item.snippet,
+  };
+}
+
+export function getRuleActivity(account, ruleId, {
+  now = new Date(),
+  effect = '',
+  revision = '',
+} = {}) {
+  if (!account || !ruleId) {
+    return { appliedCount30Days: 0, lastAppliedAt: null, recent: [] };
+  }
+  const database = getDb();
+  const cutoff = new Date(now.getTime() - 30 * 86400000).toISOString();
+  const currentRevisionSql = effect && revision ? `
+      AND json_extract(handling_decision_json, '$.appliedRule.effect') = @effect
+      AND json_extract(handling_decision_json, '$.appliedRule.revision') = @revision
+  ` : '';
+  const activityParams = {
+    account, ruleId,
+    ...(effect && revision ? { effect, revision } : {}),
+  };
+  const summary = database.prepare(`
+    SELECT
+      COUNT(CASE
+        WHEN json_extract(handling_decision_json, '$.handledAt') >= @cutoff THEN 1
+      END) AS applied_count_30_days,
+      MAX(json_extract(handling_decision_json, '$.handledAt')) AS last_applied_at
+    FROM email_items
+    WHERE account = @account
+      AND handling_decision_json IS NOT NULL
+      AND json_extract(handling_decision_json, '$.appliedRule.id') = @ruleId
+      ${currentRevisionSql}
+  `).get({ ...activityParams, cutoff });
+  const recent = database.prepare(`
+    SELECT * FROM email_items
+    WHERE account = @account
+      AND handling_decision_json IS NOT NULL
+      AND json_extract(handling_decision_json, '$.appliedRule.id') = @ruleId
+      ${currentRevisionSql}
+    ORDER BY json_extract(handling_decision_json, '$.handledAt') DESC, id DESC
+    LIMIT 3
+  `).all(activityParams).map(rowToEmailItem);
+  return {
+    appliedCount30Days: Number(summary.applied_count_30_days) || 0,
+    lastAppliedAt: summary.last_applied_at || null,
+    recent: recent.map(compactRuleApplication),
+  };
+}
+
 function rowToEvent(row) {
   if (!row) return null;
   return {
@@ -657,6 +832,7 @@ function rowToEvent(row) {
       mailbox_state: row.item_mailbox_state,
       read_state: row.item_read_state,
       unsubscribe_url: row.item_unsubscribe_url,
+      handling_decision_json: row.item_handling_decision_json,
       created_at: row.item_created_at,
       processed_at: row.item_processed_at,
       updated_at: row.item_updated_at,

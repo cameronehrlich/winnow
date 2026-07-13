@@ -33,6 +33,8 @@ struct EmailItem: Decodable, Identifiable, Equatable {
     let processedAt: String
     let updatedAt: String
     var readState: String
+    let handlingDecision: EmailHandlingDecision?
+    let undoAction: EmailAction?
 
     var isArchived: Bool {
         switch mailboxState {
@@ -96,7 +98,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         case id, account, messageId, threadId, fromName, fromEmail, from, subject, snippet
         case summary, action, deadline, impact, handling, reason, confidence, ephemeral
         case lowConfidenceKept, triageState, mailboxState, archive, unsubscribeLink
-        case createdAt, processedAt, updatedAt, readState, isRead, unsubscribeState
+        case createdAt, processedAt, updatedAt, readState, isRead, unsubscribeState, handlingDecision, undoAction
     }
 
     init(from decoder: Decoder) throws {
@@ -128,6 +130,10 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         createdAt = try values.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
         processedAt = try values.decodeIfPresent(String.self, forKey: .processedAt) ?? ""
         updatedAt = try values.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
+        // Decision metadata is additive. A future server basis/action must not
+        // make the core email unreadable to an older client.
+        handlingDecision = (try? values.decodeIfPresent(EmailHandlingDecision.self, forKey: .handlingDecision)) ?? nil
+        undoAction = (try? values.decodeIfPresent(EmailAction.self, forKey: .undoAction)) ?? nil
 
         if let state = try values.decodeIfPresent(String.self, forKey: .readState) {
             readState = state
@@ -136,6 +142,95 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         } else {
             readState = "unknown"
         }
+    }
+}
+
+enum MailHandlingEffect: String, Decodable, Equatable {
+    case archive
+    case keep
+
+    var title: String { self == .archive ? "Archived" : "Kept in Inbox" }
+    var actionTitle: String { self == .archive ? "Archive" : "Keep in Inbox" }
+}
+
+enum MailHandlingBasis: String, Decodable, Equatable {
+    case exactRule = "exact_rule"
+    case semanticRule = "semantic_rule"
+    case baseline
+    case serverAutomation = "server_automation"
+    case classifier
+    case ephemeral
+    case manual
+
+    var title: String {
+        switch self {
+        case .exactRule: "Exact rule"
+        case .semanticRule: "Semantic rule"
+        case .baseline: "Winnow default"
+        case .serverAutomation: "Server automation"
+        case .classifier: "Winnow classifier"
+        case .ephemeral: "Ephemeral message handling"
+        case .manual: "Manual action"
+        }
+    }
+}
+
+struct AppliedRuleReference: Decodable, Equatable {
+    let id: String
+    let description: String
+    let scope: String
+    let source: String
+    let editable: Bool
+    let attribution: String
+
+    var displayTitle: String { description.isEmpty ? "Rule \(id)" : description }
+
+    var attributionDescription: String {
+        switch attribution {
+        case "deterministic": return "Deterministic rule match"
+        case "model_cited": return "Classifier-cited rule"
+        default: return "Applied rule"
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, description, scope, source, editable, attribution
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        description = try values.decodeIfPresent(String.self, forKey: .description) ?? ""
+        scope = try values.decodeIfPresent(String.self, forKey: .scope) ?? "user"
+        source = try values.decodeIfPresent(String.self, forKey: .source) ?? "api"
+        editable = try values.decodeIfPresent(Bool.self, forKey: .editable) ?? false
+        attribution = try values.decodeIfPresent(String.self, forKey: .attribution) ?? ""
+    }
+}
+
+struct EmailHandlingDecision: Decodable, Equatable {
+    let effect: MailHandlingEffect
+    let basis: MailHandlingBasis?
+    let explanation: String
+    let confidence: Int?
+    let handledAt: String?
+    let appliedRule: AppliedRuleReference?
+
+    private enum CodingKeys: String, CodingKey {
+        case effect, basis, explanation, reason, confidence, handledAt, appliedRule
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        effect = try values.decode(MailHandlingEffect.self, forKey: .effect)
+        let rawBasis = try values.decodeIfPresent(String.self, forKey: .basis)
+        basis = rawBasis.flatMap(MailHandlingBasis.init(rawValue:))
+        explanation = try values.decodeIfPresent(String.self, forKey: .explanation)
+            ?? values.decodeIfPresent(String.self, forKey: .reason)
+            ?? ""
+        confidence = try values.decodeIfPresent(Int.self, forKey: .confidence)
+        handledAt = try values.decodeIfPresent(String.self, forKey: .handledAt)
+        appliedRule = try values.decodeIfPresent(AppliedRuleReference.self, forKey: .appliedRule)
     }
 }
 
@@ -358,7 +453,7 @@ struct PushDeviceDeleteResponse: Decodable {
     let ok: Bool
 }
 
-enum EmailAction: String, CaseIterable {
+enum EmailAction: String, CaseIterable, Codable {
     case archive = "archive"
     case moveToInbox = "move-to-inbox"
     case markRead = "mark-read"
@@ -390,6 +485,21 @@ enum EmailAction: String, CaseIterable {
         case .archive, .moveToInbox, .markRead, .markUnread: true
         case .unsubscribe: false
         }
+    }
+}
+
+struct UndoHandlingResponse: Decodable {
+    let ok: Bool
+    let action: String
+    let item: EmailItem?
+
+    private enum CodingKeys: String, CodingKey { case ok, action, item }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try values.decodeIfPresent(Bool.self, forKey: .ok) ?? true
+        action = try values.decodeIfPresent(String.self, forKey: .action) ?? "undo-handling"
+        item = try values.decodeIfPresent(EmailItem.self, forKey: .item)
     }
 }
 

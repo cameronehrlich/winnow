@@ -7,14 +7,18 @@ import { getAccounts } from './config.js';
 import { matchAssistantRule, validateAssistantRule } from './assistant-rules.js';
 import {
   deleteUserRuleRecord,
+  getRuleActivity,
   getSyncState,
   getUserRuleRecord,
   listRecentTrackedEmailItems,
   listUserRuleRecords,
+  runImmediateTransaction,
   setSyncState,
   setUserRuleEnabled,
   upsertUserRuleRecord,
 } from './store.js';
+import { evaluateSemanticRulePreview } from './semantic-rule-preview.js';
+import { ruleRevision } from './rule-revisions.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_RULES_DIR = join(__dirname, '..', 'config');
@@ -27,6 +31,13 @@ const USER_RULE_INPUT_FIELDS = new Set([
 const OPERATOR_FIELDS = new Set([
   'action', 'always', 'trigger', 'command', 'script', 'shell', 'suppress_feed', 'suppressFeed',
 ].map(field => field.toLowerCase()));
+
+export class RuleConflictError extends Error {
+  constructor(code, message = code) {
+    super(message);
+    this.code = code;
+  }
+}
 
 function rulesDirectory() {
   return process.env.WINNOW_RULES_DIR || DEFAULT_RULES_DIR;
@@ -225,12 +236,97 @@ function toApiRule(rule, scope = 'user') {
   };
 }
 
+function withActivity(rule) {
+  return {
+    ...rule,
+    activity: rule.account
+      ? getRuleActivity(rule.account, rule.id, {
+        effect: rule.effect,
+        revision: ruleRevision(rule),
+      })
+      : { appliedCount30Days: 0, lastAppliedAt: null, recent: [] },
+  };
+}
+
+function aggregateActivity(accounts, rule) {
+  const activities = accounts.map(account => getRuleActivity(account, rule.id, {
+    effect: rule.effect,
+    revision: ruleRevision({ ...rule, source: 'baseline' }),
+  }));
+  const recent = activities.flatMap(activity => activity.recent)
+    .sort((left, right) => String(right.date).localeCompare(String(left.date)))
+    .slice(0, 3);
+  const lastAppliedAt = activities.map(activity => activity.lastAppliedAt).filter(Boolean)
+    .sort((left, right) => String(right).localeCompare(String(left)))[0] || null;
+  return {
+    appliedCount30Days: activities.reduce((sum, activity) => sum + activity.appliedCount30Days, 0),
+    lastAppliedAt,
+    recent,
+  };
+}
+
+function splitExpectedConflict(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return { ruleInput: input, expectedConflict: null };
+  }
+  const { expectedConflict = null, ...ruleInput } = input;
+  if (expectedConflict !== null) {
+    if (!expectedConflict || typeof expectedConflict !== 'object' || Array.isArray(expectedConflict)) {
+      throw new TypeError('expectedConflict must be an object');
+    }
+    const unexpected = Object.keys(expectedConflict).find(key => !['ruleId', 'updatedAt'].includes(key));
+    if (unexpected) throw new TypeError(`unexpected expectedConflict field: ${unexpected}`);
+    requiredText(expectedConflict.ruleId, 'expectedConflict.ruleId', 128);
+    requiredText(expectedConflict.updatedAt, 'expectedConflict.updatedAt', 128);
+  }
+  return { ruleInput, expectedConflict };
+}
+
+function conflictForNormalizedRule(normalized) {
+  return listUserRuleRecords({ account: normalized.account })
+    .find(rule => rule.conflictKey === normalized.conflictKey && rule.id !== normalized.id) || null;
+}
+
+export function getUserRuleConflict(input, { source = 'api' } = {}) {
+  const { ruleInput } = splitExpectedConflict(input);
+  const existing = ruleInput?.id ? getUserRuleRecord(ruleInput.id) : null;
+  const normalized = normalizeUserRule(ruleInput, { source, existing });
+  const conflict = conflictForNormalizedRule(normalized);
+  return conflict ? toApiRule(conflict) : null;
+}
+
 export function upsertUserRule(input, { source = 'api' } = {}) {
-  const existing = input?.id ? getUserRuleRecord(input.id) : null;
-  const normalized = normalizeUserRule(input, { source, existing });
-  const saved = upsertUserRuleRecord(normalized);
-  if (existing && saved.id !== existing.id) deleteUserRuleRecord(existing.id);
-  return toApiRule(saved);
+  const { ruleInput, expectedConflict } = splitExpectedConflict(input);
+  return runImmediateTransaction(() => {
+    const existing = ruleInput?.id ? getUserRuleRecord(ruleInput.id) : null;
+    const normalized = normalizeUserRule(ruleInput, { source, existing });
+    const conflict = conflictForNormalizedRule(normalized);
+    if (conflict && !expectedConflict) {
+      throw new RuleConflictError(
+        'rule_conflict_confirmation_required',
+        'This rule would replace an existing rule; preview and explicitly confirm that replacement',
+      );
+    }
+    if (
+      expectedConflict
+      && (!conflict
+        || expectedConflict.ruleId !== conflict.id
+        || expectedConflict.updatedAt !== conflict.updatedAt)
+    ) {
+      throw new RuleConflictError(
+        'rule_conflict_changed',
+        'The conflicting rule changed; preview the rule again before saving',
+      );
+    }
+    const previousRevisionTime = Math.max(
+      Date.parse(existing?.updatedAt || '') || 0,
+      Date.parse(conflict?.updatedAt || '') || 0,
+    );
+    normalized.updatedAt = new Date(Math.max(Date.now(), previousRevisionTime + 1)).toISOString();
+    const saved = upsertUserRuleRecord(normalized);
+    if (existing && saved.id !== existing.id) deleteUserRuleRecord(existing.id);
+    return toApiRule(saved);
+  });
 }
 
 export function updateUserRule(id, patch, { source = 'api' } = {}) {
@@ -262,10 +358,11 @@ export function listRulesForApi(account) {
       email,
       getSyncState(`${IMPORT_STATE_PREFIX}${email}`, '') !== 'complete',
     ]));
-    const userRules = listUserRuleRecords().map(rule => toApiRule(rule));
+    const userRules = listUserRuleRecords().map(rule => withActivity(toApiRule(rule)));
     const baseline = listBaselineRules().map(rule => ({
       ...toApiRule({ ...rule, id: `baseline:${rule.id}`, account: null, description: '', enabled: true }, 'baseline'),
       baselineRuleId: rule.id,
+      activity: aggregateActivity(accounts, rule),
     }));
     return {
       rules: [...userRules, ...baseline],
@@ -278,9 +375,9 @@ export function listRulesForApi(account) {
   const shadowedBaseline = new Set(userRules.map(rule => rule.baselineRuleId).filter(Boolean));
   const baseline = listBaselineRules()
     .filter(rule => !shadowedBaseline.has(rule.id))
-    .map(rule => toApiRule({ ...rule, account: normalizedAccount, description: '', enabled: true }, 'baseline'));
+    .map(rule => withActivity(toApiRule({ ...rule, account: normalizedAccount, description: '', enabled: true }, 'baseline')));
   return {
-    rules: [...userRules.map(rule => toApiRule(rule)), ...baseline],
+    rules: [...userRules.map(rule => withActivity(toApiRule(rule))), ...baseline],
     migrationPending: getSyncState(`${IMPORT_STATE_PREFIX}${normalizedAccount}`, '') !== 'complete',
   };
 }
@@ -421,30 +518,83 @@ export function importUserRules(account, { dryRun = true } = {}) {
   return { ...plan, dryRun: false, imported, preservedExisting, candidates: undefined };
 }
 
-export function previewUserRule(input, { limit = 10 } = {}) {
+function previewEvidence(message, evaluation = {}) {
+  return {
+    emailItemId: message.id,
+    account: message.account,
+    messageId: message.messageId,
+    threadId: message.threadId,
+    from: message.from,
+    subject: message.subject,
+    date: message.processedAt,
+    snippet: message.snippet,
+    ...(evaluation.confidence === undefined ? {} : { confidence: evaluation.confidence }),
+    ...(evaluation.reason === undefined ? {} : { reason: evaluation.reason }),
+  };
+}
+
+function replacementConflict(normalized) {
+  const existing = listUserRuleRecords({ account: normalized.account })
+    .find(rule => rule.conflictKey === normalized.conflictKey && rule.id !== normalized.id);
+  return existing ? { rule: toApiRule(existing) } : null;
+}
+
+export async function previewUserRule(input, {
+  limit = 10,
+  evaluator = evaluateSemanticRulePreview,
+} = {}) {
   const normalized = normalizeUserRule(input, { source: 'api' });
+  const candidate = toApiRule(normalized);
+  const conflict = replacementConflict(normalized);
   if (normalized.type === 'semantic') {
+    const recent = listRecentTrackedEmailItems({ account: normalized.account, days: 90, limit: 30 });
+    const evaluated = await evaluator({ candidate, messages: recent });
+    const byId = new Map((evaluated.evaluations || []).map(result => [result.emailItemId, result]));
+    const results = recent.map(message => {
+      const evaluation = byId.get(message.id);
+      if (!evaluation || typeof evaluation.matches !== 'boolean') {
+        throw new Error('Semantic preview evaluator returned an incomplete result set');
+      }
+      return { message, evaluation };
+    });
+    const matches = results.filter(result => result.evaluation.matches)
+      .sort((a, b) => b.evaluation.confidence - a.evaluation.confidence)
+      .slice(0, limit)
+      .map(result => previewEvidence(result.message, result.evaluation));
+    const nonMatches = results.filter(result => !result.evaluation.matches)
+      .sort((a, b) => b.evaluation.confidence - a.evaluation.confidence)
+      .slice(0, limit)
+      .map(result => previewEvidence(result.message, result.evaluation));
     return {
-      candidate: toApiRule(normalized),
-      matchCount: null,
-      evidence: [],
-      note: 'Semantic rules are evaluated by the classifier; Winnow does not guess matches during preview.',
+      candidate,
+      mode: 'semantic',
+      evaluatedCount: recent.length,
+      sampledAtMost: 30,
+      matches,
+      nonMatches,
+      matchCount: results.filter(result => result.evaluation.matches).length,
+      evidence: matches,
+      sampledAt: evaluated.sampledAt || new Date().toISOString(),
+      model: evaluated.model || null,
+      note: `Sampled estimate over ${recent.length} recently tracked message${recent.length === 1 ? '' : 's'} using stored subject, summary, and snippet fields only; this is not production-equivalent and does not guarantee how future mail will be classified. No Gmail, event, or rule state was changed.`,
+      ...(conflict ? { conflict } : {}),
     };
   }
   const recent = listRecentTrackedEmailItems({ account: normalized.account, days: 90, limit: 100 });
-  const matches = recent.filter(message => matchAssistantRule(normalized, message)).slice(0, limit);
+  const matched = recent.filter(message => matchAssistantRule(normalized, message));
+  const unmatched = recent.filter(message => !matchAssistantRule(normalized, message));
+  const matches = matched.slice(0, limit).map(message => previewEvidence(message));
+  const nonMatches = unmatched.slice(0, limit).map(message => previewEvidence(message));
   return {
-    candidate: toApiRule(normalized),
-    matchCount: matches.length,
+    candidate,
+    mode: 'exact',
+    evaluatedCount: recent.length,
     sampledAtMost: 100,
-    evidence: matches.map(message => ({
-      account: message.account,
-      messageId: message.messageId,
-      threadId: message.threadId,
-      subject: message.subject,
-      from: message.from,
-      date: message.processedAt,
-      snippet: message.snippet,
-    })),
+    matches,
+    nonMatches,
+    matchCount: matched.length,
+    evidence: matches,
+    note: `Deterministic sample: this rule would match ${matched.length} of ${recent.length} recently tracked messages; no Gmail, event, or rule state was changed.`,
+    ...(conflict ? { conflict } : {}),
   };
 }
