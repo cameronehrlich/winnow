@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApiServer } from '../src/api.js';
 import { reloadConfig } from '../src/config.js';
+import { getPushCapabilities } from '../src/push.js';
 import {
   appendEmailEvent,
   closeStoreForTests,
@@ -154,7 +155,7 @@ describe('local API', () => {
     assert.deepEqual(body.capabilities.emailStates, ['all', 'inbox', 'archived']);
     assert.ok(body.capabilities.emailActions.includes('mark-read'));
     assert.equal(body.capabilities.push.deviceRegistration, true);
-    assert.equal(body.capabilities.push.delivery, false);
+    assert.equal(body.capabilities.push.delivery, getPushCapabilities().delivery);
   });
 
   it('serves MCP initialize, tool list, and status tool calls', async () => {
