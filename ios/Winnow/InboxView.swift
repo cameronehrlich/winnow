@@ -11,6 +11,13 @@ enum MailboxTab {
         }
     }
 
+    var apiState: String {
+        switch self {
+        case .inbox: "inbox"
+        case .archived: "archived"
+        }
+    }
+
     var primaryAction: EmailAction {
         switch self {
         case .inbox: .archive
@@ -149,6 +156,12 @@ struct InboxView: View {
                 Button("Cancel", role: .cancel) { unsubscribeCandidate = nil }
             } message: { _ in
                 Text("Winnow will follow the sender’s unsubscribe link.")
+            }
+            .onChange(of: model.navigationRequest) { _, request in
+                guard let request,
+                      request.mailboxState == mailbox.apiState else { return }
+                navigationPath.append(request.emailID)
+                model.consumeNavigation(request)
             }
         }
     }

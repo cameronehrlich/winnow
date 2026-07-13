@@ -186,8 +186,13 @@ function migrate() {
       id TEXT PRIMARY KEY,
       device_token TEXT NOT NULL UNIQUE,
       platform TEXT NOT NULL DEFAULT 'ios',
+      installation_id TEXT,
+      environment TEXT NOT NULL DEFAULT 'production',
+      bundle_id TEXT,
       app_version TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
+      last_error TEXT,
+      last_success_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -204,6 +209,18 @@ function migrate() {
   const emailColumns = database.prepare('PRAGMA table_info(email_items)').all();
   if (!emailColumns.some(column => column.name === 'read_state')) {
     database.exec("ALTER TABLE email_items ADD COLUMN read_state TEXT NOT NULL DEFAULT 'unknown'");
+  }
+  const pushColumns = database.prepare('PRAGMA table_info(push_devices)').all();
+  for (const [name, definition] of [
+    ['installation_id', 'TEXT'],
+    ['environment', "TEXT NOT NULL DEFAULT 'production'"],
+    ['bundle_id', 'TEXT'],
+    ['last_error', 'TEXT'],
+    ['last_success_at', 'TEXT'],
+  ]) {
+    if (!pushColumns.some(column => column.name === name)) {
+      database.exec(`ALTER TABLE push_devices ADD COLUMN ${name} ${definition}`);
+    }
   }
 }
 
@@ -634,19 +651,39 @@ export function listDeliveryRecords(emailItemId, sink = '') {
   }));
 }
 
-export function registerPushDevice({ deviceToken, platform = 'ios', appVersion = '' }) {
-  const id = Buffer.from(`${platform}\0${deviceToken}`).toString('base64url');
+export function registerPushDevice({
+  deviceToken,
+  platform = 'ios',
+  installationId = '',
+  environment = 'production',
+  bundleId = '',
+  appVersion = '',
+}) {
+  const stableKey = installationId || deviceToken;
+  const id = Buffer.from(`${platform}\0${stableKey}`).toString('base64url');
   const timestamp = nowIso();
+  getDb().prepare('DELETE FROM push_devices WHERE device_token = ? AND id != ?').run(deviceToken, id);
   getDb().prepare(`
-    INSERT INTO push_devices (id, device_token, platform, app_version, enabled, created_at, updated_at)
-    VALUES (@id, @deviceToken, @platform, @appVersion, 1, @timestamp, @timestamp)
-    ON CONFLICT(device_token) DO UPDATE SET
+    INSERT INTO push_devices (
+      id, device_token, platform, installation_id, environment, bundle_id,
+      app_version, enabled, last_error, created_at, updated_at
+    )
+    VALUES (
+      @id, @deviceToken, @platform, @installationId, @environment, @bundleId,
+      @appVersion, 1, NULL, @timestamp, @timestamp
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      device_token = excluded.device_token,
       platform = excluded.platform,
+      installation_id = excluded.installation_id,
+      environment = excluded.environment,
+      bundle_id = excluded.bundle_id,
       app_version = excluded.app_version,
       enabled = 1,
+      last_error = NULL,
       updated_at = excluded.updated_at
-  `).run({ id, deviceToken, platform, appVersion, timestamp });
-  return { id, deviceToken, platform, appVersion, enabled: true };
+  `).run({ id, deviceToken, platform, installationId, environment, bundleId, appVersion, timestamp });
+  return { id, platform, installationId, environment, bundleId, appVersion, enabled: true };
 }
 
 export function deletePushDevice(id) {
@@ -654,16 +691,56 @@ export function deletePushDevice(id) {
   return result.changes > 0;
 }
 
+export function disablePushDevice(id, error = '') {
+  const result = getDb().prepare(`
+    UPDATE push_devices SET enabled = 0, last_error = ?, updated_at = ? WHERE id = ?
+  `).run(error, nowIso(), id);
+  return result.changes > 0;
+}
+
+export function recordPushDelivery(id, result) {
+  const success = Boolean(result?.ok);
+  getDb().prepare(`
+    UPDATE push_devices SET
+      last_error = @lastError,
+      last_success_at = CASE WHEN @success = 1 THEN @timestamp ELSE last_success_at END,
+      updated_at = @timestamp
+    WHERE id = @id
+  `).run({
+    id,
+    success: success ? 1 : 0,
+    lastError: success ? null : String(result?.reason || `APNs ${result?.status || 'error'}`),
+    timestamp: nowIso(),
+  });
+}
+
 export function listPushDevices() {
   return getDb().prepare('SELECT * FROM push_devices WHERE enabled = 1 ORDER BY updated_at DESC').all().map(row => ({
     id: row.id,
     deviceToken: row.device_token,
     platform: row.platform,
+    installationId: row.installation_id || '',
+    environment: row.environment || 'production',
+    bundleId: row.bundle_id || '',
     appVersion: row.app_version || '',
     enabled: Boolean(row.enabled),
+    lastError: row.last_error || '',
+    lastSuccessAt: row.last_success_at || '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }));
+}
+
+export function getMailboxCounts() {
+  const rows = getDb().prepare(`
+    SELECT mailbox_state, COUNT(*) AS count
+    FROM email_items
+    WHERE mailbox_state IN ('inbox', 'archived')
+    GROUP BY mailbox_state
+  `).all();
+  const counts = { inbox: 0, archived: 0 };
+  for (const row of rows) counts[row.mailbox_state] = Number(row.count);
+  return counts;
 }
 
 export function setSyncState(key, value) {

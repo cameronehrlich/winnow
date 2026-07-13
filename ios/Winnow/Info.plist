@@ -26,6 +26,21 @@
 	<array>
 		<string>googlegmail</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.cameronehrlich.Winnow</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>winnow</string>
+			</array>
+		</dict>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

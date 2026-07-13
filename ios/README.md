@@ -14,6 +14,9 @@ A personal, native SwiftUI client for Winnow. V1 keeps the useful, dynamic parts
 - Lifetime and Today stats plus recent activity
 - Server health merged with per-account scan state in Settings
 - Pull to refresh, refresh whenever the app becomes active, and 30-second foreground refresh
+- APNs alerts for Inbox mail, silent refreshes for automatically archived mail, and push deep links
+- Inbox app-icon/tab badges plus a "new since viewed" Archived tab badge
+- Small and medium Inbox widgets with current attention count and email deep links
 - Loading, empty, offline, and action-error states
 - Server URL in preferences and bearer token in the iOS Keychain
 
@@ -81,8 +84,28 @@ Debug builds can also be seeded without embedding secrets:
 
 The values are persisted once to preferences/Keychain, so a signed development build remains configured on the next normal launch. For Simulator, pass them through `SIMCTL_CHILD_WINNOW_SERVER_URL` and `SIMCTL_CHILD_WINNOW_API_TOKEN` when launching with `simctl`. Never put a real hostname or token in this repository or a shared Xcode scheme.
 
+## Push and widget provisioning
+
+The development identifiers are `com.cameronehrlich.Winnow` and
+`com.cameronehrlich.Winnow.WinnowWidget`. They share the
+`group.com.cameronehrlich.Winnow` App Group. Xcode automatic signing manages the
+development profiles; an App Store Connect app record is not required.
+
+One Apple Developer account-holder step remains before the backend can deliver
+real pushes:
+
+1. Open **Apple Developer → Certificates, Identifiers & Profiles → Keys**.
+2. Create a key named **Winnow APNs**, enable **Apple Push Notifications service
+   (APNs)**, and download its `.p8` file. Apple permits this download only once.
+3. Put the key outside the repository with owner-only permissions and configure
+   `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_BUNDLE_ID=com.cameronehrlich.Winnow`, and
+   `APNS_PRIVATE_KEY_PATH` in Winnow's private runtime environment.
+
+The backend uses the same token-based key for development and production APNs,
+while keeping each registered device token's environment explicit.
+
 ## V1 boundaries
 
-- The app refreshes only while in the foreground. APNs delivery is not enabled yet, so Slack remains the notification fallback.
+- Slack remains a notification fallback if APNs credentials are not installed.
 - Email bodies stay in Gmail; Winnow shows its bounded snippet and structured triage fields.
 - This is deliberately personal-use infrastructure: no user accounts, onboarding service, analytics, or multi-tenant product work.

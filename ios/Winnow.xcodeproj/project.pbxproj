@@ -20,6 +20,11 @@
 		A0000000000000000000000B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000B /* SettingsView.swift */; };
 		A0000000000000000000000C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000C /* Assets.xcassets */; };
 		A0000000000000000000000D /* ModelDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000E /* ModelDecodingTests.swift */; };
+		A0000000000000000000000E /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000F /* NotificationManager.swift */; };
+		A0000000000000000000000F /* WidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000010 /* WidgetSnapshot.swift */; };
+		A00000000000000000000010 /* WinnowWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000011 /* WinnowWidget.swift */; };
+		A00000000000000000000011 /* WidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000010 /* WidgetSnapshot.swift */; };
+		A00000000000000000000012 /* WinnowWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* WinnowWidget.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -29,6 +34,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = D00000000000000000000001;
 			remoteInfo = Winnow;
+		};
+		C10000000000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D00000000000000000000003;
+			remoteInfo = WinnowWidget;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -47,8 +59,15 @@
 		B0000000000000000000000C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B0000000000000000000000D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B0000000000000000000000E /* ModelDecodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDecodingTests.swift; sourceTree = "<group>"; };
+		B0000000000000000000000F /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
+		B00000000000000000000010 /* WidgetSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetSnapshot.swift; sourceTree = "<group>"; };
+		B00000000000000000000011 /* WinnowWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WinnowWidget.swift; sourceTree = "<group>"; };
+		B00000000000000000000012 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B00000000000000000000013 /* WinnowWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WinnowWidget.entitlements; sourceTree = "<group>"; };
+		B00000000000000000000014 /* Winnow.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Winnow.entitlements; sourceTree = "<group>"; };
 		B10000000000000000000001 /* Winnow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Winnow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000002 /* WinnowTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WinnowTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000003 /* WinnowWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WinnowWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -66,6 +85,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F10000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -74,6 +100,7 @@
 			children = (
 				C00000000000000000000002 /* Winnow */,
 				C00000000000000000000003 /* WinnowTests */,
+				C00000000000000000000005 /* WinnowWidget */,
 				C00000000000000000000004 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -94,6 +121,9 @@
 				B0000000000000000000000B /* SettingsView.swift */,
 				B0000000000000000000000C /* Assets.xcassets */,
 				B0000000000000000000000D /* Info.plist */,
+				B0000000000000000000000F /* NotificationManager.swift */,
+				B00000000000000000000010 /* WidgetSnapshot.swift */,
+				B00000000000000000000014 /* Winnow.entitlements */,
 			);
 			path = Winnow;
 			sourceTree = "<group>";
@@ -111,8 +141,19 @@
 			children = (
 				B10000000000000000000001 /* Winnow.app */,
 				B10000000000000000000002 /* WinnowTests.xctest */,
+				B10000000000000000000003 /* WinnowWidget.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		C00000000000000000000005 /* WinnowWidget */ = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000011 /* WinnowWidget.swift */,
+				B00000000000000000000012 /* Info.plist */,
+				B00000000000000000000013 /* WinnowWidget.entitlements */,
+			);
+			path = WinnowWidget;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -125,15 +166,34 @@
 				F00000000000000000000001 /* Sources */,
 				F10000000000000000000001 /* Frameworks */,
 				F20000000000000000000001 /* Resources */,
+				F30000000000000000000001 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				C20000000000000000000002 /* PBXTargetDependency */,
 			);
 			name = Winnow;
 			productName = Winnow;
 			productReference = B10000000000000000000001 /* Winnow.app */;
 			productType = "com.apple.product-type.application";
+		};
+		D00000000000000000000003 /* WinnowWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E00000000000000000000004 /* Build configuration list for PBXNativeTarget "WinnowWidget" */;
+			buildPhases = (
+				F00000000000000000000003 /* Sources */,
+				F10000000000000000000003 /* Frameworks */,
+				F20000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = WinnowWidget;
+			productName = WinnowWidget;
+			productReference = B10000000000000000000003 /* WinnowWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 		D00000000000000000000002 /* WinnowTests */ = {
 			isa = PBXNativeTarget;
@@ -187,6 +247,7 @@
 			targets = (
 				D00000000000000000000001 /* Winnow */,
 				D00000000000000000000002 /* WinnowTests */,
+				D00000000000000000000003 /* WinnowWidget */,
 			);
 		};
 /* End PBXProject section */
@@ -207,7 +268,28 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F20000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		F30000000000000000000001 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A00000000000000000000012 /* WinnowWidget.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		F00000000000000000000001 /* Sources */ = {
@@ -225,6 +307,17 @@
 				A00000000000000000000009 /* EmailDetailView.swift in Sources */,
 				A0000000000000000000000A /* TodayView.swift in Sources */,
 				A0000000000000000000000B /* SettingsView.swift in Sources */,
+				A0000000000000000000000E /* NotificationManager.swift in Sources */,
+				A0000000000000000000000F /* WidgetSnapshot.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F00000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000010 /* WinnowWidget.swift in Sources */,
+				A00000000000000000000011 /* WidgetSnapshot.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -243,6 +336,11 @@
 			isa = PBXTargetDependency;
 			target = D00000000000000000000001 /* Winnow */;
 			targetProxy = C10000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		C20000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D00000000000000000000003 /* WinnowWidget */;
+			targetProxy = C10000000000000000000002 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -350,6 +448,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = Winnow/Winnow.entitlements;
+				APS_ENVIRONMENT = development;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 842K77RHSG;
 				ENABLE_PREVIEWS = YES;
@@ -377,6 +477,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = Winnow/Winnow.entitlements;
+				APS_ENVIRONMENT = production;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 842K77RHSG;
 				ENABLE_PREVIEWS = YES;
@@ -432,6 +534,62 @@
 			};
 			name = Release;
 		};
+		E10000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = WinnowWidget/WinnowWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 842K77RHSG;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WinnowWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cameronehrlich.Winnow.WinnowWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "WIDGET_EXTENSION $(inherited)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E10000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = WinnowWidget/WinnowWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 842K77RHSG;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WinnowWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cameronehrlich.Winnow.WinnowWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "WIDGET_EXTENSION $(inherited)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -458,6 +616,15 @@
 			buildConfigurations = (
 				E10000000000000000000005 /* Debug */,
 				E10000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E00000000000000000000004 /* Build configuration list for PBXNativeTarget "WinnowWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E10000000000000000000007 /* Debug */,
+				E10000000000000000000008 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

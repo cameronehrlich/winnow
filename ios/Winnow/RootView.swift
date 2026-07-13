@@ -11,10 +11,12 @@ struct RootView: View {
                 TabView(selection: $selectedTab) {
                     InboxView(mailbox: .inbox)
                         .tabItem { Label("Inbox", systemImage: "tray.full") }
+                        .badge(model.inboxBadgeCount)
                         .tag(0)
 
                     InboxView(mailbox: .archived)
                         .tabItem { Label("Archived", systemImage: "archivebox") }
+                        .badge(model.archivedBadgeCount)
                         .tag(1)
 
                     StatsView()
@@ -44,6 +46,9 @@ struct RootView: View {
                 model.stopAutoRefresh()
             }
         }
+        .onChange(of: selectedTab) { _, tab in
+            model.setArchivedVisible(tab == 1)
+        }
         .onChange(of: model.isConfigured) { _, isConfigured in
             if isConfigured, scenePhase == .active {
                 Task { await model.refresh(silent: !model.emails.isEmpty) }
@@ -51,6 +56,12 @@ struct RootView: View {
             } else if !isConfigured {
                 model.stopAutoRefresh()
             }
+        }
+        .onOpenURL(perform: handleDeepLink)
+        .onReceive(NotificationCenter.default.publisher(for: .winnowPushOpened)) { notification in
+            let emailID = notification.userInfo?["emailId"] as? String ?? ""
+            let mailbox = notification.userInfo?["mailboxState"] as? String ?? "inbox"
+            open(emailID: emailID, mailbox: mailbox)
         }
         .alert(item: $model.presentedError) { error in
             Alert(title: Text(error.title), message: Text(error.message), dismissButton: .default(Text("OK")))
@@ -65,6 +76,27 @@ struct RootView: View {
                         withAnimation { model.toast = nil }
                     }
             }
+        }
+    }
+
+    private func handleDeepLink(_ url: URL) {
+        guard url.scheme == "winnow" else { return }
+        if url.host == "email" {
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            let emailID = components?.queryItems?.first(where: { $0.name == "id" })?.value ?? ""
+            let mailbox = components?.queryItems?.first(where: { $0.name == "mailbox" })?.value ?? "inbox"
+            open(emailID: emailID, mailbox: mailbox)
+        } else if url.host == "mailbox" {
+            selectedTab = url.pathComponents.contains("archived") ? 1 : 0
+        }
+    }
+
+    private func open(emailID: String, mailbox: String) {
+        selectedTab = mailbox == "archived" ? 1 : 0
+        guard !emailID.isEmpty else { return }
+        Task {
+            await model.refresh(silent: true)
+            model.requestNavigation(emailID: emailID, mailboxState: mailbox)
         }
     }
 }

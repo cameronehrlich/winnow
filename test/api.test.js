@@ -315,6 +315,29 @@ describe('local API', () => {
     assert.equal((await nonObject.json()).error, 'invalid_json_body');
   });
 
+  it('registers APNs devices with environment and installation lifecycle metadata', async () => {
+    const response = await fetch(`${baseUrl}/v1/push/devices`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        deviceToken: 'a'.repeat(64),
+        platform: 'ios',
+        installationId: '11111111-1111-1111-1111-111111111111',
+        environment: 'development',
+        bundleId: 'com.cameronehrlich.Winnow',
+        appVersion: '1.0 (1)',
+      }),
+    });
+    assert.equal(response.status, 200);
+    const device = (await response.json()).device;
+    assert.equal(device.environment, 'development');
+    assert.equal(device.installationId, '11111111-1111-1111-1111-111111111111');
+    assert.equal(device.deviceToken, undefined);
+  });
+
   it('rejects invalid feed filters and non-boolean scan controls', async () => {
     const headers = { Authorization: 'Bearer test-token' };
 

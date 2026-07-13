@@ -86,10 +86,42 @@ struct APIClient {
         return try await request(path: "/v1/emails/\(encodedID)/\(action.rawValue)", method: "POST")
     }
 
+    func registerPushDevice(
+        token: String,
+        installationID: String,
+        environment: String,
+        bundleID: String,
+        appVersion: String
+    ) async throws -> PushDevice {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "deviceToken": token,
+            "platform": "ios",
+            "installationId": installationID,
+            "environment": environment,
+            "bundleId": bundleID,
+            "appVersion": appVersion,
+        ])
+        let response: PushDeviceResponse = try await request(
+            path: "/v1/push/devices",
+            method: "POST",
+            body: body
+        )
+        return response.device
+    }
+
+    func unregisterPushDevice(id: String) async throws {
+        let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        let _: PushDeviceDeleteResponse = try await request(
+            path: "/v1/push/devices/\(encodedID)",
+            method: "DELETE"
+        )
+    }
+
     private func request<Response: Decodable>(
         path: String,
         queryItems: [URLQueryItem] = [],
-        method: String = "GET"
+        method: String = "GET",
+        body: Data? = nil
     ) async throws -> Response {
         guard let baseURL = configuration.normalizedBaseURL else { throw APIClientError.invalidServerURL }
         guard var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
@@ -104,7 +136,7 @@ struct APIClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if method != "GET" {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = Data("{}".utf8)
+            request.httpBody = body ?? Data("{}".utf8)
         }
 
         let data: Data

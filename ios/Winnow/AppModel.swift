@@ -15,23 +15,37 @@ final class AppModel: ObservableObject {
     @Published private(set) var lastRefresh: Date?
     @Published var presentedError: PresentedError?
     @Published var toast: ToastMessage?
+    @Published var navigationRequest: EmailNavigationRequest?
 
     private var hasLoaded = false
     private var autoRefreshTask: Task<Void, Never>?
     private var refreshInFlight = false
     private var refreshGeneration = 0
+    private var archivedIsVisible = false
+    private let archivedViewedKey = "winnow.archived-last-viewed"
 
     init(configuration: ServerConfiguration = ConfigurationStore.load()) {
         self.configuration = configuration
+        if UserDefaults.standard.object(forKey: archivedViewedKey) == nil {
+            UserDefaults.standard.set(Date(), forKey: archivedViewedKey)
+        }
     }
 
     var isConfigured: Bool { configuration.isComplete }
     var isOnline: Bool { status?.ok == true }
+    var inboxBadgeCount: Int { emails.lazy.filter { !$0.isArchived }.count }
+    var archivedBadgeCount: Int {
+        guard let viewedAt = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date else { return 0 }
+        return emails.lazy.filter { item in
+            item.isArchived && (item.displayDate ?? .distantPast) > viewedAt
+        }.count
+    }
 
     func initialLoad() async {
         guard isConfigured, !hasLoaded else { return }
         hasLoaded = true
         await refresh()
+        await activatePushNotifications()
     }
 
     func refresh(silent: Bool = false) async {
@@ -75,6 +89,9 @@ final class AppModel: ObservableObject {
             status = runtimeStatus
             accounts = accountList
             lastRefresh = Date()
+            WidgetSnapshotStore.save(emails: emails)
+            PushNotificationManager.shared.setAppIconBadge(inboxBadgeCount)
+            if archivedIsVisible { markArchivedViewed() }
         } catch {
             guard generation == refreshGeneration else { return }
             if !silent || emails.isEmpty {
@@ -105,6 +122,7 @@ final class AppModel: ObservableObject {
             isLoading = false
             await waitForRefreshToFinish()
             await refresh()
+            await activatePushNotifications()
             toast = ToastMessage(text: "Connected to Winnow", symbol: "checkmark.circle.fill")
             return true
         } catch {
@@ -131,6 +149,8 @@ final class AppModel: ObservableObject {
     }
 
     func disconnect() {
+        let previousConfiguration = configuration
+        Task { await PushNotificationManager.shared.deactivate(configuration: previousConfiguration) }
         do {
             try ConfigurationStore.clear()
             refreshGeneration &+= 1
@@ -142,6 +162,8 @@ final class AppModel: ObservableObject {
             accounts = []
             hasLoaded = false
             stopAutoRefresh()
+            WidgetSnapshotStore.clear()
+            PushNotificationManager.shared.setAppIconBadge(0)
         } catch {
             presentedError = PresentedError(title: "Couldn’t clear setup", message: error.localizedDescription)
         }
@@ -213,6 +235,38 @@ final class AppModel: ObservableObject {
         emails.first(where: { $0.id == id })
     }
 
+    func setArchivedVisible(_ visible: Bool) {
+        archivedIsVisible = visible
+        if visible { markArchivedViewed() }
+    }
+
+    func requestNavigation(emailID: String, mailboxState: String = "inbox") {
+        navigationRequest = EmailNavigationRequest(emailID: emailID, mailboxState: mailboxState)
+    }
+
+    func consumeNavigation(_ request: EmailNavigationRequest) {
+        if navigationRequest == request { navigationRequest = nil }
+    }
+
+    @discardableResult
+    func refreshFromPush() async -> Bool {
+        let previous = emails
+        await refresh(silent: true)
+        return emails != previous
+    }
+
+    private func activatePushNotifications() async {
+        await PushNotificationManager.shared.activate(configuration: configuration) { [weak self] in
+            guard let self else { return false }
+            return await self.refreshFromPush()
+        }
+    }
+
+    private func markArchivedViewed() {
+        UserDefaults.standard.set(Date(), forKey: archivedViewedKey)
+        objectWillChange.send()
+    }
+
     private func replace(_ item: EmailItem) {
         guard let index = emails.firstIndex(where: { $0.id == item.id }) else {
             emails.insert(item, at: 0)
@@ -258,6 +312,11 @@ final class AppModel: ObservableObject {
         case .unsubscribe: "Unsubscribed"
         }
     }
+}
+
+struct EmailNavigationRequest: Equatable {
+    let emailID: String
+    let mailboxState: String
 }
 
 struct PresentedError: Identifiable {

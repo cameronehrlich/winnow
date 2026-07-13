@@ -421,7 +421,19 @@ async function handleAuthed(req, res, url) {
       return;
     }
     if (body.deviceToken.length > 512) throw new HttpError(400, 'invalid_deviceToken');
+    if (!/^[0-9a-f]+$/i.test(body.deviceToken) || body.deviceToken.length < 32) {
+      throw new HttpError(400, 'invalid_deviceToken');
+    }
     if (body.platform !== undefined && body.platform !== 'ios') throw new HttpError(400, 'invalid_platform');
+    if (body.installationId !== undefined && (
+      typeof body.installationId !== 'string' || !/^[a-zA-Z0-9-]{8,100}$/.test(body.installationId)
+    )) throw new HttpError(400, 'invalid_installationId');
+    if (body.environment !== undefined && !['development', 'production'].includes(body.environment)) {
+      throw new HttpError(400, 'invalid_environment');
+    }
+    if (body.bundleId !== undefined && (
+      typeof body.bundleId !== 'string' || body.bundleId.length > 200 || !/^[a-zA-Z0-9.-]+$/.test(body.bundleId)
+    )) throw new HttpError(400, 'invalid_bundleId');
     if (body.appVersion !== undefined && (typeof body.appVersion !== 'string' || body.appVersion.length > 100)) {
       throw new HttpError(400, 'invalid_appVersion');
     }
@@ -429,6 +441,9 @@ async function handleAuthed(req, res, url) {
       device: registerPushDevice({
         deviceToken: body.deviceToken.trim(),
         platform: body.platform || 'ios',
+        installationId: body.installationId || '',
+        environment: body.environment || 'production',
+        bundleId: body.bundleId || '',
         appVersion: body.appVersion || '',
       }),
     });

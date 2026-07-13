@@ -82,4 +82,35 @@ final class ModelDecodingTests: XCTestCase {
         let missingEvent = try JSONDecoder().decode(SummaryItem.self, from: missingEventJSON)
         XCTAssertNil(missingEvent.resolvedEmailID(in: [email]))
     }
+
+    func testPushRegistrationDecodesWithoutReturningSensitiveToken() throws {
+        let json = #"""
+        {
+          "device": {
+            "id":"device-1","platform":"ios",
+            "installationId":"11111111-1111-1111-1111-111111111111",
+            "environment":"development","bundleId":"com.cameronehrlich.Winnow",
+            "appVersion":"1.0 (1)","enabled":true
+          }
+        }
+        """#.data(using: .utf8)!
+
+        let response = try JSONDecoder().decode(PushDeviceResponse.self, from: json)
+        XCTAssertEqual(response.device.environment, "development")
+        XCTAssertTrue(response.device.enabled)
+    }
+
+    func testWidgetSnapshotRoundTripsInboxState() throws {
+        let snapshot = WinnowWidgetSnapshot(
+            inboxCount: 2,
+            items: [.init(id: "email-1", sender: "Riley", subject: "Question", summary: "Please review", date: Date())],
+            updatedAt: Date()
+        )
+        let decoded = try JSONDecoder().decode(
+            WinnowWidgetSnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+        XCTAssertEqual(decoded.inboxCount, 2)
+        XCTAssertEqual(decoded.items.first?.sender, "Riley")
+    }
 }

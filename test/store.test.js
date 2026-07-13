@@ -11,7 +11,10 @@ import {
   ensureStore,
   getDailyActionSummary,
   getLifetimeActionSummary,
+  getMailboxCounts,
+  listPushDevices,
   listDeliveryRecords,
+  registerPushDevice,
   recordDelivery,
   upsertEmailItemFromResult,
 } from '../src/store.js';
@@ -31,6 +34,35 @@ afterEach(() => {
 });
 
 describe('daily action summary', () => {
+  it('rotates APNs tokens by stable installation and tracks environments', () => {
+    const first = registerPushDevice({
+      deviceToken: 'a'.repeat(64),
+      installationId: '11111111-1111-1111-1111-111111111111',
+      environment: 'development',
+      bundleId: 'com.example.Winnow',
+      appVersion: '1.0 (1)',
+    });
+    const rotated = registerPushDevice({
+      deviceToken: 'b'.repeat(64),
+      installationId: '11111111-1111-1111-1111-111111111111',
+      environment: 'production',
+      bundleId: 'com.example.Winnow',
+      appVersion: '1.1 (2)',
+    });
+    assert.equal(first.id, rotated.id);
+    const devices = listPushDevices();
+    assert.equal(devices.length, 1);
+    assert.equal(devices[0].deviceToken, 'b'.repeat(64));
+    assert.equal(devices[0].environment, 'production');
+    assert.equal(devices[0].appVersion, '1.1 (2)');
+  });
+
+  it('reports inbox and archived counts for badge payloads', () => {
+    upsertEmailItemFromResult({ account: 'me@example.com', messageId: 'm-in', threadId: 't-in', archive: false });
+    upsertEmailItemFromResult({ account: 'me@example.com', messageId: 'm-arch', threadId: 't-arch', archive: true });
+    assert.deepEqual(getMailboxCounts(), { inbox: 1, archived: 1 });
+  });
+
   it('migrates an existing email store to add read state', () => {
     const path = join(tempDir, 'winnow.db');
     const legacy = new DatabaseSync(path);

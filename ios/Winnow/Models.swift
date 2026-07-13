@@ -320,6 +320,24 @@ struct ActionResponse: Decodable {
     let requiresManualAction: Bool?
 }
 
+struct PushDeviceResponse: Decodable {
+    let device: PushDevice
+}
+
+struct PushDevice: Decodable, Equatable {
+    let id: String
+    let platform: String
+    let installationId: String
+    let environment: String
+    let bundleId: String
+    let appVersion: String
+    let enabled: Bool
+}
+
+struct PushDeviceDeleteResponse: Decodable {
+    let ok: Bool
+}
+
 enum EmailAction: String, CaseIterable {
     case archive = "archive"
     case moveToInbox = "move-to-inbox"
