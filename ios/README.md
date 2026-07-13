@@ -17,6 +17,9 @@ A personal, native SwiftUI client for Winnow. V1 keeps the useful, dynamic parts
 - APNs alerts for Inbox mail, silent refreshes for automatically archived mail, and push deep links
 - Inbox app-icon/tab badges plus a "new since viewed" Archived tab badge
 - Small and medium Inbox widgets with current attention count and email deep links
+- A global Ask tab for mailbox questions and search, with an explicit account scope
+- A contextual Ask Winnow sheet on every email for questions, drafting, unsubscribe, and future-mail handling
+- Evidence cards, draft review/revision, and exact confirmation sheets for persistent or outbound actions
 - Loading, empty, offline, and action-error states
 - Server URL in preferences and bearer token in the iOS Keychain
 
@@ -107,5 +110,7 @@ while keeping each registered device token's environment explicit.
 ## V1 boundaries
 
 - Slack remains a notification fallback if APNs credentials are not installed.
-- Email bodies stay in Gmail; Winnow shows its bounded snippet and structured triage fields.
+- The normal feed keeps email bodies in Gmail and shows bounded snippets and structured triage fields. Ask Winnow fetches a bounded thread excerpt on demand and sends it to the configured Gemini model, but does not persist the incoming raw body in assistant tables.
+- Assistant conversations are current-session UI in V1; there is no conversation-history picker yet.
+- Draft changes are requested conversationally. There is no direct rich-text draft editor in V1.
 - This is deliberately personal-use infrastructure: no user accounts, onboarding service, analytics, or multi-tenant product work.

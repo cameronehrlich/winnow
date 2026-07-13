@@ -81,6 +81,65 @@ struct APIClient {
         return try await request(path: "/v1/summaries/lifetime", queryItems: query)
     }
 
+    func createAssistantConversation(
+        scope: AssistantScope,
+        account: String? = nil,
+        emailItemID: String? = nil
+    ) async throws -> AssistantConversationEnvelope {
+        var payload: [String: Any] = ["scope": scope.rawValue]
+        if let account, !account.isEmpty { payload["account"] = account }
+        if let emailItemID, !emailItemID.isEmpty { payload["emailItemId"] = emailItemID }
+        return try await request(
+            path: "/v1/assistant/conversations",
+            method: "POST",
+            body: try JSONSerialization.data(withJSONObject: payload),
+            timeoutInterval: 30
+        )
+    }
+
+    func assistantConversation(id: String) async throws -> AssistantConversationEnvelope {
+        let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        return try await request(path: "/v1/assistant/conversations/\(encodedID)")
+    }
+
+    func sendAssistantMessage(
+        conversationID: String,
+        text: String,
+        idempotencyKey: String = UUID().uuidString
+    ) async throws -> AssistantConversationEnvelope {
+        let encodedID = conversationID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? conversationID
+        let body = try JSONSerialization.data(withJSONObject: [
+            "text": text,
+            "idempotencyKey": idempotencyKey,
+        ])
+        return try await request(
+            path: "/v1/assistant/conversations/\(encodedID)/messages",
+            method: "POST",
+            body: body,
+            timeoutInterval: 90
+        )
+    }
+
+    func confirmAssistantProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope {
+        let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        let body = try JSONSerialization.data(withJSONObject: ["confirmationDigest": confirmationDigest])
+        return try await request(
+            path: "/v1/assistant/proposals/\(encodedID)/confirm",
+            method: "POST",
+            body: body,
+            timeoutInterval: 60
+        )
+    }
+
+    func cancelAssistantProposal(id: String) async throws -> AssistantConversationEnvelope {
+        let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        return try await request(
+            path: "/v1/assistant/proposals/\(encodedID)/cancel",
+            method: "POST",
+            timeoutInterval: 30
+        )
+    }
+
     func perform(_ action: EmailAction, emailID: String) async throws -> ActionResponse {
         let encodedID = emailID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? emailID
         return try await request(path: "/v1/emails/\(encodedID)/\(action.rawValue)", method: "POST")
@@ -121,7 +180,8 @@ struct APIClient {
         path: String,
         queryItems: [URLQueryItem] = [],
         method: String = "GET",
-        body: Data? = nil
+        body: Data? = nil,
+        timeoutInterval: TimeInterval = 20
     ) async throws -> Response {
         guard let baseURL = configuration.normalizedBaseURL else { throw APIClientError.invalidServerURL }
         guard var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
@@ -130,7 +190,7 @@ struct APIClient {
         if !queryItems.isEmpty { components.queryItems = queryItems }
         guard let url = components.url else { throw APIClientError.invalidServerURL }
 
-        var request = URLRequest(url: url, timeoutInterval: 20)
+        var request = URLRequest(url: url, timeoutInterval: timeoutInterval)
         request.httpMethod = method
         request.setValue("Bearer \(configuration.token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")

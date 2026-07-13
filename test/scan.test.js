@@ -37,6 +37,93 @@ afterEach(() => {
 });
 
 describe('scan execution controls', () => {
+  it('applies the newest matching assistant archive rule without calling Gemini', async () => {
+    const messages = [{
+      id: 'm-assistant-archive',
+      threadId: 't-assistant-archive',
+      subject: 'Weekly product update',
+      from: 'Updates <updates@example.com>',
+      snippet: 'This week in product news',
+      headers: {},
+    }];
+    let classifyCalls = 0;
+
+    const results = await scan('me@example.com', {
+      adapter: makeAdapter(messages),
+      config: { scan: { max_messages: 10 } },
+      dryRun: true,
+      listAssistantRulesFn: ({ account, enabledOnly }) => {
+        assert.equal(account, 'me@example.com');
+        assert.equal(enabledOnly, true);
+        return [{
+          id: 'rule-archive', account, effect: 'archive', matcherKind: 'sender',
+          matcherValue: 'updates@example.com', enabled: true,
+        }];
+      },
+      classifyEmailFn: async () => {
+        classifyCalls++;
+        return { archive: false, confidence: 90, summary: 'model result' };
+      },
+    });
+
+    assert.equal(classifyCalls, 0);
+    assert.equal(results[0].archive, true);
+    assert.equal(results[0].confidence, 100);
+    assert.equal(results[0].ephemeral, false);
+    assert.equal(results[0].handling, 'archive');
+    assert.match(results[0].reason, /rule-archive/);
+  });
+
+  it('lets the newest matching keep rule override an older archive rule and bypass Gemini', async () => {
+    const messages = [{
+      id: 'm-assistant-keep',
+      threadId: 't-assistant-keep',
+      subject: 'Important sender',
+      from: 'search-result@example.net',
+      snippet: 'Please review',
+      headers: {},
+    }];
+    const adapter = makeAdapter(messages);
+    adapter.getMessage = async () => ({
+      ...messages[0],
+      payload: {
+        headers: [
+          { name: 'From', value: 'Important <person@example.com>' },
+          { name: 'List-ID', value: '<important.example.com>' },
+        ],
+      },
+    });
+    let classifyCalls = 0;
+
+    const results = await scan('me@example.com', {
+      adapter,
+      config: { scan: { max_messages: 10 } },
+      dryRun: true,
+      // Store returns oldest first; scan must evaluate a reversed copy.
+      listAssistantRulesFn: () => [
+        {
+          id: 'rule-old-archive', account: 'me@example.com', effect: 'archive',
+          matcherKind: 'sender', matcherValue: 'person@example.com', enabled: true,
+        },
+        {
+          id: 'rule-new-keep', account: 'me@example.com', effect: 'keep',
+          matcherKind: 'list_id', matcherValue: 'important.example.com', enabled: true,
+        },
+      ],
+      classifyEmailFn: async () => {
+        classifyCalls++;
+        return { archive: true, confidence: 99, summary: 'model result' };
+      },
+    });
+
+    assert.equal(classifyCalls, 0);
+    assert.equal(results[0].archive, false);
+    assert.equal(results[0].confidence, 100);
+    assert.equal(results[0].handling, 'keep');
+    assert.equal(results[0].action, 'Review email in inbox');
+    assert.match(results[0].reason, /rule-new-keep/);
+  });
+
   it('passes the latest authored reply to classification instead of quoted history', async () => {
     const messages = [{
       id: 'm-reply',

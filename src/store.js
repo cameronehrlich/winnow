@@ -202,6 +202,107 @@ function migrate() {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS assistant_conversations (
+      id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL CHECK(scope IN ('email', 'mailbox')),
+      account TEXT,
+      email_item_id TEXT,
+      title TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(email_item_id) REFERENCES email_items(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_assistant_conversations_updated
+      ON assistant_conversations(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS assistant_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+      text TEXT NOT NULL DEFAULT '',
+      evidence_json TEXT NOT NULL DEFAULT '[]',
+      draft_json TEXT,
+      proposal_id TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(conversation_id) REFERENCES assistant_conversations(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_assistant_messages_conversation
+      ON assistant_messages(conversation_id, created_at, id);
+
+    CREATE TABLE IF NOT EXISTS assistant_runs (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      user_message_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed')),
+      idempotency_key TEXT,
+      error_code TEXT,
+      created_at TEXT NOT NULL,
+      completed_at TEXT,
+      FOREIGN KEY(conversation_id) REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+      UNIQUE(conversation_id, idempotency_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_assistant_runs_conversation
+      ON assistant_runs(conversation_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS assistant_proposals (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      tool TEXT NOT NULL,
+      risk TEXT NOT NULL CHECK(risk IN ('reversible', 'persistent', 'outbound')),
+      summary TEXT NOT NULL,
+      arguments_json TEXT NOT NULL,
+      confirmation_digest TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'executing', 'completed', 'cancelled', 'expired', 'failed')),
+      expires_at TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(conversation_id) REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+      FOREIGN KEY(run_id) REFERENCES assistant_runs(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_assistant_proposals_conversation
+      ON assistant_proposals(conversation_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS assistant_tool_calls (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      proposal_id TEXT,
+      tool TEXT NOT NULL,
+      risk TEXT NOT NULL,
+      arguments_json TEXT NOT NULL,
+      result_json TEXT,
+      status TEXT NOT NULL CHECK(status IN ('started', 'proposed', 'completed', 'failed')),
+      created_at TEXT NOT NULL,
+      completed_at TEXT,
+      FOREIGN KEY(run_id) REFERENCES assistant_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY(proposal_id) REFERENCES assistant_proposals(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS assistant_rules (
+      id TEXT PRIMARY KEY,
+      account TEXT NOT NULL,
+      effect TEXT NOT NULL CHECK(effect IN ('archive', 'keep')),
+      matcher_kind TEXT NOT NULL CHECK(matcher_kind IN ('sender', 'domain', 'list_id')),
+      matcher_value TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      source_email_item_id TEXT,
+      created_by TEXT NOT NULL DEFAULT 'assistant',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(source_email_item_id) REFERENCES email_items(id) ON DELETE SET NULL,
+      UNIQUE(account, effect, matcher_kind, matcher_value)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_assistant_rules_account_enabled
+      ON assistant_rules(account, enabled, created_at);
   `);
 
   // Older personal databases predate native-client read state. This additive
@@ -896,6 +997,383 @@ export function getLifetimeActionSummary({ account = '', timeZone = LA_TIME_ZONE
       .slice(-boundedRecentLimit)
       .reverse(),
   };
+}
+
+function rowToAssistantConversation(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    scope: row.scope,
+    account: row.account || null,
+    emailItemId: row.email_item_id || null,
+    title: row.title || '',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function sanitizeAssistantEvidence(evidence = []) {
+  if (!Array.isArray(evidence)) return [];
+  const clip = (value, max) => String(value || '').slice(0, max);
+  return evidence.slice(0, 25).map(item => ({
+    account: clip(item?.account, 320),
+    messageId: clip(item?.messageId || item?.id, 300),
+    threadId: clip(item?.threadId, 300),
+    subject: clip(item?.subject, 500),
+    from: clip(item?.from, 500),
+    date: clip(item?.date, 100),
+    snippet: clip(item?.snippet, 500),
+  }));
+}
+
+function rowToAssistantProposal(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    runId: row.run_id,
+    tool: row.tool,
+    risk: row.risk,
+    summary: row.summary,
+    arguments: parseJson(row.arguments_json),
+    confirmationDigest: row.confirmation_digest,
+    status: row.status,
+    expiresAt: row.expires_at,
+    result: parseJson(row.result_json, null),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function rowToAssistantMessage(row) {
+  if (!row) return null;
+  const message = {
+    id: row.id,
+    conversationId: row.conversation_id,
+    role: row.role,
+    text: row.text,
+    createdAt: row.created_at,
+  };
+  const evidence = parseJson(row.evidence_json, []);
+  if (evidence.length) message.evidence = evidence;
+  const draft = parseJson(row.draft_json, null);
+  if (draft) message.draft = draft;
+  if (row.proposal_id) {
+    message.proposal = row.proposal_tool ? rowToAssistantProposal({
+      id: row.proposal_id,
+      conversation_id: row.proposal_conversation_id,
+      run_id: row.proposal_run_id,
+      tool: row.proposal_tool,
+      risk: row.proposal_risk,
+      summary: row.proposal_summary,
+      arguments_json: row.proposal_arguments_json,
+      confirmation_digest: row.proposal_confirmation_digest,
+      status: row.proposal_status,
+      expires_at: row.proposal_expires_at,
+      result_json: row.proposal_result_json,
+      created_at: row.proposal_created_at,
+      updated_at: row.proposal_updated_at,
+    }) : { id: row.proposal_id };
+  }
+  return message;
+}
+
+const ASSISTANT_MESSAGE_SELECT = `
+  m.*,
+  p.conversation_id AS proposal_conversation_id,
+  p.run_id AS proposal_run_id,
+  p.tool AS proposal_tool,
+  p.risk AS proposal_risk,
+  p.summary AS proposal_summary,
+  p.arguments_json AS proposal_arguments_json,
+  p.confirmation_digest AS proposal_confirmation_digest,
+  p.status AS proposal_status,
+  p.expires_at AS proposal_expires_at,
+  p.result_json AS proposal_result_json,
+  p.created_at AS proposal_created_at,
+  p.updated_at AS proposal_updated_at
+`;
+
+export function createAssistantConversation({ id, scope, account = '', emailItemId = '', title = '' }) {
+  const timestamp = nowIso();
+  getDb().prepare(`
+    INSERT INTO assistant_conversations (id, scope, account, email_item_id, title, created_at, updated_at)
+    VALUES (@id, @scope, @account, @emailItemId, @title, @createdAt, @updatedAt)
+  `).run({
+    id,
+    scope,
+    account: account || null,
+    emailItemId: emailItemId || null,
+    title: String(title || '').slice(0, 300),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  return getAssistantConversation(id);
+}
+
+export function getAssistantConversation(id) {
+  return rowToAssistantConversation(
+    getDb().prepare('SELECT * FROM assistant_conversations WHERE id = ?').get(id)
+  );
+}
+
+export function addAssistantMessage({
+  id, conversationId, role, text = '', evidence = [], draft = null,
+  proposalId = '', createdAt = nowIso(),
+}) {
+  const database = getDb();
+  database.prepare(`
+    INSERT INTO assistant_messages (
+      id, conversation_id, role, text, evidence_json, draft_json, proposal_id, created_at
+    ) VALUES (
+      @id, @conversationId, @role, @text, @evidenceJson, @draftJson, @proposalId, @createdAt
+    )
+  `).run({
+    id,
+    conversationId,
+    role,
+    text: String(text || '').slice(0, 12000),
+    evidenceJson: JSON.stringify(sanitizeAssistantEvidence(evidence)),
+    draftJson: draft ? JSON.stringify(draft) : null,
+    proposalId: proposalId || null,
+    createdAt,
+  });
+  database.prepare('UPDATE assistant_conversations SET updated_at = ? WHERE id = ?')
+    .run(createdAt, conversationId);
+  return getAssistantMessage(id);
+}
+
+export function getAssistantMessage(id) {
+  return rowToAssistantMessage(getDb().prepare(`
+    SELECT ${ASSISTANT_MESSAGE_SELECT}
+    FROM assistant_messages m
+    LEFT JOIN assistant_proposals p ON p.id = m.proposal_id
+    WHERE m.id = ?
+  `).get(id));
+}
+
+export function listAssistantMessages(conversationId, limit = 200) {
+  const boundedLimit = Math.min(Math.max(Number(limit) || 200, 1), 500);
+  return getDb().prepare(`
+    SELECT ${ASSISTANT_MESSAGE_SELECT}
+    FROM assistant_messages m
+    LEFT JOIN assistant_proposals p ON p.id = m.proposal_id
+    WHERE m.conversation_id = ?
+    ORDER BY m.created_at, m.rowid
+    LIMIT ?
+  `).all(conversationId, boundedLimit).map(rowToAssistantMessage);
+}
+
+export function getAssistantConversationEnvelope(id) {
+  const conversation = getAssistantConversation(id);
+  if (!conversation) return null;
+  return { conversation, messages: listAssistantMessages(id) };
+}
+
+export function createAssistantRun({ id, conversationId, userMessageId, idempotencyKey = '' }) {
+  const timestamp = nowIso();
+  const database = getDb();
+  try {
+    database.prepare(`
+      INSERT INTO assistant_runs (
+        id, conversation_id, user_message_id, status, idempotency_key, created_at
+      ) VALUES (?, ?, ?, 'running', ?, ?)
+    `).run(id, conversationId, userMessageId, idempotencyKey || null, timestamp);
+    return { id, conversationId, userMessageId, status: 'running', idempotencyKey: idempotencyKey || null, createdAt: timestamp };
+  } catch (err) {
+    if (!idempotencyKey || !String(err.message).includes('UNIQUE constraint failed')) throw err;
+    return getAssistantRunByIdempotencyKey(conversationId, idempotencyKey);
+  }
+}
+
+export function getAssistantRunByIdempotencyKey(conversationId, idempotencyKey) {
+  const row = getDb().prepare(`
+    SELECT * FROM assistant_runs WHERE conversation_id = ? AND idempotency_key = ?
+  `).get(conversationId, idempotencyKey);
+  if (!row) return null;
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    userMessageId: row.user_message_id,
+    status: row.status,
+    idempotencyKey: row.idempotency_key,
+    errorCode: row.error_code || null,
+    createdAt: row.created_at,
+    completedAt: row.completed_at || null,
+  };
+}
+
+export function completeAssistantRun(id, { status = 'completed', errorCode = '' } = {}) {
+  const completedAt = nowIso();
+  getDb().prepare(`
+    UPDATE assistant_runs SET status = ?, error_code = ?, completed_at = ? WHERE id = ?
+  `).run(status, errorCode || null, completedAt, id);
+}
+
+export function createAssistantProposal({
+  id, conversationId, runId, tool, risk, summary, arguments: args,
+  confirmationDigest, expiresAt, idempotencyKey,
+}) {
+  const timestamp = nowIso();
+  getDb().prepare(`
+    INSERT INTO assistant_proposals (
+      id, conversation_id, run_id, tool, risk, summary, arguments_json,
+      confirmation_digest, status, expires_at, idempotency_key, created_at, updated_at
+    ) VALUES (
+      @id, @conversationId, @runId, @tool, @risk, @summary, @argumentsJson,
+      @confirmationDigest, 'pending', @expiresAt, @idempotencyKey, @createdAt, @updatedAt
+    )
+  `).run({
+    id,
+    conversationId,
+    runId,
+    tool,
+    risk,
+    summary: String(summary || '').slice(0, 1000),
+    argumentsJson: JSON.stringify(args || {}),
+    confirmationDigest,
+    expiresAt,
+    idempotencyKey,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  return getAssistantProposal(id);
+}
+
+export function getAssistantProposal(id) {
+  return rowToAssistantProposal(
+    getDb().prepare('SELECT * FROM assistant_proposals WHERE id = ?').get(id)
+  );
+}
+
+export function claimAssistantProposal(id, confirmationDigest) {
+  const database = getDb();
+  const timestamp = nowIso();
+  const result = database.prepare(`
+    UPDATE assistant_proposals
+    SET status = 'executing', updated_at = @timestamp
+    WHERE id = @id
+      AND confirmation_digest = @confirmationDigest
+      AND status = 'pending'
+      AND expires_at > @timestamp
+  `).run({ id, confirmationDigest, timestamp });
+  if (result.changes === 1) return { claimed: true, proposal: getAssistantProposal(id) };
+
+  const proposal = getAssistantProposal(id);
+  if (!proposal) return { claimed: false, reason: 'not_found', proposal: null };
+  if (proposal.confirmationDigest !== confirmationDigest) return { claimed: false, reason: 'digest_mismatch', proposal };
+  if (proposal.status !== 'pending') return { claimed: false, reason: proposal.status, proposal };
+  database.prepare(`
+    UPDATE assistant_proposals SET status = 'expired', updated_at = ? WHERE id = ? AND status = 'pending'
+  `).run(timestamp, id);
+  return { claimed: false, reason: 'expired', proposal: getAssistantProposal(id) };
+}
+
+export function finishAssistantProposal(id, { status, result = null }) {
+  const timestamp = nowIso();
+  getDb().prepare(`
+    UPDATE assistant_proposals SET status = ?, result_json = ?, updated_at = ? WHERE id = ?
+  `).run(status, result ? JSON.stringify(result) : null, timestamp, id);
+  return getAssistantProposal(id);
+}
+
+export function cancelAssistantProposal(id) {
+  const timestamp = nowIso();
+  const result = getDb().prepare(`
+    UPDATE assistant_proposals
+    SET status = 'cancelled', updated_at = ?
+    WHERE id = ? AND status = 'pending'
+  `).run(timestamp, id);
+  return { changed: result.changes === 1, proposal: getAssistantProposal(id) };
+}
+
+export function recordAssistantToolCall({
+  id, runId, proposalId = '', tool, risk, arguments: args,
+  result = null, status,
+}) {
+  const timestamp = nowIso();
+  getDb().prepare(`
+    INSERT INTO assistant_tool_calls (
+      id, run_id, proposal_id, tool, risk, arguments_json, result_json, status, created_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, runId, proposalId || null, tool, risk, JSON.stringify(args || {}),
+    result ? JSON.stringify(result) : null, status, timestamp,
+    ['completed', 'failed', 'proposed'].includes(status) ? timestamp : null
+  );
+}
+
+function rowToAssistantRule(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    account: row.account,
+    effect: row.effect,
+    matcherKind: row.matcher_kind,
+    matcherValue: row.matcher_value,
+    description: row.description || '',
+    enabled: Boolean(row.enabled),
+    sourceEmailItemId: row.source_email_item_id || null,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function createAssistantRule({
+  id,
+  account,
+  effect,
+  matcherKind,
+  matcherValue,
+  description = '',
+  enabled = true,
+  sourceEmailItemId = '',
+  createdBy = 'assistant',
+}) {
+  const timestamp = nowIso();
+  getDb().prepare(`
+    INSERT INTO assistant_rules (
+      id, account, effect, matcher_kind, matcher_value, description, enabled,
+      source_email_item_id, created_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account, effect, matcher_kind, matcher_value) DO UPDATE SET
+      description = excluded.description,
+      enabled = excluded.enabled,
+      source_email_item_id = COALESCE(excluded.source_email_item_id, assistant_rules.source_email_item_id),
+      updated_at = excluded.updated_at
+  `).run(
+    id, account, effect, matcherKind, matcherValue, String(description || '').slice(0, 1000),
+    enabled ? 1 : 0, sourceEmailItemId || null, createdBy, timestamp, timestamp
+  );
+  return rowToAssistantRule(getDb().prepare(`
+    SELECT * FROM assistant_rules
+    WHERE account = ? AND effect = ? AND matcher_kind = ? AND matcher_value = ?
+  `).get(account, effect, matcherKind, matcherValue));
+}
+
+export function getAssistantRule(id) {
+  return rowToAssistantRule(getDb().prepare('SELECT * FROM assistant_rules WHERE id = ?').get(id));
+}
+
+export function listAssistantRules({ account = '', enabledOnly = false } = {}) {
+  const filters = [];
+  const params = {};
+  if (account) {
+    filters.push('account = @account');
+    params.account = account;
+  }
+  if (enabledOnly) filters.push('enabled = 1');
+  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  return getDb().prepare(`
+    SELECT * FROM assistant_rules ${where} ORDER BY updated_at, id
+  `).all(params).map(rowToAssistantRule);
+}
+
+export function setAssistantRuleEnabled(id, enabled) {
+  getDb().prepare('UPDATE assistant_rules SET enabled = ?, updated_at = ? WHERE id = ?')
+    .run(enabled ? 1 : 0, nowIso(), id);
+  return getAssistantRule(id);
 }
 
 function importLegacyStateOnce() {

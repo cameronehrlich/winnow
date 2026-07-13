@@ -2,58 +2,279 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { GmailAdapter } from './gmail.js';
 
-const exec = promisify(execFile);
+const defaultExecute = promisify(execFile);
 const GOG_FLAGS = ['--json', '--no-input'];
-
-async function gogExec(args) {
-  try {
-    return await exec('gog', [...args, ...GOG_FLAGS], {
-      timeout: 30000,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-  } catch (e) {
-    if (e.code === 'ENOENT') throw new Error('gog CLI not found. Install gogcli: https://gogcli.sh');
-    throw e;
-  }
-}
-
-function gogExecForce(args) {
-  return exec('gog', [...args, ...GOG_FLAGS, '--force'], {
-    timeout: 30000,
-    maxBuffer: 10 * 1024 * 1024,
-  });
-}
+const EXEC_OPTIONS = {
+  timeout: 30000,
+  maxBuffer: 10 * 1024 * 1024,
+};
+const MAX_QUERY_LENGTH = 4096;
+const MAX_BODY_LENGTH = 100_000;
+const MAX_NOTE_LENGTH = 20_000;
+const MAX_THREAD_MESSAGES = 100;
+const MAX_THREAD_BODY_LENGTH = 500_000;
+const MAX_RECIPIENTS = 50;
 
 function parseJson(stdout) {
   try {
-    return JSON.parse(stdout);
-  } catch (e) {
-    console.error(`[winnow] Failed to parse gog output: ${stdout.slice(0, 200)}`);
+    return JSON.parse(String(stdout || ''));
+  } catch {
+    // gog output can contain complete message bodies. Never echo malformed
+    // output into logs, where private mail content could be retained.
+    console.error('[winnow] Failed to parse gog JSON output');
     return null;
   }
 }
 
+function requireString(value, name, maxLength, { pattern = null, allowEmpty = false, preserve = false } = {}) {
+  if (typeof value !== 'string') throw new TypeError(`${name} must be a string`);
+  const normalized = value.trim();
+  if (!allowEmpty && !normalized) throw new TypeError(`${name} is required`);
+  if (value.length > maxLength) throw new RangeError(`${name} exceeds ${maxLength} characters`);
+  if (/\0/.test(value)) throw new TypeError(`${name} must not contain null bytes`);
+  if (/[\r\n]/.test(normalized) && name !== 'body' && name !== 'note') {
+    throw new TypeError(`${name} must not contain line breaks`);
+  }
+  if (pattern && !pattern.test(normalized)) throw new TypeError(`${name} is invalid`);
+  return preserve ? value : normalized;
+}
+
+function validateAccount(account) {
+  return requireString(account, 'account', 320, {
+    pattern: /^[^\s@,<>]+@[^\s@,<>]+$/,
+  });
+}
+
+function validateGmailId(value, name) {
+  return requireString(value, name, 256, { pattern: /^[A-Za-z0-9_-]+$/ });
+}
+
+function normalizeRecipientList(value, name, { required = false } = {}) {
+  const input = value == null ? [] : (Array.isArray(value) ? value : [value]);
+  if (required && input.length === 0) throw new TypeError(`${name} requires at least one recipient`);
+  if (input.length > MAX_RECIPIENTS) throw new RangeError(`${name} exceeds ${MAX_RECIPIENTS} recipients`);
+
+  const recipients = input.map((recipient, index) => requireString(recipient, `${name}[${index}]`, 320, {
+    pattern: /^[^\s@,<>]+@[^\s@,<>]+$/,
+  }));
+  if (new Set(recipients.map(recipient => recipient.toLowerCase())).size !== recipients.length) {
+    throw new TypeError(`${name} contains duplicate recipients`);
+  }
+  return recipients;
+}
+
+function headersFrom(value) {
+  const headers = value?.payload?.headers
+    || value?.message?.payload?.headers
+    || value?.headers
+    || value?.Headers
+    || {};
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers.slice(0, 100)
+      .filter(header => typeof header?.name === 'string')
+      .map(header => [header.name.toLowerCase().slice(0, 200), String(header.value || '').slice(0, 10_000)]));
+  }
+  if (headers && typeof headers === 'object') {
+    return Object.fromEntries(Object.entries(headers).slice(0, 100)
+      .filter(([, headerValue]) => typeof headerValue === 'string' || typeof headerValue === 'number')
+      .map(([name, headerValue]) => [name.toLowerCase().slice(0, 200), String(headerValue).slice(0, 10_000)]));
+  }
+  return {};
+}
+
+function decodeBase64Url(value) {
+  if (typeof value !== 'string' || !value || value.length > MAX_BODY_LENGTH * 2) return '';
+  try {
+    return Buffer.from(value.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+function bodyFromPayload(payload, depth = 0) {
+  if (!payload || typeof payload !== 'object' || depth > 20) return '';
+  const mimeType = String(payload.mimeType || '').toLowerCase();
+  const direct = decodeBase64Url(payload.body?.data);
+  if (direct && (mimeType.startsWith('text/') || !mimeType)) return direct;
+
+  const parts = Array.isArray(payload.parts) ? payload.parts.slice(0, 100) : [];
+  const textPart = parts.find(part => String(part?.mimeType || '').toLowerCase() === 'text/plain');
+  const htmlPart = parts.find(part => String(part?.mimeType || '').toLowerCase() === 'text/html');
+  for (const part of [textPart, htmlPart, ...parts]) {
+    const body = bodyFromPayload(part, depth + 1);
+    if (body) return body;
+  }
+  return '';
+}
+
+function extractBody(value) {
+  const candidates = [
+    value?.body,
+    value?.Body,
+    value?.text,
+    value?.message?.body,
+    bodyFromPayload(value?.payload),
+    bodyFromPayload(value?.message?.payload),
+  ];
+  const found = candidates.find(candidate => typeof candidate === 'string' && candidate.length > 0) || '';
+  return found.slice(0, MAX_BODY_LENGTH);
+}
+
+export function normalizeGogMessage(message, { includeBody = true, bodyLimit = MAX_BODY_LENGTH } = {}) {
+  const value = message?.message && typeof message.message === 'object' ? message.message : message;
+  const headers = headersFrom(value || {});
+  const id = String(value?.id || value?.Id || '');
+  const body = includeBody ? extractBody(value).slice(0, Math.max(0, bodyLimit)) : '';
+
+  return {
+    id,
+    messageId: id,
+    threadId: String(value?.threadId || value?.ThreadId || ''),
+    snippet: String(value?.snippet || value?.Snippet || '').slice(0, 10_000),
+    subject: String(headers.subject || value?.subject || value?.Subject || '').slice(0, 2_000),
+    from: String(headers.from || value?.from || value?.From || '').slice(0, 2_000),
+    to: String(headers.to || value?.to || value?.To || '').slice(0, 4_000),
+    cc: String(headers.cc || value?.cc || value?.Cc || '').slice(0, 4_000),
+    date: String(headers.date || value?.date || value?.Date || '').slice(0, 200),
+    labelIds: Array.isArray(value?.labelIds || value?.LabelIds)
+      ? [...(value.labelIds || value.LabelIds)].slice(0, 100).map(String)
+      : [],
+    headers,
+    body,
+  };
+}
+
 export class GogAdapter extends GmailAdapter {
   #labelCache = new Map();
+  #execute;
+  #command;
+
+  constructor({ execute = defaultExecute, command = 'gog' } = {}) {
+    super();
+    if (typeof execute !== 'function') throw new TypeError('execute must be a function');
+    this.#execute = execute;
+    this.#command = command;
+  }
+
+  async #run(args, { force = false } = {}) {
+    try {
+      return await this.#execute(
+        this.#command,
+        [...args, ...GOG_FLAGS, ...(force ? ['--force'] : [])],
+        EXEC_OPTIONS,
+      );
+    } catch (error) {
+      if (error.code === 'ENOENT') throw new Error('gog CLI not found. Install gogcli: https://gogcli.sh');
+      throw error;
+    }
+  }
+
+  async #runJson(args, options) {
+    const { stdout } = await this.#run(args, options);
+    return parseJson(stdout);
+  }
 
   async fetchUnread(account, searchQuery = 'is:unread newer_than:1d', max = 50) {
-    const { stdout } = await gogExec([
-      'gmail', 'messages', 'search', searchQuery,
-      '--max', String(max),
-      '--account', account,
+    const { messages } = await this.searchMailbox(account, searchQuery, max);
+    return messages;
+  }
+
+  async searchMailbox(account, query, limit = 25) {
+    const safeAccount = validateAccount(account);
+    const safeQuery = requireString(query, 'query', MAX_QUERY_LENGTH);
+    const safeLimit = Number(limit);
+    if (!Number.isSafeInteger(safeLimit) || safeLimit < 1 || safeLimit > 100) {
+      throw new RangeError('limit must be an integer from 1 to 100');
+    }
+
+    const data = await this.#runJson([
+      'gmail', 'messages', 'search', safeQuery,
+      '--max', String(safeLimit),
+      '--account', safeAccount,
     ]);
-    const data = parseJson(stdout);
-    if (!data) return [];
-    const messages = Array.isArray(data) ? data : (data.messages || []);
-    return messages.map(msg => this.#normalizeMessage(msg));
+    if (!data) return { messages: [], nextPageToken: null };
+    const rawMessages = Array.isArray(data) ? data : (data.messages || data.Messages || []);
+    return {
+      messages: Array.isArray(rawMessages)
+        ? rawMessages.slice(0, safeLimit).map(message => normalizeGogMessage(message, { includeBody: false }))
+        : [],
+      nextPageToken: String(data?.nextPageToken || data?.NextPageToken || '') || null,
+    };
   }
 
   async getMessage(account, messageId) {
-    const { stdout } = await gogExec([
-      'gmail', 'get', messageId,
-      '--account', account,
+    const data = await this.#runJson([
+      'gmail', 'get', validateGmailId(messageId, 'messageId'),
+      '--account', validateAccount(account),
     ]);
-    return parseJson(stdout);
+    return data;
+  }
+
+  async getThread(account, threadId) {
+    const safeThreadId = validateGmailId(threadId, 'threadId');
+    const data = await this.#runJson([
+      'gmail', 'thread', 'get', safeThreadId,
+      '--full',
+      '--account', validateAccount(account),
+    ]);
+    const thread = data?.thread || data?.Thread || data || {};
+    const rawMessages = Array.isArray(thread) ? thread : (thread.messages || thread.Messages || []);
+    let bodyBudget = MAX_THREAD_BODY_LENGTH;
+    const messages = (Array.isArray(rawMessages) ? rawMessages : [])
+      .slice(0, MAX_THREAD_MESSAGES)
+      .map(message => {
+        const normalized = normalizeGogMessage(message, { bodyLimit: bodyBudget });
+        bodyBudget = Math.max(0, bodyBudget - normalized.body.length);
+        return normalized;
+      });
+    return {
+      id: String(thread.id || thread.Id || safeThreadId),
+      historyId: String(thread.historyId || thread.HistoryId || ''),
+      messages,
+    };
+  }
+
+  async reply(account, reference, draft) {
+    const messageId = validateGmailId(reference?.messageId, 'messageId');
+    const safeAccount = validateAccount(account);
+    const body = requireString(draft?.body, 'body', MAX_BODY_LENGTH, { preserve: true });
+    const to = normalizeRecipientList(draft?.to, 'to');
+    const cc = normalizeRecipientList(draft?.cc, 'cc');
+    const bcc = normalizeRecipientList(draft?.bcc, 'bcc');
+    const args = ['gmail', 'reply', messageId, '--body', body, '--no-quote', '--account', safeAccount];
+    for (const recipient of to) args.push('--to', recipient);
+    for (const recipient of cc) args.push('--cc', recipient);
+    for (const recipient of bcc) args.push('--bcc', recipient);
+    if (draft?.subject != null) args.push('--subject', requireString(draft.subject, 'subject', 998));
+    return this.#runJson(args);
+  }
+
+  async forward(account, reference, draft) {
+    const messageId = validateGmailId(reference?.messageId, 'messageId');
+    const safeAccount = validateAccount(account);
+    const to = normalizeRecipientList(draft?.to, 'to', { required: true });
+    const cc = normalizeRecipientList(draft?.cc, 'cc');
+    const bcc = normalizeRecipientList(draft?.bcc, 'bcc');
+    const args = [
+      'gmail', 'forward', messageId,
+      '--to', to.join(','),
+      '--account', safeAccount,
+    ];
+    if (cc.length) args.push('--cc', cc.join(','));
+    if (bcc.length) args.push('--bcc', bcc.join(','));
+    if (draft?.note != null) {
+      args.push('--note', requireString(draft.note, 'note', MAX_NOTE_LENGTH, { allowEmpty: true, preserve: true }));
+    }
+    if (draft?.skipAttachments === true) args.push('--skip-attachments');
+    return this.#runJson(args);
+  }
+
+  async sendReply(account, messageId, draft) {
+    return this.reply(account, { messageId }, draft);
+  }
+
+  async sendForward(account, messageId, draft) {
+    return this.forward(account, { messageId }, draft);
   }
 
   async archive(account, threadId) {
@@ -77,40 +298,43 @@ export class GogAdapter extends GmailAdapter {
   }
 
   async modifyLabels(account, threadId, { add = [], remove = [] }) {
-    const args = ['gmail', 'labels', 'modify', threadId, '--account', account];
+    const args = [
+      'gmail', 'labels', 'modify', validateGmailId(threadId, 'threadId'),
+      '--account', validateAccount(account),
+    ];
     if (add.length) args.push('--add', add.join(','));
     if (remove.length) args.push('--remove', remove.join(','));
-    const { stdout } = await gogExecForce(args);
-    return parseJson(stdout);
+    return this.#runJson(args, { force: true });
   }
 
   async ensureLabel(account, labelName) {
-    const cacheKey = `${account}:${labelName}`;
+    const safeAccount = validateAccount(account);
+    const safeLabelName = requireString(labelName, 'labelName', 225);
+    const cacheKey = `${safeAccount}:${safeLabelName}`;
     if (this.#labelCache.has(cacheKey)) return true;
 
     try {
-      const { stdout } = await gogExec([
+      const data = await this.#runJson([
         'gmail', 'labels', 'list',
-        '--account', account,
+        '--account', safeAccount,
       ]);
-      const data = parseJson(stdout);
       const labels = Array.isArray(data) ? data : (data?.labels || data?.Labels || []);
       const exists = Array.isArray(labels) && labels.some(
-        l => (l.name || l.Name || '') === labelName
+        label => (label.name || label.Name || '') === safeLabelName
       );
       if (!exists) {
-        console.log(`[winnow] Creating Gmail label: ${labelName}`);
-        await gogExec([
-          'gmail', 'labels', 'create', labelName,
-          '--account', account,
+        console.log(`[winnow] Creating Gmail label: ${safeLabelName}`);
+        await this.#runJson([
+          'gmail', 'labels', 'create', safeLabelName,
+          '--account', safeAccount,
         ]);
-        console.log(`[winnow] ✅ Label created: ${labelName}`);
+        console.log(`[winnow] ✅ Label created: ${safeLabelName}`);
       }
       this.#labelCache.set(cacheKey, true);
       return true;
     } catch (err) {
-      // Don't cache on failure — retry next scan
-      console.error(`[winnow] ⚠️ Failed to ensure label "${labelName}": ${err.message}`);
+      // Don't cache on failure — retry next scan.
+      console.error(`[winnow] ⚠️ Failed to ensure label "${safeLabelName}": ${err.message}`);
       return false;
     }
   }
@@ -129,26 +353,6 @@ export class GogAdapter extends GmailAdapter {
       mailboxState: labels.includes('INBOX') ? 'inbox' : 'archived',
       unread: labels.includes('UNREAD'),
       labels,
-    };
-  }
-
-  #normalizeMessage(msg) {
-    const headers = msg.payload?.headers || msg.headers || [];
-    const getHeader = (name) => {
-      const h = headers.find(h => h.name?.toLowerCase() === name.toLowerCase());
-      return h?.value || '';
-    };
-
-    return {
-      id: msg.id || msg.Id || '',
-      threadId: msg.threadId || msg.ThreadId || '',
-      snippet: msg.snippet || msg.Snippet || '',
-      subject: getHeader('Subject') || msg.subject || msg.Subject || '',
-      from: getHeader('From') || msg.from || msg.From || '',
-      to: getHeader('To') || msg.to || msg.To || '',
-      date: getHeader('Date') || msg.date || msg.Date || '',
-      labelIds: msg.labelIds || msg.LabelIds || [],
-      headers,
     };
   }
 }

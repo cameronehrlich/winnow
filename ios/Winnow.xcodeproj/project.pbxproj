@@ -25,6 +25,9 @@
 		A00000000000000000000010 /* WinnowWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000011 /* WinnowWidget.swift */; };
 		A00000000000000000000011 /* WidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000010 /* WidgetSnapshot.swift */; };
 		A00000000000000000000012 /* WinnowWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* WinnowWidget.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A00000000000000000000013 /* AssistantModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000015 /* AssistantModels.swift */; };
+		A00000000000000000000014 /* AssistantViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000016 /* AssistantViewModel.swift */; };
+		A00000000000000000000015 /* AssistantView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000017 /* AssistantView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -65,6 +68,9 @@
 		B00000000000000000000012 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B00000000000000000000013 /* WinnowWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WinnowWidget.entitlements; sourceTree = "<group>"; };
 		B00000000000000000000014 /* Winnow.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Winnow.entitlements; sourceTree = "<group>"; };
+		B00000000000000000000015 /* AssistantModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantModels.swift; sourceTree = "<group>"; };
+		B00000000000000000000016 /* AssistantViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantViewModel.swift; sourceTree = "<group>"; };
+		B00000000000000000000017 /* AssistantView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantView.swift; sourceTree = "<group>"; };
 		B10000000000000000000001 /* Winnow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Winnow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000002 /* WinnowTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WinnowTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000003 /* WinnowWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WinnowWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -124,6 +130,9 @@
 				B0000000000000000000000F /* NotificationManager.swift */,
 				B00000000000000000000010 /* WidgetSnapshot.swift */,
 				B00000000000000000000014 /* Winnow.entitlements */,
+				B00000000000000000000015 /* AssistantModels.swift */,
+				B00000000000000000000016 /* AssistantViewModel.swift */,
+				B00000000000000000000017 /* AssistantView.swift */,
 			);
 			path = Winnow;
 			sourceTree = "<group>";
@@ -309,6 +318,9 @@
 				A0000000000000000000000B /* SettingsView.swift in Sources */,
 				A0000000000000000000000E /* NotificationManager.swift in Sources */,
 				A0000000000000000000000F /* WidgetSnapshot.swift in Sources */,
+				A00000000000000000000013 /* AssistantModels.swift in Sources */,
+				A00000000000000000000014 /* AssistantViewModel.swift in Sources */,
+				A00000000000000000000015 /* AssistantView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

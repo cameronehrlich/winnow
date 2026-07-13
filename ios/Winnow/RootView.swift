@@ -19,13 +19,17 @@ struct RootView: View {
                         .badge(model.archivedBadgeCount)
                         .tag(1)
 
+                    AssistantMailboxView()
+                        .tabItem { Label("Ask", systemImage: "sparkles") }
+                        .tag(2)
+
                     StatsView()
                         .tabItem { Label("Stats", systemImage: "chart.bar.xaxis") }
-                        .tag(2)
+                        .tag(3)
 
                     SettingsView()
                         .tabItem { Label("Settings", systemImage: "gearshape") }
-                        .tag(3)
+                        .tag(4)
                 }
                 .transition(.opacity)
             } else {

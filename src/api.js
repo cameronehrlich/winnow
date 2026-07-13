@@ -9,6 +9,14 @@ import { handleMcpMessage } from './mcp.js';
 import { getRuntimeStatus, listAccountStatus } from './status.js';
 import { getPushCapabilities } from './push.js';
 import {
+  AssistantError,
+  cancelProposal,
+  confirmAssistantProposal,
+  createConversation,
+  getConversation,
+  submitAssistantMessage,
+} from './assistant.js';
+import {
   deletePushDevice,
   ensureStore,
   getDailyActionSummary,
@@ -194,6 +202,12 @@ async function handleAuthed(req, res, url) {
         lifetimeSummary: true,
         manualScan: true,
         push: getPushCapabilities(),
+        assistant: {
+          conversations: true,
+          contextualEmail: true,
+          mailboxSearch: true,
+          confirmations: true,
+        },
       },
     });
     return;
@@ -208,6 +222,51 @@ async function handleAuthed(req, res, url) {
     sendJson(res, 200, {
       accounts: listAccountStatus(),
     });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/assistant/conversations') {
+    const body = await readJsonObject(req);
+    for (const key of Object.keys(body)) {
+      if (!['scope', 'account', 'emailItemId', 'title'].includes(key)) throw new HttpError(400, `invalid_${key}`);
+    }
+    if (typeof body.scope !== 'string') throw new HttpError(400, 'invalid_scope');
+    for (const key of ['account', 'emailItemId', 'title']) {
+      if (body[key] !== undefined && typeof body[key] !== 'string') throw new HttpError(400, `invalid_${key}`);
+    }
+    sendJson(res, 201, createConversation(body));
+    return;
+  }
+
+  const assistantConversationMatch = route(url.pathname, '/v1/assistant/conversations/:id');
+  if (req.method === 'GET' && assistantConversationMatch) {
+    sendJson(res, 200, getConversation(assistantConversationMatch.id));
+    return;
+  }
+
+  const assistantMessageMatch = route(url.pathname, '/v1/assistant/conversations/:id/messages');
+  if (req.method === 'POST' && assistantMessageMatch) {
+    const body = await readJsonObject(req);
+    for (const key of Object.keys(body)) {
+      if (!['text', 'idempotencyKey'].includes(key)) throw new HttpError(400, `invalid_${key}`);
+    }
+    sendJson(res, 200, await submitAssistantMessage(assistantMessageMatch.id, body));
+    return;
+  }
+
+  const assistantConfirmMatch = route(url.pathname, '/v1/assistant/proposals/:id/confirm');
+  if (req.method === 'POST' && assistantConfirmMatch) {
+    const body = await readJsonObject(req);
+    for (const key of Object.keys(body)) {
+      if (key !== 'confirmationDigest') throw new HttpError(400, `invalid_${key}`);
+    }
+    sendJson(res, 200, await confirmAssistantProposal(assistantConfirmMatch.id, body.confirmationDigest));
+    return;
+  }
+
+  const assistantCancelMatch = route(url.pathname, '/v1/assistant/proposals/:id/cancel');
+  if (req.method === 'POST' && assistantCancelMatch) {
+    sendJson(res, 200, cancelProposal(assistantCancelMatch.id));
     return;
   }
 
@@ -509,7 +568,7 @@ export function createApiServer() {
       if (!requireAuth(req, res)) return;
       await handleAuthed(req, res, url);
     } catch (err) {
-      if (err instanceof HttpError) {
+      if (err instanceof HttpError || err instanceof AssistantError) {
         sendJson(res, err.status, { error: err.code, message: err.message });
         return;
       }

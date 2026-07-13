@@ -113,4 +113,49 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(decoded.inboxCount, 2)
         XCTAssertEqual(decoded.items.first?.sender, "Riley")
     }
+
+    func testAssistantEnvelopeDecodesEvidenceDraftAndProposal() throws {
+        let json = #"""
+        {
+          "conversation":{"id":"conversation-1","scope":"email","account":"me@example.com","emailItemId":"email-1"},
+          "messages":[{
+            "id":"message-1","conversationId":"conversation-1","role":"assistant","text":"I found it.","kind":"proposal",
+            "createdAt":"2026-07-13T12:00:00.000Z",
+            "evidence":[{"account":"me@example.com","messageId":"gmail-1","threadId":"thread-1","from":"Store","subject":"Order 123","snippet":"Shipped"}],
+            "draft":{"kind":"reply","to":["store@example.com"],"cc":[],"subject":"Re: Order 123","body":"Thanks."},
+            "proposal":{
+              "id":"proposal-1","tool":"send.reply","risk":"outbound","summary":"Send this reply",
+              "arguments":{"to":["store@example.com"],"includeAttachments":false},
+              "confirmationDigest":"sha256:abc","expiresAt":"2026-07-13T12:05:00.000Z","status":"pending"
+            }
+          }]
+        }
+        """#.data(using: .utf8)!
+
+        let envelope = try JSONDecoder().decode(AssistantConversationEnvelope.self, from: json)
+        XCTAssertEqual(envelope.conversation.scope, .email)
+        XCTAssertEqual(envelope.messages.first?.evidence.first?.subject, "Order 123")
+        XCTAssertEqual(envelope.messages.first?.draft?.to, ["store@example.com"])
+        XCTAssertEqual(envelope.messages.first?.proposal?.tool, "send.reply")
+        XCTAssertEqual(envelope.messages.first?.proposal?.arguments["includeAttachments"]?.displayString, "No")
+        XCTAssertTrue(envelope.messages.first?.proposal?.isPending == true)
+    }
+
+    func testAssistantModelsTolerateOptionalFieldsAndLegacyToolName() throws {
+        let json = #"""
+        {
+          "conversation":{"id":"conversation-1","scope":"mailbox"},
+          "messages":[{
+            "id":"message-1","role":"assistant",
+            "proposal":{"id":"proposal-1","toolName":"rules.create","confirmationDigest":"digest"}
+          }]
+        }
+        """#.data(using: .utf8)!
+
+        let envelope = try JSONDecoder().decode(AssistantConversationEnvelope.self, from: json)
+        XCTAssertNil(envelope.conversation.account)
+        XCTAssertEqual(envelope.messages.first?.text, "")
+        XCTAssertTrue(envelope.messages.first?.evidence.isEmpty == true)
+        XCTAssertEqual(envelope.messages.first?.proposal?.tool, "rules.create")
+    }
 }

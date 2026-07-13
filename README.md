@@ -39,6 +39,7 @@ The current production surface is Slack plus a private localhost API. Discord/Te
 - **Plain-English Rules** — No regex, no filters, no query syntax. Just write what you mean: *"Archive Robinhood statements unless something looks wrong."*
 - **CLI + Daemon** — Scan, triage, add rules, check stats, and run an always-on local daemon.
 - **Private API + Analytics** — The daemon exposes a bearer-token localhost API and writes a durable event log to SQLite.
+- **Ask Winnow** — The iOS client can answer questions about one email or search across configured mailboxes, draft replies and forwards, and propose guarded actions.
 - **Multi-Account** — Personal and work inboxes, each with their own rules and notification channel. One tool for all your email.
 - **Private** — Runs locally on your machine. Sender, subject, snippet, and a capped message body excerpt go to the AI; credentials and state stay local.
 - **Safe** — Never deletes anything. Only archives. Low-confidence classifications stay in your inbox. Everything is configurable.
@@ -168,6 +169,28 @@ Once running, every email shows up in your Slack channel with an emoji indicatin
 3. **Act** — Archived emails get removed from inbox and labeled. Kept emails are left untouched. OTP codes get copied to your clipboard.
 
 4. **Track + Notify** — Every email is written to the local feed/event store. Slack receives feed posts according to your config, and structured summaries are available from the CLI/API.
+
+### Ask Winnow assistant
+
+The private API also supports conversational email work for the native iOS app:
+
+- Email scope answers questions using the selected Gmail thread and binds every tool call to that tracked account, message, and thread.
+- Mailbox scope searches one selected configured account or all configured accounts and returns bounded evidence cards.
+- Archive and read-state changes run only when the newest user message explicitly asks for them.
+- Unsubscribe, future-mail rules, replies, and forwards are stored as expiring proposals. The client must return the exact server-issued confirmation digest before Winnow executes one proposal once.
+- Drafting never sends. Incoming email and tool output are marked as untrusted model data and cannot authorize an action.
+
+Assistant conversations, bounded evidence, proposals, and audit metadata are stored in SQLite. Raw incoming Gmail bodies and search-result bodies are not written to the assistant tables. Exact outgoing drafts are stored when needed for review and confirmation.
+
+The bearer-authenticated endpoints are:
+
+```text
+POST /v1/assistant/conversations
+GET  /v1/assistant/conversations/:id
+POST /v1/assistant/conversations/:id/messages
+POST /v1/assistant/proposals/:id/confirm
+POST /v1/assistant/proposals/:id/cancel
+```
 
 ### Ephemeral Emails
 

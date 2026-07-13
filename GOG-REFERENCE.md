@@ -24,8 +24,28 @@ gog gmail get <messageId> --account user@example.com --json --no-input
 
 ### Get a thread
 ```bash
-gog gmail thread get <threadId> --account user@example.com --json --no-input
+gog gmail thread get <threadId> --full --account user@example.com --json --no-input
 ```
+
+Winnow bounds the number of normalized messages and body characters returned
+to the assistant. It never logs malformed `gog` output because that output can
+contain complete private message bodies.
+
+### Reply after Winnow confirmation
+```bash
+gog gmail reply <messageId> --body "Exact approved text" --no-quote --account user@example.com --json --no-input
+```
+
+### Forward after Winnow confirmation
+```bash
+gog gmail forward <messageId> --to recipient@example.com --note "Exact approved note" --account user@example.com --json --no-input
+```
+
+The adapter exposes these as explicit send methods; reading or drafting never
+invokes them. Accounts, message IDs, recipients, and body sizes are validated
+before `execFile` is called; command output and normalized results are bounded.
+The assistant's server-side proposal digest and one-time confirmation are the
+authorization boundary.
 
 ### Labels
 

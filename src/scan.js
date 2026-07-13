@@ -1,13 +1,14 @@
 import { execFile, exec as execRaw, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { GogAdapter } from './adapters/gog.js';
+import { findMatchingAssistantRule } from './assistant-rules.js';
 import { classifyEmail } from './classify.js';
 import { loadConfig, getAdapter, getScanSearchQuery } from './config.js';
 import { loadAllRules } from './rules.js';
 import { loadState, updateState, isProcessed, markProcessed, pruneOldResults, claimProcessing, releaseProcessing, localDateString } from './state.js';
 import { postEmailFeed } from './notify.js';
 import { maybeSendPushForEmail } from './push.js';
-import { appendEmailEvent, upsertEmailItemFromResult } from './store.js';
+import { appendEmailEvent, listAssistantRules, upsertEmailItemFromResult } from './store.js';
 
 const execShellAsync = promisify(execRaw);
 
@@ -67,7 +68,21 @@ async function getFullMessage(adapter, account, msg) {
 
 function enrichMessageFromFull(msg, full) {
   if (!full) return msg;
-  const headers = full.headers || msg.headers;
+  const rawHeaders = [
+    full.headers,
+    full.payload?.headers,
+    full.message?.headers,
+    full.message?.payload?.headers,
+    msg.headers,
+  ].find(candidate => (
+    (Array.isArray(candidate) && candidate.length > 0)
+    || (candidate && typeof candidate === 'object' && Object.keys(candidate).length > 0)
+  ));
+  const headers = Array.isArray(rawHeaders)
+    ? Object.fromEntries(rawHeaders
+      .filter(header => typeof header?.name === 'string')
+      .map(header => [header.name.toLowerCase(), String(header.value || '')]))
+    : rawHeaders;
   return {
     ...msg,
     body: full.body || msg.body || msg.snippet || '',
@@ -112,6 +127,24 @@ async function getUnsubscribeLink(adapter, account, msg, fullMessage = null) {
   }
 }
 
+export function classificationForAssistantRule(rule) {
+  const archive = rule.effect === 'archive';
+  const matcher = `${rule.matcherKind} "${rule.matcherValue}"`;
+  return {
+    archive,
+    priority: archive ? 'low' : 'normal',
+    confidence: 100,
+    reason: `Matched confirmed assistant rule ${rule.id} for ${matcher}`,
+    summary: `Confirmed future-mail rule ${archive ? 'archived this message' : 'kept this message in the inbox'} (${matcher}).`,
+    action: archive ? 'No action needed' : 'Review email in inbox',
+    deadline: 'No deadline set by assistant rule',
+    impact: 'Mailbox handling only',
+    handling: archive ? 'archive' : 'keep',
+    ephemeral: false,
+    extractedCode: null,
+  };
+}
+
 export async function scan(account, opts = {}) {
   const config = opts.config || loadConfig();
   const adapter = opts.adapter || createAdapter();
@@ -119,6 +152,7 @@ export async function scan(account, opts = {}) {
   const postFeed = opts.postEmailFeedFn || postEmailFeed;
   const sendPush = opts.maybeSendPushFn || maybeSendPushForEmail;
   const runHooksFn = opts.runActionHooksFn || runActionHooks;
+  const listAssistantRulesFn = opts.listAssistantRulesFn || listAssistantRules;
   const searchQuery = opts.searchQuery || getScanSearchQuery(config);
   const maxMessages = config.scan?.max_messages || 50;
   const dryRun = opts.dryRun || false;
@@ -170,7 +204,17 @@ export async function scan(account, opts = {}) {
 
       const fullMessage = await getFullMessage(adapter, account, msg);
       const enrichedMsg = enrichMessageFromFull(msg, fullMessage);
-      const classification = await classify(enrichedMsg, { account });
+      // Assistant-created rules are deterministic, confirmed user policy. Load
+      // them only after full-message enrichment so sender and List-ID matching
+      // uses the best available headers, and evaluate newest rules first.
+      const assistantRules = listAssistantRulesFn({ account, enabledOnly: true });
+      const matchedAssistantRule = findMatchingAssistantRule(
+        [...assistantRules].reverse(),
+        { ...enrichedMsg, account },
+      );
+      const classification = matchedAssistantRule
+        ? classificationForAssistantRule(matchedAssistantRule)
+        : await classify(enrichedMsg, { account });
       const unsubscribeLink = await getUnsubscribeLink(adapter, account, enrichedMsg, fullMessage);
 
       const result = {
