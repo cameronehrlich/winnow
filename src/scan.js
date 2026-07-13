@@ -5,10 +5,11 @@ import { findMatchingAssistantRule } from './assistant-rules.js';
 import { classifyEmail } from './classify.js';
 import { loadConfig, getAdapter, getScanSearchQuery } from './config.js';
 import { loadAllRules } from './rules.js';
+import { listEffectiveExactRules, listOperatorActionRules } from './user-rules.js';
 import { loadState, updateState, isProcessed, markProcessed, pruneOldResults, claimProcessing, releaseProcessing, localDateString } from './state.js';
 import { postEmailFeed } from './notify.js';
 import { maybeSendPushForEmail } from './push.js';
-import { appendEmailEvent, listAssistantRules, upsertEmailItemFromResult } from './store.js';
+import { appendEmailEvent, upsertEmailItemFromResult } from './store.js';
 
 const execShellAsync = promisify(execRaw);
 
@@ -152,7 +153,7 @@ export async function scan(account, opts = {}) {
   const postFeed = opts.postEmailFeedFn || postEmailFeed;
   const sendPush = opts.maybeSendPushFn || maybeSendPushForEmail;
   const runHooksFn = opts.runActionHooksFn || runActionHooks;
-  const listAssistantRulesFn = opts.listAssistantRulesFn || listAssistantRules;
+  const listAssistantRulesFn = opts.listAssistantRulesFn || (({ account }) => listEffectiveExactRules(account));
   const searchQuery = opts.searchQuery || getScanSearchQuery(config);
   const maxMessages = config.scan?.max_messages || 50;
   const dryRun = opts.dryRun || false;
@@ -360,8 +361,7 @@ export async function scan(account, opts = {}) {
  *   WINNOW_FROM, WINNOW_SUBJECT, WINNOW_SNIPPET, WINNOW_ACCOUNT, WINNOW_THREAD_ID
  */
 async function runActionHooks(msg, result, account) {
-  const { rules } = loadAllRules(account);
-  const actionRules = rules.filter(r => r.action);
+  const actionRules = listOperatorActionRules(account).filter(rule => rule.action);
 
   if (actionRules.length === 0) return { suppressFeed: false };
 

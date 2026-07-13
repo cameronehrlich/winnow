@@ -28,6 +28,8 @@
 		A00000000000000000000013 /* AssistantModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000015 /* AssistantModels.swift */; };
 		A00000000000000000000014 /* AssistantViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000016 /* AssistantViewModel.swift */; };
 		A00000000000000000000015 /* AssistantView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000017 /* AssistantView.swift */; };
+		A00000000000000000000016 /* MailRuleModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000018 /* MailRuleModels.swift */; };
+		A00000000000000000000017 /* MailRulesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000019 /* MailRulesView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -71,6 +73,8 @@
 		B00000000000000000000015 /* AssistantModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantModels.swift; sourceTree = "<group>"; };
 		B00000000000000000000016 /* AssistantViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantViewModel.swift; sourceTree = "<group>"; };
 		B00000000000000000000017 /* AssistantView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantView.swift; sourceTree = "<group>"; };
+		B00000000000000000000018 /* MailRuleModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailRuleModels.swift; sourceTree = "<group>"; };
+		B00000000000000000000019 /* MailRulesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailRulesView.swift; sourceTree = "<group>"; };
 		B10000000000000000000001 /* Winnow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Winnow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000002 /* WinnowTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WinnowTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000003 /* WinnowWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WinnowWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -133,6 +137,8 @@
 				B00000000000000000000015 /* AssistantModels.swift */,
 				B00000000000000000000016 /* AssistantViewModel.swift */,
 				B00000000000000000000017 /* AssistantView.swift */,
+				B00000000000000000000018 /* MailRuleModels.swift */,
+				B00000000000000000000019 /* MailRulesView.swift */,
 			);
 			path = Winnow;
 			sourceTree = "<group>";
@@ -321,6 +327,8 @@
 				A00000000000000000000013 /* AssistantModels.swift in Sources */,
 				A00000000000000000000014 /* AssistantViewModel.swift in Sources */,
 				A00000000000000000000015 /* AssistantView.swift in Sources */,
+				A00000000000000000000016 /* MailRuleModels.swift in Sources */,
+				A00000000000000000000017 /* MailRulesView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

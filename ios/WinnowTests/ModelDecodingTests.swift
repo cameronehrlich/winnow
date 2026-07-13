@@ -185,4 +185,144 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertTrue(envelope.messages.first?.evidence.isEmpty == true)
         XCTAssertEqual(envelope.messages.first?.proposal?.tool, "rules.create")
     }
+
+    func testUnifiedRulesDecodeDefaultsOverridesAndLockedAutomations() throws {
+        let json = #"""
+        {"rules":[
+          {"id":"baseline:default-news","account":null,"type":"semantic","effect":"archive","match":"Routine newsletters","description":"Routine newsletters","enabled":true,"scope":"baseline","source":"baseline","editable":false,"baselineRuleId":"default-news"},
+          {"id":"override-news","account":"me@example.com","type":"semantic","effect":"keep","description":"Keep newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news"},
+          {"id":"server-hook","account":"work@example.com","type":"exact","effect":"archive","matcherKind":"sender","matcherValue":"robot@example.com","description":"Server workflow","enabled":true,"scope":"user","source":"import","editable":false}
+        ]}
+        """#.data(using: .utf8)!
+
+        let response = try JSONDecoder().decode(MailRuleListResponse.self, from: json)
+        XCTAssertEqual(response.rules.count, 3)
+        XCTAssertTrue(response.rules[0].isBaseline)
+        XCTAssertFalse(response.rules[0].isBaselineCustomization)
+        XCTAssertFalse(response.rules[0].canReset)
+        XCTAssertEqual(response.rules[0].accountTitle, "All accounts")
+        XCTAssertTrue(response.rules[1].isBaselineCustomization)
+        XCTAssertTrue(response.rules[1].canReset)
+        XCTAssertTrue(response.rules[2].isLockedAutomation)
+        XCTAssertEqual(response.rules[2].matcherTitle, "Sender: robot@example.com")
+    }
+
+    func testRulePreviewToleratesEvidenceResponseShape() throws {
+        let json = #"""
+        {"matchCount":2,"sampledAtMost":100,"evidence":[
+          {"account":"me@example.com","messageId":"m1","from":"News","subject":"Weekly update","snippet":"Highlights"}
+        ]}
+        """#.data(using: .utf8)!
+        let preview = try JSONDecoder().decode(MailRulePreviewResponse.self, from: json)
+        XCTAssertEqual(preview.matchCount, 2)
+        XCTAssertEqual(preview.sampledAtMost, 100)
+        XCTAssertEqual(preview.matches.first?.subject, "Weekly update")
+    }
+
+    func testSemanticRulePreviewPreservesNoGuessingNote() throws {
+        let json = #"{"matchCount":null,"evidence":[],"note":"Semantic rules are evaluated by the classifier."}"#.data(using: .utf8)!
+        let preview = try JSONDecoder().decode(MailRulePreviewResponse.self, from: json)
+        XCTAssertNil(preview.matchCount)
+        XCTAssertEqual(preview.note, "Semantic rules are evaluated by the classifier.")
+    }
+
+    func testRuleAPIUsesUnifiedRoutesAndCandidateShapes() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            session: session
+        )
+        let baselineJSON = #"{"id":"default-news","type":"semantic","effect":"archive","match":"Routine newsletters","description":"Routine newsletters","enabled":true,"scope":"baseline","source":"baseline","editable":false}"#.data(using: .utf8)!
+        let baseline = try JSONDecoder().decode(MailRule.self, from: baselineJSON)
+        var draft = MailRuleDraft(rule: baseline)
+        draft.account = "me@example.com"
+        draft.effect = "keep"
+
+        MailRuleURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            let path = request.url?.path ?? ""
+            let method = request.httpMethod ?? "GET"
+            let body = MailRuleURLProtocol.bodyData(from: request)
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+
+            switch (method, path) {
+            case ("GET", "/v1/rules"):
+                XCTAssertEqual(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "me@example.com")
+                return (200, #"{"rules":[]}"#)
+            case ("POST", "/v1/rules/preview"):
+                XCTAssertNotNil(body?["candidate"] as? [String: Any])
+                return (200, #"{"matchCount":0,"evidence":[]}"#)
+            case ("POST", "/v1/rules"):
+                XCTAssertEqual(body?["baselineRuleId"] as? String, "default-news")
+                XCTAssertEqual(body?["account"] as? String, "me@example.com")
+                XCTAssertNil(body?["match"])
+                return (200, #"{"rule":{"id":"override-news","account":null,"type":"semantic","effect":"keep","description":"Routine newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news"}}"#)
+            case ("PATCH", "/v1/rules/override-news"):
+                XCTAssertEqual(body?["effect"] as? String, "keep")
+                return (200, #"{"rule":{"id":"override-news","type":"semantic","effect":"keep","description":"Routine newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news"}}"#)
+            case ("POST", "/v1/rules/override-news/disable"), ("POST", "/v1/rules/override-news/reset"):
+                return (200, #"{"ok":true}"#)
+            default:
+                XCTFail("Unexpected rule request: \(method) \(path)")
+                return (404, #"{"error":"unexpected"}"#)
+            }
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+
+        let listedRules = try await client.mailRules(account: "me@example.com")
+        let preview = try await client.previewMailRule(draft)
+        XCTAssertTrue(listedRules.isEmpty)
+        XCTAssertEqual(preview.matchCount, 0)
+        let customized = try await client.customizeBaselineRule(draft)
+        XCTAssertEqual(customized.baselineRuleId, "default-news")
+        _ = try await client.updateMailRule(id: customized.id, candidate: MailRuleDraft(rule: customized))
+        let disabled = try await client.disableMailRule(id: customized.id)
+        let reset = try await client.resetMailRule(id: customized.id)
+        XCTAssertTrue(disabled.ok)
+        XCTAssertTrue(reset.ok)
+    }
+}
+
+private final class MailRuleURLProtocol: URLProtocol {
+    static var handler: ((URLRequest) throws -> (Int, String))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    static func bodyData(from request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 1_024)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count >= 0 else { return nil }
+            if count == 0 { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+
+    override func startLoading() {
+        do {
+            guard let handler = Self.handler else { throw URLError(.badServerResponse) }
+            let (status, body) = try handler(request)
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(body.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
 }

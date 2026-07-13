@@ -269,10 +269,18 @@ rules:
 
 ### Per-Account Rules
 
-Each account has its own rules file. Plain English, no regex:
+User rules are stored in Winnow's SQLite database and can be managed from Settings > Mail Handling > Rules,
+Ask Winnow, or the CLI. Rules can be exact sender/domain/List-ID matches or plain-English semantic guidance.
+Exact rules run before Gemini; semantic rules become classification guidance.
+
+Older `config/rules-<account>.yaml` files can be imported once through the authenticated rules API. Winnow keeps
+reading their ordinary semantic rules until that explicit migration is applied, so rollout does not change mail
+handling. YAML entries with executable action hooks remain operator-only: they are never exposed to the app or
+assistant and continue to run from the server configuration.
+
+Example semantic rules:
 
 ```yaml
-# config/rules-you@gmail.com.yaml
 rules:
   - id: nextdoor-digest
     match: "Nextdoor neighborhood digest emails"
@@ -286,6 +294,10 @@ rules:
 ```
 
 ### Managing Rules
+
+The iOS Rules screen shows personal rules and versioned Winnow defaults together. Customizing a default creates an
+account-level override; Reset removes that override and restores the shipped default. Ask Winnow reads existing rules,
+previews a candidate, and requires confirmation before creating, updating, disabling, or resetting anything.
 
 ```bash
 # List rules
@@ -344,13 +356,14 @@ winnow/
 ├── config/
 │   ├── config.yaml         # Main config (gitignored)
 │   ├── config.yaml.example # Template
-│   ├── baseline-rules.yaml # Default rules (ships with winnow)
-│   └── rules-*.yaml        # Per-account custom rules
+│   ├── baseline-rules.yaml # Versioned defaults (ships with winnow)
+│   └── rules-*.yaml        # Legacy import source + operator-only hooks
 ├── src/
 │   ├── cli.js              # Command definitions (commander)
 │   ├── scan.js             # Core scan loop
 │   ├── classify.js         # Gemini classification
 │   ├── rules.js            # Rule loading & merging
+│   ├── user-rules.js       # Unified rules, validation, preview, and YAML migration
 │   ├── notify.js           # Notifications & email feed
 │   ├── slack-actions.js    # Slack button actions via Socket Mode
 │   ├── api.js              # Local private HTTP API
@@ -470,6 +483,19 @@ Successful actions return `{ ok, action, item }`, with the refreshed item includ
 
 `POST /v1/scans` defaults to `dryRun: true`; pass `{"dryRun": false}` only when an API client should apply Gmail/Slack side effects.
 The same bearer token also protects `/mcp`, a Streamable-HTTP-style JSON-RPC endpoint exposing Winnow status, account routing, email lists, summaries, events, dry-run scans, and email actions as MCP tools.
+
+The authenticated rules API used by the iOS app is:
+
+```text
+GET  /v1/rules[?account=<email>]
+POST /v1/rules/preview
+POST /v1/rules
+PATCH /v1/rules/:id
+POST /v1/rules/:id/disable
+POST /v1/rules/:id/reset
+GET  /v1/rules/import?account=<email>       # dry-run plan
+POST /v1/rules/import                       # dry-run unless dryRun is false
+```
 
 ## Contributing
 

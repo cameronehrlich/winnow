@@ -121,6 +121,23 @@ struct SettingsView: View {
                         }
                     }
 
+                    Section("Mail Handling") {
+                        NavigationLink {
+                            MailRulesView()
+                        } label: {
+                            Label {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Rules")
+                                    Text("Choose what Winnow archives or keeps")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                Image(systemName: "line.3.horizontal.decrease.circle")
+                            }
+                        }
+                    }
+
                     Section("Sync") {
                         LabeledContent("Foreground refresh", value: "Every 30 seconds")
                         if let lastRefresh = model.lastRefresh {

@@ -4,14 +4,18 @@ import { GogAdapter } from './adapters/gog.js';
 import { getAccounts } from './config.js';
 import { followUnsubscribeLink } from './slack-actions.js';
 import { recordUnsubscribe } from './state.js';
-import { matchAssistantRule, validateAssistantRule } from './assistant-rules.js';
 import {
-  createAssistantRule,
-  getAssistantRule,
   getEmailItem,
-  listRecentTrackedEmailItems,
-  setAssistantRuleEnabled,
+  getUserRuleRecord,
 } from './store.js';
+import {
+  disableUserRule,
+  listRulesForApi,
+  normalizeUserRule,
+  previewUserRule,
+  resetUserRule,
+  upsertUserRule,
+} from './user-rules.js';
 
 const MAX_SEARCH_RESULTS = 25;
 const MAX_BODY_CHARS = 12000;
@@ -31,12 +35,15 @@ export const ASSISTANT_TOOL_DEFINITIONS = Object.freeze([
   { name: 'unsubscribe.request', risk: 'persistent', description: 'Discover and propose an unsubscribe method.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' } } } },
   { name: 'mail.send_reply', risk: 'outbound', description: 'Propose sending an exact reply draft.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId', 'draft'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' }, draft: { type: 'object', additionalProperties: false, required: ['body'], properties: { body: { type: 'string' }, to: { type: 'array', items: { type: 'string' } }, cc: { type: 'array', items: { type: 'string' } }, bcc: { type: 'array', items: { type: 'string' } }, subject: { type: 'string' } } } } } },
   { name: 'mail.send_forward', risk: 'outbound', description: 'Propose forwarding a message with exact recipients.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId', 'draft'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' }, draft: { type: 'object', additionalProperties: false, required: ['to'], properties: { to: { type: 'array', items: { type: 'string' } }, cc: { type: 'array', items: { type: 'string' } }, bcc: { type: 'array', items: { type: 'string' } }, note: { type: 'string' }, skipAttachments: { type: 'boolean' } } } } } },
-  { name: 'rules.preview', risk: 'read', description: 'Preview deterministic future-mail rule matches.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'effect', 'matcherKind', 'matcherValue'], properties: { account: { type: 'string' }, effect: { enum: ['archive', 'keep'] }, matcherKind: { enum: ['sender', 'domain', 'list_id'] }, matcherValue: { type: 'string' } } } },
-  { name: 'rules.create', risk: 'persistent', description: 'Propose creating a deterministic future-mail rule.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'effect', 'matcherKind', 'matcherValue'], properties: { account: { type: 'string' }, effect: { enum: ['archive', 'keep'] }, matcherKind: { enum: ['sender', 'domain', 'list_id'] }, matcherValue: { type: 'string' }, description: { type: 'string' }, sourceEmailItemId: { type: 'string' } } } },
+  { name: 'rules.list', risk: 'read', description: 'List editable user rules and effective read-only baseline defaults.', inputSchema: { type: 'object', additionalProperties: false, required: ['account'], properties: { account: { type: 'string' } } } },
+  { name: 'rules.preview', risk: 'read', description: 'Validate and preview a structured exact or semantic rule.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'type', 'effect'], properties: { account: { type: 'string' }, type: { enum: ['exact', 'semantic'] }, effect: { enum: ['archive', 'keep'] }, match: { type: 'string' }, matcherKind: { enum: ['sender', 'domain', 'list_id'] }, matcherValue: { type: 'string' }, description: { type: 'string' }, baselineRuleId: { type: 'string' } } } },
+  { name: 'rules.upsert', risk: 'persistent', description: 'Propose creating or deterministically replacing a structured user rule.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'type', 'effect'], properties: { id: { type: 'string' }, account: { type: 'string' }, type: { enum: ['exact', 'semantic'] }, effect: { enum: ['archive', 'keep'] }, match: { type: 'string' }, matcherKind: { enum: ['sender', 'domain', 'list_id'] }, matcherValue: { type: 'string' }, description: { type: 'string' }, baselineRuleId: { type: 'string' }, sourceEmailItemId: { type: 'string' } } } },
   { name: 'rules.disable', risk: 'persistent', description: 'Propose disabling an assistant-created rule.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'ruleId'], properties: { account: { type: 'string' }, ruleId: { type: 'string' } } } },
+  { name: 'rules.reset', risk: 'persistent', description: 'Propose removing a user rule or resetting a baseline override.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'ruleId'], properties: { account: { type: 'string' }, ruleId: { type: 'string' } } } },
 ]);
 
 const DEFINITIONS = new Map(ASSISTANT_TOOL_DEFINITIONS.map(definition => [definition.name, definition]));
+DEFINITIONS.set('rules.create', DEFINITIONS.get('rules.upsert'));
 
 function object(value, name = 'arguments') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -152,29 +159,40 @@ export function validateAssistantToolCall(name, rawArguments) {
       draft: normalizeDraft(args.draft, name === 'mail.send_reply' ? 'reply' : 'forward'),
     };
   }
-  if (name === 'rules.preview' || name === 'rules.create') {
-    exactKeys(args, ['account', 'effect', 'matcherKind', 'matcherValue', 'description', 'sourceEmailItemId']);
+  if (name === 'rules.list') {
+    exactKeys(args, ['account']);
+    return { account: configuredAccount(string(args.account, 'account', { max: 320 })) };
+  }
+  if (name === 'rules.preview' || name === 'rules.upsert' || name === 'rules.create') {
+    const allowed = [
+      'id', 'account', 'type', 'effect', 'match', 'matcherKind', 'matcherValue',
+      'description', 'baselineRuleId', 'sourceEmailItemId',
+    ];
+    exactKeys(args, name === 'rules.preview' ? allowed.filter(key => !['id', 'sourceEmailItemId'].includes(key)) : allowed);
     let rule;
     try {
-      rule = validateAssistantRule({
+      rule = normalizeUserRule({
+        ...args,
         account: configuredAccount(string(args.account, 'account', { max: 320 })),
-        effect: string(args.effect, 'effect', { max: 20 }),
-        matcherKind: string(args.matcherKind, 'matcherKind', { max: 30 }),
-        matcherValue: string(args.matcherValue, 'matcherValue', { max: 512 }),
-      });
+        type: args.type || 'exact',
+      }, { source: 'assistant' });
     } catch (err) {
       throw new AssistantToolError('invalid_tool_arguments', err.message);
     }
     return {
+      ...(args.id ? { id: args.id } : {}),
       account: rule.account,
+      type: rule.type,
       effect: rule.effect,
-      matcherKind: rule.matcherKind,
-      matcherValue: rule.matcherValue,
-      ...(args.description === undefined ? {} : { description: string(args.description, 'description', { required: false, max: 1000 }) }),
-      ...(args.sourceEmailItemId === undefined ? {} : { sourceEmailItemId: string(args.sourceEmailItemId, 'sourceEmailItemId', { required: false, max: 500 }) }),
+      ...(rule.type === 'exact'
+        ? { matcherKind: rule.matcherKind, matcherValue: rule.matcherValue }
+        : { match: rule.match }),
+      ...(rule.description ? { description: rule.description } : {}),
+      ...(rule.baselineRuleId ? { baselineRuleId: rule.baselineRuleId } : {}),
+      ...(rule.sourceEmailItemId ? { sourceEmailItemId: rule.sourceEmailItemId } : {}),
     };
   }
-  if (name === 'rules.disable') {
+  if (name === 'rules.disable' || name === 'rules.reset') {
     exactKeys(args, ['account', 'ruleId']);
     return {
       account: configuredAccount(string(args.account, 'account', { max: 320 })),
@@ -217,8 +235,9 @@ function actionExplicitlyRequested(tool, text) {
   if (tool === 'unsubscribe.request' && denied(['unsubscribe', 'opt[ -]?out'])) return false;
   if (tool === 'mail.send_reply' && denied(['reply', 'respond', 'send'])) return false;
   if (tool === 'mail.send_forward' && denied(['forward', 'send'])) return false;
-  if (tool === 'rules.create' && denied(['archive', 'keep', 'create'])) return false;
+  if (['rules.create', 'rules.upsert'].includes(tool) && denied(['archive', 'keep', 'create', 'update'])) return false;
   if (tool === 'rules.disable' && denied(['disable', 'remove'])) return false;
+  if (tool === 'rules.reset' && denied(['reset', 'remove', 'restore'])) return false;
   if (tool === 'mail.archive') return /\barchive\b/.test(request);
   if (tool === 'mail.mark_read') return /\bmark\b.{0,12}\bread\b/.test(request);
   if (tool === 'mail.mark_unread') return /\bmark\b.{0,12}\bunread\b/.test(request);
@@ -229,8 +248,9 @@ function actionExplicitlyRequested(tool, text) {
   if (tool === 'mail.send_forward') {
     return /\bforward\b/.test(request) && !(/\bdraft\b/.test(request) && !/\bsend\b/.test(request));
   }
-  if (tool === 'rules.create') return /\b(future|always|from now on|rule)\b/.test(request) && /\b(archive|keep)\b/.test(request);
+  if (['rules.create', 'rules.upsert'].includes(tool)) return /\b(future|always|from now on|rule)\b/.test(request) && /\b(archive|keep|update|change|override)\b/.test(request);
   if (tool === 'rules.disable') return /\b(disable|stop|remove|turn off)\b/.test(request) && /\brule\b/.test(request);
+  if (tool === 'rules.reset') return /\b(reset|restore|remove)\b/.test(request) && /\brule\b/.test(request);
   return true;
 }
 
@@ -288,8 +308,13 @@ function proposalSummary(name, args) {
   if (name === 'mail.send_forward') {
     return `Forward this email to ${args.draft.to.join(', ')} ${args.draft.skipAttachments ? 'without' : 'including'} attachments`;
   }
-  if (name === 'rules.create') return `${args.effect === 'archive' ? 'Archive' : 'Keep'} future messages matching ${args.matcherKind} ${args.matcherValue}`;
+  if (name === 'rules.create' || name === 'rules.upsert') return args.type === 'exact'
+    ? `${args.effect === 'archive' ? 'Archive' : 'Keep'} future messages matching ${args.matcherKind} ${args.matcherValue}`
+    : `${args.effect === 'archive' ? 'Archive' : 'Keep'} messages matching the semantic rule: ${args.match}`;
   if (name === 'rules.disable') return `Disable the ${args.effect} rule for ${args.matcherKind} ${args.matcherValue}`;
+  if (name === 'rules.reset') return args.baselineRuleId
+    ? `Reset the override for baseline rule ${args.baselineRuleId}`
+    : `Remove the user rule ${args.ruleId}`;
   return `Confirm ${name}`;
 }
 
@@ -368,13 +393,19 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
   if (name === 'mail.mark_unread') {
     return { kind: 'result', risk: definition.risk, result: await dependencies.markUnread(args), evidence: [] };
   }
-  if (name === 'rules.preview') {
-    const candidates = listRecentTrackedEmailItems({ account: args.account, days: 90, limit: 100 });
-    const matches = candidates.filter(message => matchAssistantRule(args, message)).slice(0, 10);
+  if (name === 'rules.list') {
     return {
       kind: 'result', risk: definition.risk,
-      result: { rule: args, matchCount: matches.length, sampledAtMost: 100 },
-      evidence: matches.map(message => evidenceFromMessage(message, args.account)),
+      result: listRulesForApi(args.account),
+      evidence: [],
+    };
+  }
+  if (name === 'rules.preview') {
+    const preview = previewUserRule(args);
+    return {
+      kind: 'result', risk: definition.risk,
+      result: preview,
+      evidence: preview.evidence || [],
     };
   }
   if (name === 'unsubscribe.request') {
@@ -395,13 +426,21 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
     }
     args = { ...args, draft: { ...args.draft, to: [recipient] } };
   }
-  if (name === 'rules.create' && conversation.scope === 'email') {
+  if ((name === 'rules.create' || name === 'rules.upsert') && conversation.scope === 'email') {
     args = { ...args, sourceEmailItemId: conversation.emailItemId };
   }
-  if (name === 'rules.disable') {
-    const rule = getAssistantRule(args.ruleId);
+  if (name === 'rules.disable' || name === 'rules.reset') {
+    const rule = getUserRuleRecord(args.ruleId);
     if (!rule || rule.account !== args.account) throw new AssistantToolError('rule_not_found', 'Assistant rule not found', 404);
-    args = { ...args, effect: rule.effect, matcherKind: rule.matcherKind, matcherValue: rule.matcherValue };
+    args = {
+      ...args,
+      type: rule.type,
+      effect: rule.effect,
+      matcherKind: rule.matcherKind,
+      matcherValue: rule.matcherValue,
+      match: rule.match,
+      baselineRuleId: rule.baselineRuleId,
+    };
   }
   return { kind: 'proposal', risk: definition.risk, arguments: args, summary: proposalSummary(name, args) };
 }
@@ -424,7 +463,7 @@ export async function executeAssistantProposal(proposal, conversation, dependenc
       messageId: proposal.arguments.messageId,
       threadId: proposal.arguments.threadId,
     };
-  } else if (proposal.tool === 'rules.disable') {
+  } else if (proposal.tool === 'rules.disable' || proposal.tool === 'rules.reset') {
     validationArguments = {
       account: proposal.arguments.account,
       ruleId: proposal.arguments.ruleId,
@@ -449,21 +488,22 @@ export async function executeAssistantProposal(proposal, conversation, dependenc
   if (proposal.tool === 'mail.send_forward') {
     return dependencies.forward(args.account, { messageId: args.messageId, threadId: args.threadId }, args.draft);
   }
-  if (proposal.tool === 'rules.create') {
-    const rule = validateAssistantRule(proposal.arguments);
-    return createAssistantRule({
-      id: randomUUID(),
-      ...rule,
-      description: proposal.arguments.description || '',
-      sourceEmailItemId: proposal.arguments.sourceEmailItemId || '',
-    });
+  if (proposal.tool === 'rules.create' || proposal.tool === 'rules.upsert') {
+    return upsertUserRule(proposal.arguments, { source: 'assistant' });
   }
   if (proposal.tool === 'rules.disable') {
-    const rule = getAssistantRule(proposal.arguments.ruleId);
+    const rule = getUserRuleRecord(proposal.arguments.ruleId);
     if (!rule || rule.account !== proposal.arguments.account) {
       throw new AssistantToolError('rule_not_found', 'Assistant rule not found', 404);
     }
-    return setAssistantRuleEnabled(rule.id, false);
+    return disableUserRule(rule.id);
+  }
+  if (proposal.tool === 'rules.reset') {
+    const rule = getUserRuleRecord(proposal.arguments.ruleId);
+    if (!rule || rule.account !== proposal.arguments.account) {
+      throw new AssistantToolError('rule_not_found', 'Assistant rule not found', 404);
+    }
+    return resetUserRule(rule.id);
   }
   throw new AssistantToolError('proposal_tool_not_executable', 'This tool cannot be confirmed', 400);
 }

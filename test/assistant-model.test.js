@@ -1,8 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { serializeAssistantModelInput } from '../src/assistant-model.js';
+import { ASSISTANT_SYSTEM_PROMPT, serializeAssistantModelInput } from '../src/assistant-model.js';
 
 describe('assistant model context', () => {
+  it('requires rule deduplication and preview before a future-mail proposal', () => {
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /read that account's existing rules and preview the candidate/i);
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /equivalent rule instead of creating a duplicate/i);
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /meaningfully different intent separate/i);
+  });
+
   it('keeps oversized context valid, bounded, and preserves tools and newest chat', () => {
     const input = {
       conversation: { scope: 'email', account: 'me@example.com' },

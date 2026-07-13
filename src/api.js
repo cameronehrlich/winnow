@@ -9,6 +9,16 @@ import { handleMcpMessage } from './mcp.js';
 import { getRuntimeStatus, listAccountStatus } from './status.js';
 import { getPushCapabilities } from './push.js';
 import {
+  disableUserRule,
+  importUserRules,
+  listRulesForApi,
+  planUserRuleImport,
+  previewUserRule,
+  resetUserRule,
+  updateUserRule,
+  upsertUserRule,
+} from './user-rules.js';
+import {
   AssistantError,
   cancelProposal,
   confirmAssistantProposal,
@@ -139,6 +149,23 @@ function bodyBoolean(body, name, fallback) {
   return body[name];
 }
 
+function assertBodyKeys(body, allowed) {
+  for (const key of Object.keys(body)) {
+    if (!allowed.includes(key)) throw new HttpError(400, `invalid_${key}`);
+  }
+}
+
+function ruleRequest(callback) {
+  try {
+    return callback();
+  } catch (err) {
+    if (err instanceof TypeError || err instanceof RangeError) {
+      throw new HttpError(400, 'invalid_rule', err.message);
+    }
+    throw err;
+  }
+}
+
 function queryEmailState(url) {
   const state = url.searchParams.get('state') || 'all';
   if (!EMAIL_STATES.includes(state)) throw new HttpError(400, 'invalid_state');
@@ -222,6 +249,69 @@ async function handleAuthed(req, res, url) {
     sendJson(res, 200, {
       accounts: listAccountStatus(),
     });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/v1/rules') {
+    const account = url.searchParams.get('account') || '';
+    sendJson(res, 200, ruleRequest(() => listRulesForApi(account)));
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/v1/rules/import') {
+    const account = url.searchParams.get('account') || '';
+    sendJson(res, 200, ruleRequest(() => planUserRuleImport(account)));
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/rules/import') {
+    const body = await readJsonObject(req);
+    assertBodyKeys(body, ['account', 'dryRun']);
+    if (body.dryRun !== undefined && typeof body.dryRun !== 'boolean') throw new HttpError(400, 'invalid_dryRun');
+    sendJson(res, 200, ruleRequest(() => importUserRules(body.account, { dryRun: body.dryRun !== false })));
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/rules/preview') {
+    const body = await readJsonObject(req);
+    assertBodyKeys(body, ['candidate', 'limit']);
+    if (!body.candidate || typeof body.candidate !== 'object' || Array.isArray(body.candidate)) {
+      throw new HttpError(400, 'invalid_candidate');
+    }
+    const limit = body.limit === undefined ? 10 : Number(body.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 25) throw new HttpError(400, 'invalid_limit');
+    sendJson(res, 200, ruleRequest(() => previewUserRule(body.candidate, { limit })));
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/rules') {
+    const body = await readJsonObject(req);
+    sendJson(res, 201, { rule: ruleRequest(() => upsertUserRule(body, { source: 'api' })) });
+    return;
+  }
+
+  const userRuleMatch = route(url.pathname, '/v1/rules/:id');
+  if (req.method === 'PATCH' && userRuleMatch) {
+    const body = await readJsonObject(req);
+    const rule = ruleRequest(() => updateUserRule(userRuleMatch.id, body, { source: 'api' }));
+    if (!rule) throw new HttpError(404, 'rule_not_found');
+    sendJson(res, 200, { rule });
+    return;
+  }
+
+  const disableRuleMatch = route(url.pathname, '/v1/rules/:id/disable');
+  if (req.method === 'POST' && disableRuleMatch) {
+    const rule = disableUserRule(disableRuleMatch.id);
+    if (!rule) throw new HttpError(404, 'rule_not_found');
+    sendJson(res, 200, { rule });
+    return;
+  }
+
+  const resetRuleMatch = route(url.pathname, '/v1/rules/:id/reset');
+  if (req.method === 'POST' && resetRuleMatch) {
+    const result = resetUserRule(resetRuleMatch.id);
+    if (!result) throw new HttpError(404, 'rule_not_found');
+    sendJson(res, 200, result);
     return;
   }
 

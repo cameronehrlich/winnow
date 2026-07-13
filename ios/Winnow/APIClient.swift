@@ -22,6 +22,7 @@ struct ServerConfiguration: Equatable {
 
 enum APIClientError: LocalizedError {
     case invalidServerURL
+    case invalidRequest(String)
     case unauthorized
     case server(status: Int, message: String)
     case invalidResponse
@@ -32,6 +33,8 @@ enum APIClientError: LocalizedError {
         switch self {
         case .invalidServerURL:
             "Enter a complete server URL, including http:// or https://."
+        case let .invalidRequest(message):
+            message
         case .unauthorized:
             "The server rejected this token. Check the bearer token and try again."
         case let .server(status, message):
@@ -49,6 +52,10 @@ enum APIClientError: LocalizedError {
 private struct APIErrorEnvelope: Decodable {
     let error: String?
     let message: String?
+}
+
+private struct MailRulePreviewRequest: Encodable {
+    let candidate: MailRuleDraft
 }
 
 struct APIClient {
@@ -79,6 +86,73 @@ struct APIClient {
         var query = [URLQueryItem(name: "recentLimit", value: String(recentLimit))]
         if !account.isEmpty { query.append(URLQueryItem(name: "account", value: account)) }
         return try await request(path: "/v1/summaries/lifetime", queryItems: query)
+    }
+
+    func mailRules(account: String = "") async throws -> [MailRule] {
+        let query = account.isEmpty ? [] : [URLQueryItem(name: "account", value: account)]
+        let response: MailRuleListResponse = try await request(path: "/v1/rules", queryItems: query)
+        return response.rules
+    }
+
+    func previewMailRule(_ candidate: MailRuleDraft) async throws -> MailRulePreviewResponse {
+        try await request(
+            path: "/v1/rules/preview",
+            method: "POST",
+            body: try JSONEncoder().encode(MailRulePreviewRequest(candidate: candidate))
+        )
+    }
+
+    func createMailRule(_ candidate: MailRuleDraft) async throws -> MailRule {
+        guard candidate.account?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            throw APIClientError.invalidRequest("Choose a managed account before creating a rule.")
+        }
+        let response: MailRuleResponse = try await request(
+            path: "/v1/rules",
+            method: "POST",
+            body: try JSONEncoder().encode(candidate)
+        )
+        return response.rule
+    }
+
+    func customizeBaselineRule(_ candidate: MailRuleDraft) async throws -> MailRule {
+        guard let account = candidate.account?.trimmingCharacters(in: .whitespacesAndNewlines), !account.isEmpty else {
+            throw APIClientError.invalidRequest("Choose a managed account before customizing this default.")
+        }
+        var payload: [String: Any] = [
+            "account": account,
+            "type": "semantic",
+            "effect": candidate.effect,
+        ]
+        if let baselineRuleId = candidate.baselineRuleId { payload["baselineRuleId"] = baselineRuleId }
+        if !candidate.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["description"] = candidate.description
+        }
+        let response: MailRuleResponse = try await request(
+            path: "/v1/rules",
+            method: "POST",
+            body: try JSONSerialization.data(withJSONObject: payload)
+        )
+        return response.rule
+    }
+
+    func updateMailRule(id: String, candidate: MailRuleDraft) async throws -> MailRule {
+        let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        let response: MailRuleResponse = try await request(
+            path: "/v1/rules/\(encodedID)",
+            method: "PATCH",
+            body: try JSONEncoder().encode(candidate)
+        )
+        return response.rule
+    }
+
+    func disableMailRule(id: String) async throws -> MailRuleActionResponse {
+        let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        return try await request(path: "/v1/rules/\(encodedID)/disable", method: "POST")
+    }
+
+    func resetMailRule(id: String) async throws -> MailRuleActionResponse {
+        let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        return try await request(path: "/v1/rules/\(encodedID)/reset", method: "POST")
     }
 
     func createAssistantConversation(

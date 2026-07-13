@@ -50,6 +50,11 @@ struct RootView: View {
                 model.stopAutoRefresh()
             }
         }
+        .onChange(of: model.askNavigationRequest) { _, request in
+            guard let request else { return }
+            selectedTab = 2
+            model.consumeAskNavigation(request)
+        }
         .onOpenURL(perform: handleDeepLink)
         .onReceive(NotificationCenter.default.publisher(for: .winnowPushOpened)) { notification in
             let emailID = notification.userInfo?["emailId"] as? String ?? ""

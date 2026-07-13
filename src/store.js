@@ -303,6 +303,48 @@ function migrate() {
 
     CREATE INDEX IF NOT EXISTS idx_assistant_rules_account_enabled
       ON assistant_rules(account, enabled, created_at);
+
+    CREATE TABLE IF NOT EXISTS user_rules (
+      id TEXT PRIMARY KEY,
+      account TEXT NOT NULL,
+      rule_type TEXT NOT NULL CHECK(rule_type IN ('exact', 'semantic')),
+      effect TEXT NOT NULL CHECK(effect IN ('archive', 'keep')),
+      match_text TEXT,
+      matcher_kind TEXT CHECK(matcher_kind IS NULL OR matcher_kind IN ('sender', 'domain', 'list_id')),
+      matcher_value TEXT,
+      description TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      source TEXT NOT NULL CHECK(source IN ('assistant', 'api', 'import')),
+      baseline_rule_id TEXT,
+      source_email_item_id TEXT,
+      conflict_key TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(source_email_item_id) REFERENCES email_items(id) ON DELETE SET NULL,
+      UNIQUE(account, conflict_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_user_rules_account_enabled
+      ON user_rules(account, enabled, updated_at DESC);
+
+    INSERT OR IGNORE INTO user_rules (
+      id, account, rule_type, effect, matcher_kind, matcher_value, description,
+      enabled, source, source_email_item_id, conflict_key, created_at, updated_at
+    )
+    SELECT
+      id, account, 'exact', effect, matcher_kind, matcher_value, description,
+      enabled, CASE WHEN created_by = 'assistant' THEN 'assistant' ELSE 'import' END,
+      source_email_item_id, 'exact:' || matcher_kind || ':' || lower(matcher_value),
+      created_at, updated_at
+    FROM assistant_rules
+    WHERE NOT EXISTS (
+      SELECT 1 FROM meta WHERE key = 'assistant_rules_to_user_rules_v1'
+    )
+    ORDER BY updated_at DESC, id DESC;
+
+    INSERT INTO meta (key, value)
+    VALUES ('assistant_rules_to_user_rules_v1', 'complete')
+    ON CONFLICT(key) DO NOTHING;
   `);
 
   // Older personal databases predate native-client read state. This additive
@@ -1320,6 +1362,117 @@ function rowToAssistantRule(row) {
   };
 }
 
+function rowToUserRule(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    account: row.account,
+    type: row.rule_type,
+    effect: row.effect,
+    match: row.match_text || '',
+    matcherKind: row.matcher_kind || null,
+    matcherValue: row.matcher_value || null,
+    description: row.description || '',
+    enabled: Boolean(row.enabled),
+    source: row.source,
+    baselineRuleId: row.baseline_rule_id || null,
+    sourceEmailItemId: row.source_email_item_id || null,
+    conflictKey: row.conflict_key,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function upsertUserRuleRecord({
+  id,
+  account,
+  type,
+  effect,
+  match = '',
+  matcherKind = null,
+  matcherValue = null,
+  description = '',
+  enabled = true,
+  source = 'api',
+  baselineRuleId = null,
+  sourceEmailItemId = null,
+  conflictKey,
+  createdAt = nowIso(),
+  updatedAt = nowIso(),
+}) {
+  const database = getDb();
+  database.prepare(`
+    INSERT INTO user_rules (
+      id, account, rule_type, effect, match_text, matcher_kind, matcher_value,
+      description, enabled, source, baseline_rule_id, source_email_item_id,
+      conflict_key, created_at, updated_at
+    ) VALUES (
+      @id, @account, @type, @effect, @match, @matcherKind, @matcherValue,
+      @description, @enabled, @source, @baselineRuleId, @sourceEmailItemId,
+      @conflictKey, @createdAt, @updatedAt
+    )
+    ON CONFLICT(account, conflict_key) DO UPDATE SET
+      rule_type = excluded.rule_type,
+      effect = excluded.effect,
+      match_text = excluded.match_text,
+      matcher_kind = excluded.matcher_kind,
+      matcher_value = excluded.matcher_value,
+      description = excluded.description,
+      enabled = excluded.enabled,
+      source = excluded.source,
+      baseline_rule_id = excluded.baseline_rule_id,
+      source_email_item_id = COALESCE(excluded.source_email_item_id, user_rules.source_email_item_id),
+      updated_at = excluded.updated_at
+  `).run({
+    id,
+    account,
+    type,
+    effect,
+    match: match || null,
+    matcherKind,
+    matcherValue,
+    description: String(description || '').slice(0, 1000),
+    enabled: enabled ? 1 : 0,
+    source,
+    baselineRuleId,
+    sourceEmailItemId,
+    conflictKey,
+    createdAt,
+    updatedAt,
+  });
+  return rowToUserRule(database.prepare(`
+    SELECT * FROM user_rules WHERE account = ? AND conflict_key = ?
+  `).get(account, conflictKey));
+}
+
+export function getUserRuleRecord(id) {
+  return rowToUserRule(getDb().prepare('SELECT * FROM user_rules WHERE id = ?').get(id));
+}
+
+export function listUserRuleRecords({ account = '', enabledOnly = false } = {}) {
+  const filters = [];
+  const params = {};
+  if (account) {
+    filters.push('account = @account');
+    params.account = account;
+  }
+  if (enabledOnly) filters.push('enabled = 1');
+  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  return getDb().prepare(`
+    SELECT * FROM user_rules ${where} ORDER BY updated_at DESC, id DESC
+  `).all(params).map(rowToUserRule);
+}
+
+export function setUserRuleEnabled(id, enabled) {
+  getDb().prepare('UPDATE user_rules SET enabled = ?, updated_at = ? WHERE id = ?')
+    .run(enabled ? 1 : 0, nowIso(), id);
+  return getUserRuleRecord(id);
+}
+
+export function deleteUserRuleRecord(id) {
+  return getDb().prepare('DELETE FROM user_rules WHERE id = ?').run(id).changes === 1;
+}
+
 export function createAssistantRule({
   id,
   account,
@@ -1331,49 +1484,37 @@ export function createAssistantRule({
   sourceEmailItemId = '',
   createdBy = 'assistant',
 }) {
-  const timestamp = nowIso();
-  getDb().prepare(`
-    INSERT INTO assistant_rules (
-      id, account, effect, matcher_kind, matcher_value, description, enabled,
-      source_email_item_id, created_by, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(account, effect, matcher_kind, matcher_value) DO UPDATE SET
-      description = excluded.description,
-      enabled = excluded.enabled,
-      source_email_item_id = COALESCE(excluded.source_email_item_id, assistant_rules.source_email_item_id),
-      updated_at = excluded.updated_at
-  `).run(
-    id, account, effect, matcherKind, matcherValue, String(description || '').slice(0, 1000),
-    enabled ? 1 : 0, sourceEmailItemId || null, createdBy, timestamp, timestamp
-  );
-  return rowToAssistantRule(getDb().prepare(`
-    SELECT * FROM assistant_rules
-    WHERE account = ? AND effect = ? AND matcher_kind = ? AND matcher_value = ?
-  `).get(account, effect, matcherKind, matcherValue));
+  const rule = upsertUserRuleRecord({
+    id,
+    account,
+    type: 'exact',
+    effect,
+    matcherKind,
+    matcherValue,
+    description,
+    enabled,
+    source: createdBy === 'assistant' ? 'assistant' : 'import',
+    sourceEmailItemId: sourceEmailItemId || null,
+    conflictKey: `exact:${matcherKind}:${String(matcherValue).toLowerCase()}`,
+  });
+  return { ...rule, createdBy };
 }
 
 export function getAssistantRule(id) {
-  return rowToAssistantRule(getDb().prepare('SELECT * FROM assistant_rules WHERE id = ?').get(id));
+  const rule = getUserRuleRecord(id);
+  return rule?.type === 'exact' ? { ...rule, createdBy: rule.source } : null;
 }
 
 export function listAssistantRules({ account = '', enabledOnly = false } = {}) {
-  const filters = [];
-  const params = {};
-  if (account) {
-    filters.push('account = @account');
-    params.account = account;
-  }
-  if (enabledOnly) filters.push('enabled = 1');
-  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-  return getDb().prepare(`
-    SELECT * FROM assistant_rules ${where} ORDER BY updated_at, id
-  `).all(params).map(rowToAssistantRule);
+  return listUserRuleRecords({ account, enabledOnly })
+    .filter(rule => rule.type === 'exact')
+    .reverse()
+    .map(rule => ({ ...rule, createdBy: rule.source }));
 }
 
 export function setAssistantRuleEnabled(id, enabled) {
-  getDb().prepare('UPDATE assistant_rules SET enabled = ?, updated_at = ? WHERE id = ?')
-    .run(enabled ? 1 : 0, nowIso(), id);
-  return getAssistantRule(id);
+  const rule = setUserRuleEnabled(id, enabled);
+  return rule?.type === 'exact' ? { ...rule, createdBy: rule.source } : null;
 }
 
 function importLegacyStateOnce() {

@@ -361,4 +361,58 @@ describe('local API', () => {
     assert.equal(scan.status, 400);
     assert.equal((await scan.json()).error, 'invalid_dryRun');
   });
+
+  it('manages structured user rules without exposing operator hook fields', async () => {
+    const headers = { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' };
+    const aggregate = await fetch(`${baseUrl}/v1/rules`, { headers });
+    assert.equal(aggregate.status, 200);
+    const aggregateJson = await aggregate.json();
+    assert.ok(aggregateJson.rules.some(rule => rule.account === null && rule.scope === 'baseline'));
+    assert.equal(new Set(aggregateJson.rules.map(rule => rule.id)).size, aggregateJson.rules.length);
+    assert.equal(typeof aggregateJson.migrationPendingByAccount['me@example.com'], 'boolean');
+
+    const baseline = await fetch(`${baseUrl}/v1/rules?account=me%40example.com`, { headers });
+    assert.equal(baseline.status, 200);
+    const baselineJson = await baseline.json();
+    assert.ok(baselineJson.rules.some(rule => rule.scope === 'baseline' && rule.editable === false));
+    assert.doesNotMatch(JSON.stringify(baselineJson), /"action"|"trigger"|"command"/);
+
+    const preview = await fetch(`${baseUrl}/v1/rules/preview`, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        candidate: {
+          account: 'me@example.com', type: 'exact', effect: 'archive',
+          matcherKind: 'sender', matcherValue: 'sender@example.com',
+        },
+      }),
+    });
+    assert.equal(preview.status, 200);
+    assert.equal((await preview.json()).matchCount, 1);
+
+    const created = await fetch(`${baseUrl}/v1/rules`, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        account: 'me@example.com', type: 'exact', effect: 'archive',
+        matcherKind: 'sender', matcherValue: 'sender@example.com',
+      }),
+    });
+    assert.equal(created.status, 201);
+    const rule = (await created.json()).rule;
+    assert.equal(rule.editable, true);
+
+    const updated = await fetch(`${baseUrl}/v1/rules/${rule.id}`, {
+      method: 'PATCH', headers,
+      body: JSON.stringify({ effect: 'keep' }),
+    });
+    assert.equal(updated.status, 200);
+    assert.equal((await updated.json()).rule.effect, 'keep');
+
+    const disabled = await fetch(`${baseUrl}/v1/rules/${rule.id}/disable`, { method: 'POST', headers });
+    assert.equal(disabled.status, 200);
+    assert.equal((await disabled.json()).rule.enabled, false);
+
+    const reset = await fetch(`${baseUrl}/v1/rules/${rule.id}/reset`, { method: 'POST', headers });
+    assert.equal(reset.status, 200);
+    assert.equal((await reset.json()).reset, true);
+  });
 });

@@ -9,13 +9,17 @@ final class AppModel: ObservableObject {
     @Published private(set) var lifetimeSummary: LifetimeSummary = .empty
     @Published private(set) var status: RuntimeStatus?
     @Published private(set) var accounts: [AccountStatus] = []
+    @Published private(set) var mailRules: [MailRule] = []
     @Published private(set) var isLoading = false
     @Published private(set) var isRefreshing = false
+    @Published private(set) var isLoadingMailRules = false
     @Published private(set) var performingEmailIDs: Set<String> = []
+    @Published private(set) var performingRuleIDs: Set<String> = []
     @Published private(set) var lastRefresh: Date?
     @Published var presentedError: PresentedError?
     @Published var toast: ToastMessage?
     @Published var navigationRequest: EmailNavigationRequest?
+    @Published var askNavigationRequest: UUID?
 
     private var hasLoaded = false
     private var autoRefreshTask: Task<Void, Never>?
@@ -166,6 +170,7 @@ final class AppModel: ObservableObject {
             lifetimeSummary = .empty
             status = nil
             accounts = []
+            mailRules = []
             hasLoaded = false
             stopAutoRefresh()
             WidgetSnapshotStore.clear()
@@ -265,6 +270,88 @@ final class AppModel: ObservableObject {
 
     func account(email: String) -> AccountStatus? {
         accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame })
+    }
+
+    func loadMailRules(showsError: Bool = true) async {
+        guard isConfigured, !isLoadingMailRules else { return }
+        isLoadingMailRules = true
+        defer { isLoadingMailRules = false }
+        do {
+            mailRules = try await APIClient(configuration: configuration).mailRules()
+        } catch {
+            if showsError {
+                presentedError = PresentedError(title: "Couldn’t load rules", message: error.localizedDescription)
+            }
+        }
+    }
+
+    func previewMailRule(_ draft: MailRuleDraft) async throws -> MailRulePreviewResponse {
+        try await APIClient(configuration: configuration).previewMailRule(draft)
+    }
+
+    func saveMailRule(_ draft: MailRuleDraft, replacing rule: MailRule) async -> Bool {
+        guard !performingRuleIDs.contains(rule.id) else { return false }
+        performingRuleIDs.insert(rule.id)
+        defer { performingRuleIDs.remove(rule.id) }
+        do {
+            let client = APIClient(configuration: configuration)
+            if rule.isBaseline {
+                _ = try await client.customizeBaselineRule(draft)
+            } else {
+                _ = try await client.updateMailRule(id: rule.id, candidate: draft)
+            }
+            await loadMailRules(showsError: false)
+            toast = ToastMessage(text: rule.isBaseline ? "Default customized" : "Rule updated", symbol: "checkmark.circle.fill")
+            return true
+        } catch {
+            presentedError = PresentedError(title: "Couldn’t save rule", message: error.localizedDescription)
+            return false
+        }
+    }
+
+    func setMailRuleEnabled(_ rule: MailRule, enabled: Bool) async -> Bool {
+        guard rule.canToggle, !performingRuleIDs.contains(rule.id) else { return false }
+        performingRuleIDs.insert(rule.id)
+        defer { performingRuleIDs.remove(rule.id) }
+        do {
+            let client = APIClient(configuration: configuration)
+            if enabled {
+                var draft = MailRuleDraft(rule: rule)
+                draft.enabled = true
+                _ = try await client.updateMailRule(id: rule.id, candidate: draft)
+            } else {
+                _ = try await client.disableMailRule(id: rule.id)
+            }
+            await loadMailRules(showsError: false)
+            toast = ToastMessage(text: enabled ? "Rule enabled" : "Rule disabled", symbol: enabled ? "checkmark.circle" : "pause.circle")
+            return true
+        } catch {
+            presentedError = PresentedError(title: "Couldn’t update rule", message: error.localizedDescription)
+            return false
+        }
+    }
+
+    func resetMailRule(_ rule: MailRule) async -> Bool {
+        guard rule.canReset, !performingRuleIDs.contains(rule.id) else { return false }
+        performingRuleIDs.insert(rule.id)
+        defer { performingRuleIDs.remove(rule.id) }
+        do {
+            _ = try await APIClient(configuration: configuration).resetMailRule(id: rule.id)
+            await loadMailRules(showsError: false)
+            toast = ToastMessage(text: "Default restored", symbol: "arrow.counterclockwise.circle")
+            return true
+        } catch {
+            presentedError = PresentedError(title: "Couldn’t reset default", message: error.localizedDescription)
+            return false
+        }
+    }
+
+    func requestAskWinnow() {
+        askNavigationRequest = UUID()
+    }
+
+    func consumeAskNavigation(_ request: UUID) {
+        if askNavigationRequest == request { askNavigationRequest = nil }
     }
 
     func setArchivedVisible(_ visible: Bool) {

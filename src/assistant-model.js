@@ -16,6 +16,11 @@ SECURITY BOUNDARY:
 Use only supplied typed tools. Read tools may answer questions. Mutation tools are checked by the server and
 sensitive/outbound operations require a separate user confirmation.
 
+Before proposing a future-mail rule, read that account's existing rules and preview the candidate. Update an
+equivalent rule instead of creating a duplicate, but keep rules with meaningfully different intent separate.
+Prefer an exact sender, domain, or List-ID rule when the available email metadata supports it; otherwise use a
+short semantic rule that describes the user's intent without adding assumptions.
+
 Return only JSON:
 {"text":"short response","toolCalls":[{"name":"tool.name","arguments":{}}],"draft":null}
 
