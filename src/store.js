@@ -217,6 +217,30 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_assistant_conversations_updated
       ON assistant_conversations(updated_at DESC);
 
+    CREATE TABLE IF NOT EXISTS assistant_email_conversations (
+      email_item_id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL UNIQUE,
+      FOREIGN KEY(email_item_id) REFERENCES email_items(id) ON DELETE CASCADE,
+      FOREIGN KEY(conversation_id) REFERENCES assistant_conversations(id) ON DELETE CASCADE
+    );
+
+    INSERT INTO assistant_email_conversations (email_item_id, conversation_id)
+    SELECT conversation.email_item_id, conversation.id
+    FROM assistant_conversations conversation
+    WHERE conversation.scope = 'email'
+      AND conversation.email_item_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM assistant_conversations newer
+        WHERE newer.scope = 'email'
+          AND newer.email_item_id = conversation.email_item_id
+          AND (
+            newer.updated_at > conversation.updated_at
+            OR (newer.updated_at = conversation.updated_at AND newer.rowid > conversation.rowid)
+          )
+      )
+    ON CONFLICT(email_item_id) DO NOTHING;
+
     CREATE TABLE IF NOT EXISTS assistant_messages (
       id TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL,
@@ -1151,6 +1175,56 @@ export function createAssistantConversation({ id, scope, account = '', emailItem
     updatedAt: timestamp,
   });
   return getAssistantConversation(id);
+}
+
+export function getOrCreateAssistantEmailConversation({ id, account, emailItemId, title = '' }) {
+  const database = getDb();
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    let conversation = rowToAssistantConversation(database.prepare(`
+      SELECT conversation.*
+      FROM assistant_email_conversations canonical
+      JOIN assistant_conversations conversation ON conversation.id = canonical.conversation_id
+      WHERE canonical.email_item_id = ?
+    `).get(emailItemId));
+
+    if (!conversation) {
+      conversation = rowToAssistantConversation(database.prepare(`
+        SELECT *
+        FROM assistant_conversations
+        WHERE scope = 'email' AND email_item_id = ?
+        ORDER BY updated_at DESC, rowid DESC
+        LIMIT 1
+      `).get(emailItemId));
+    }
+
+    if (!conversation) {
+      const timestamp = nowIso();
+      database.prepare(`
+        INSERT INTO assistant_conversations (id, scope, account, email_item_id, title, created_at, updated_at)
+        VALUES (@id, 'email', @account, @emailItemId, @title, @createdAt, @updatedAt)
+      `).run({
+        id,
+        account,
+        emailItemId,
+        title: String(title || '').slice(0, 300),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      conversation = getAssistantConversation(id);
+    }
+
+    database.prepare(`
+      INSERT INTO assistant_email_conversations (email_item_id, conversation_id)
+      VALUES (?, ?)
+      ON CONFLICT(email_item_id) DO NOTHING
+    `).run(emailItemId, conversation.id);
+    database.exec('COMMIT');
+    return conversation;
+  } catch (err) {
+    database.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 export function getAssistantConversation(id) {

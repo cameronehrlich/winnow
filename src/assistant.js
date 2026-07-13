@@ -21,6 +21,7 @@ import {
   finishAssistantProposal,
   getAssistantConversation,
   getAssistantConversationEnvelope,
+  getOrCreateAssistantEmailConversation,
   getAssistantProposal,
   getAssistantRunByIdempotencyKey,
   getEmailItem,
@@ -140,10 +141,14 @@ export function createConversation({ scope, account = '', emailItemId = '', titl
   } else if (emailItemId) {
     throw new AssistantError(400, 'invalid_email_item', 'emailItemId is only valid for email conversations');
   }
-  const conversation = insertAssistantConversation({
-    id: randomUUID(), scope, account, emailItemId, title,
-  });
-  return { conversation, messages: [] };
+  const conversation = scope === 'email'
+    ? getOrCreateAssistantEmailConversation({
+      id: randomUUID(), account, emailItemId, title,
+    })
+    : insertAssistantConversation({
+      id: randomUUID(), scope, account, emailItemId, title,
+    });
+  return getAssistantConversationEnvelope(conversation.id);
 }
 
 export function getConversation(id) {

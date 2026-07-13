@@ -12,8 +12,10 @@ import {
   setAssistantDependenciesFactoryForTests,
 } from '../src/assistant.js';
 import {
+  addAssistantMessage,
   closeStoreForTests,
   configureDatabaseForTests,
+  createAssistantConversation as insertAssistantConversation,
   createAssistantRule,
   listAssistantRules,
   upsertEmailItemFromResult,
@@ -158,6 +160,51 @@ describe('assistant API', () => {
     ];
     inspector.close();
     assert.doesNotMatch(JSON.stringify(persisted), /RAW INCOMING SECRET|Ignore prior instructions/);
+  });
+
+  it('reopens the canonical email conversation with its existing message history', async () => {
+    responses.push({ text: 'The order shipped today.', toolCalls: [], draft: null });
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const answered = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'What happened?', idempotencyKey: 'persistent-email-question',
+    });
+    assert.equal(answered.status, 200);
+
+    const reopened = await createConversation({ scope: 'email', emailItemId: item.id });
+    assert.equal(reopened.conversation.id, created.conversation.id);
+    assert.deepEqual(reopened.messages.map(message => message.role), ['user', 'assistant']);
+    assert.equal(reopened.messages[0].text, 'What happened?');
+    assert.equal(reopened.messages[1].text, 'The order shipped today.');
+  });
+
+  it('continues to create a new conversation for each mailbox request', async () => {
+    const first = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const second = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    assert.notEqual(second.conversation.id, first.conversation.id);
+    assert.deepEqual(first.messages, []);
+    assert.deepEqual(second.messages, []);
+  });
+
+  it('adopts the most recently updated conversation when migrating existing email duplicates', async () => {
+    insertAssistantConversation({
+      id: 'recently-active', scope: 'email', account: item.account,
+      emailItemId: item.id, title: item.subject,
+    });
+    insertAssistantConversation({
+      id: 'later-created', scope: 'email', account: item.account,
+      emailItemId: item.id, title: item.subject,
+    });
+    addAssistantMessage({
+      id: 'existing-message', conversationId: 'recently-active', role: 'user',
+      text: 'Keep this history', createdAt: '2099-01-01T00:00:00.000Z',
+    });
+
+    closeStoreForTests();
+    configureDatabaseForTests(databasePath);
+
+    const reopened = await createConversation({ scope: 'email', emailItemId: item.id });
+    assert.equal(reopened.conversation.id, 'recently-active');
+    assert.deepEqual(reopened.messages.map(message => message.text), ['Keep this history']);
   });
 
   it('searches all configured mailbox data and returns bounded evidence cards', async () => {
