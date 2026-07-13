@@ -19,6 +19,19 @@ function routeKind(account) {
   return account.slack ? 'account_slack' : account.channel ? 'account_channel' : 'default';
 }
 
+function publicAccountMetadata(account) {
+  const avatarUrl = typeof account.avatar_url === 'string' && account.avatar_url.startsWith('https://')
+    ? account.avatar_url
+    : null;
+  const gmailAppAccountId = Number(account.gmail_app_account_id);
+  return {
+    avatarUrl,
+    gmailAppAccountId: Number.isSafeInteger(gmailAppAccountId) && gmailAppAccountId > 0
+      ? gmailAppAccountId
+      : null,
+  };
+}
+
 export function listAccountStatus() {
   const accounts = getAccounts();
   const state = loadState();
@@ -33,6 +46,7 @@ export function listAccountStatus() {
     const latestEvent = latestEvents[account.email] || null;
     return {
       email: account.email,
+      ...publicAccountMetadata(account),
       slack: {
         channelId: route.channelId,
         routeKind: routeKind(account),

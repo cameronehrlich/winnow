@@ -2,6 +2,9 @@
 accounts:
   - email: you@example.com
     channel: C0PERSONAL_EMAIL
+    # Optional UI identity and Gmail iOS account slot (first Gmail account is 1).
+    avatar_url: https://example.com/your-account-avatar.png
+    gmail_app_account_id: 1
 
   # Optional: route one Gmail account to a different Slack workspace/app.
   # Keep tokens in .env and reference their variable names here.

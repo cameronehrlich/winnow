@@ -24,6 +24,17 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertTrue(item.gmailURL?.absoluteString.contains("authuser=me@example.com") == true)
         XCTAssertEqual(item.gmailDestination?.accountHint, "me@example.com")
         XCTAssertEqual(GmailDestination.nativeAppURL.scheme, "googlegmail")
+        XCTAssertEqual(
+            item.nativeGmailURL(accountID: 2)?.absoluteString,
+            "googlegmail:///cv=t1/accountId=2&create-new-tab"
+        )
+    }
+
+    func testAccountDecodesAvatarAndGmailAppSlot() throws {
+        let json = #"{"email":"me@example.com","avatarUrl":"https://example.com/me.png","gmailAppAccountId":2,"scan":{},"latestEvent":null}"#.data(using: .utf8)!
+        let account = try JSONDecoder().decode(AccountStatus.self, from: json)
+        XCTAssertEqual(account.avatarURL?.absoluteString, "https://example.com/me.png")
+        XCTAssertEqual(account.gmailAppAccountId, 2)
     }
 
     func testEmailToleratesFieldsAddedAfterOriginalAPI() throws {

@@ -6,7 +6,6 @@ struct EmailDetailView: View {
     @Environment(\.openURL) private var openURL
     let emailID: String
     @State private var confirmUnsubscribe = false
-    @State private var gmailAppAvailable = false
     @State private var assistantPresented = false
 
     private var item: EmailItem? { model.email(id: emailID) }
@@ -138,7 +137,6 @@ struct EmailDetailView: View {
         }
         .task(id: emailID) {
             guard let item = model.email(id: emailID) else { return }
-            gmailAppAvailable = UIApplication.shared.canOpenURL(GmailDestination.nativeAppURL)
             await model.markReadWhenOpened(item)
         }
     }
@@ -146,7 +144,11 @@ struct EmailDetailView: View {
     private func senderHeader(_ item: EmailItem) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 13) {
-                SenderAvatar(initials: item.senderInitials, seed: item.fromEmail.isEmpty ? item.senderDisplayName : item.fromEmail, size: 52)
+                ZStack(alignment: .bottomTrailing) {
+                    SenderAvatar(initials: item.senderInitials, seed: item.fromEmail.isEmpty ? item.senderDisplayName : item.fromEmail, size: 52)
+                    AccountAvatarBadge(account: model.account(email: item.account), size: 20)
+                        .offset(x: 4, y: 4)
+                }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.senderDisplayName).font(.headline)
                     if !item.fromEmail.isEmpty { Text(item.fromEmail).font(.caption).foregroundStyle(.secondary) }
@@ -158,45 +160,38 @@ struct EmailDetailView: View {
                 .font(.title2.bold())
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
-                Label(item.account, systemImage: "person.crop.circle")
+                AccountAvatarBadge(account: model.account(email: item.account), size: 18)
+                Text(item.account)
                 Spacer()
                 if let date = item.displayDate { Text(date.formatted(date: .abbreviated, time: .shortened)) }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
 
-            if let destination = item.gmailDestination {
-                VStack(alignment: .leading, spacing: 9) {
-                    if gmailAppAvailable {
-                        Button { openURL(GmailDestination.nativeAppURL) } label: {
-                            Label("Open Gmail app", systemImage: "envelope.open.fill")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(WinnowDesign.indigo)
-
-                        Button { openURL(destination.exactMessageURL) } label: {
-                            Label("Open exact message", systemImage: "arrow.up.right.square")
-                                .font(.caption.weight(.semibold))
-                        }
-                        .buttonStyle(.bordered)
-
-                        Text("Gmail does not document an iOS link that selects a message or account. The app opens its current account; the exact-message link uses \(destination.accountHint.isEmpty ? "your web Gmail session" : destination.accountHint) instead.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Button { openURL(destination.exactMessageURL) } label: {
-                            Label("Open exact message", systemImage: "arrow.up.right.square")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .buttonStyle(.bordered)
-                        .accessibilityHint(destination.exactMessageAccessibilityHint)
-                    }
+            if item.gmailDestination != nil {
+                Button { openInGmail(item) } label: {
+                    Label("Open in Gmail", systemImage: "envelope.open.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(WinnowDesign.indigo)
+                .accessibilityHint("Opens this conversation in the \(item.account) Gmail account.")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .winnowCard()
+    }
+
+    private func openInGmail(_ item: EmailItem) {
+        let accountID = model.account(email: item.account)?.gmailAppAccountId
+        if UIApplication.shared.canOpenURL(GmailDestination.nativeAppURL),
+           let nativeURL = item.nativeGmailURL(accountID: accountID) {
+            openURL(nativeURL)
+        } else if let webURL = item.gmailURL {
+            openURL(webURL)
+        }
     }
 
     private func actionBar(_ item: EmailItem) -> some View {

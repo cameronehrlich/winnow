@@ -35,6 +35,8 @@ beforeEach(async () => {
 accounts:
   - email: me@example.com
     channel: CTEST
+    avatar_url: https://example.com/avatar.png
+    gmail_app_account_id: 2
 slack:
   channel_id: CFALLBACK
 api:
@@ -124,6 +126,8 @@ describe('local API', () => {
     const accountsJson = await accounts.json();
     assert.equal(accountsJson.accounts.length, 1);
     assert.equal(accountsJson.accounts[0].email, 'me@example.com');
+    assert.equal(accountsJson.accounts[0].avatarUrl, 'https://example.com/avatar.png');
+    assert.equal(accountsJson.accounts[0].gmailAppAccountId, 2);
     assert.equal(accountsJson.accounts[0].slack.channelId, 'CTEST');
     assert.equal(accountsJson.accounts[0].slack.hasBotToken, true);
     assert.equal(accountsJson.accounts[0].slack.hasAppToken, true);

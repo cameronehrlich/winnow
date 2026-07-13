@@ -235,6 +235,10 @@ final class AppModel: ObservableObject {
         emails.first(where: { $0.id == id })
     }
 
+    func account(email: String) -> AccountStatus? {
+        accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame })
+    }
+
     func setArchivedVisible(_ visible: Bool) {
         archivedIsVisible = visible
         if visible { markArchivedViewed() }

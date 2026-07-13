@@ -95,6 +95,34 @@ struct SenderAvatar: View {
     }
 }
 
+struct AccountAvatarBadge: View {
+    let account: AccountStatus?
+    var size: CGFloat = 18
+
+    private var fallbackLetter: String {
+        account?.email.first.map { String($0).uppercased() } ?? "?"
+    }
+
+    var body: some View {
+        AsyncImage(url: account?.avatarURL) { phase in
+            if let image = phase.image {
+                image.resizable().scaledToFill()
+            } else {
+                Text(fallbackLetter)
+                    .font(.system(size: size * 0.48, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(WinnowDesign.indigo)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().stroke(Color(uiColor: .systemBackground), lineWidth: 2))
+        .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
+        .accessibilityHidden(true)
+    }
+}
+
 struct CapsuleLabel: View {
     let text: String
     let symbol: String?

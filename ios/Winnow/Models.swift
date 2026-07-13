@@ -82,6 +82,10 @@ struct EmailItem: Decodable, Identifiable, Equatable {
     // Kept as a convenience for call sites that only need the exact web permalink.
     var gmailURL: URL? { gmailDestination?.exactMessageURL }
 
+    func nativeGmailURL(accountID: Int?) -> URL? {
+        GmailDestination.nativeMessageURL(threadID: threadId, accountID: accountID)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id, account, messageId, threadId, fromName, fromEmail, from, subject, snippet
         case summary, action, deadline, impact, handling, reason, confidence, ephemeral
@@ -261,6 +265,13 @@ struct GmailDestination: Equatable {
     let exactMessageURL: URL
     let accountHint: String
 
+    static func nativeMessageURL(threadID: String, accountID: Int?) -> URL? {
+        guard !threadID.isEmpty, let accountID, accountID > 0,
+              let encodedThreadID = threadID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+        else { return nil }
+        return URL(string: "googlegmail:///cv=\(encodedThreadID)/accountId=\(accountID)&create-new-tab")
+    }
+
     var exactMessageAccessibilityHint: String {
         accountHint.isEmpty
             ? "Opens the exact message in Gmail on the web."
@@ -293,10 +304,13 @@ struct AccountListResponse: Decodable {
 
 struct AccountStatus: Decodable, Equatable, Identifiable {
     let email: String
+    let avatarUrl: String?
+    let gmailAppAccountId: Int?
     let scan: AccountScan
     let latestEvent: LatestEvent?
 
     var id: String { email }
+    var avatarURL: URL? { avatarUrl.flatMap(URL.init(string:)) }
 }
 
 struct AccountScan: Decodable, Equatable {

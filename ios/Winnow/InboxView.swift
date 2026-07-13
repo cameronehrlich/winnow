@@ -46,7 +46,6 @@ struct InboxView: View {
 
     @State private var account = ""
     @State private var searchText = ""
-    @State private var unsubscribeCandidate: EmailItem?
     @State private var navigationPath: [String] = []
 
     private var filteredEmails: [EmailItem] {
@@ -74,10 +73,8 @@ struct InboxView: View {
                     ForEach(filteredEmails) { item in
                         EmailCard(
                             item: item,
-                            mailbox: mailbox,
+                            account: model.account(email: item.account),
                             isPerforming: model.performingEmailIDs.contains(item.id),
-                            primaryAction: { perform(mailbox.primaryAction, on: item) },
-                            unsubscribeAction: { unsubscribeCandidate = item },
                             openAction: { navigationPath.append(item.id) }
                         )
                         .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
@@ -140,23 +137,6 @@ struct InboxView: View {
                     ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
                 }
             }
-            .confirmationDialog(
-                "Unsubscribe from this sender?",
-                isPresented: Binding(
-                    get: { unsubscribeCandidate != nil },
-                    set: { if !$0 { unsubscribeCandidate = nil } }
-                ),
-                titleVisibility: .visible,
-                presenting: unsubscribeCandidate
-            ) { item in
-                Button("Unsubscribe", role: .destructive) {
-                    unsubscribeCandidate = nil
-                    perform(.unsubscribe, on: item)
-                }
-                Button("Cancel", role: .cancel) { unsubscribeCandidate = nil }
-            } message: { _ in
-                Text("Winnow will follow the sender’s unsubscribe link.")
-            }
             .onChange(of: model.navigationRequest) { _, request in
                 guard let request,
                       request.mailboxState == mailbox.apiState else { return }
@@ -190,107 +170,99 @@ struct InboxView: View {
 
 private struct EmailCard: View {
     let item: EmailItem
-    let mailbox: MailboxTab
+    let account: AccountStatus?
     let isPerforming: Bool
-    let primaryAction: () -> Void
-    let unsubscribeAction: () -> Void
     let openAction: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            Button(action: openAction) {
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 9) {
+        Button(action: openAction) {
+            ZStack(alignment: .trailing) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 9) {
+                        ZStack(alignment: .bottomTrailing) {
                             SenderAvatar(
                                 initials: item.senderInitials,
                                 seed: item.fromEmail.isEmpty ? item.senderDisplayName : item.fromEmail,
                                 size: 36
                             )
-                            VStack(alignment: .leading, spacing: 1) {
-                                HStack(spacing: 5) {
-                                    if item.isUnread {
-                                        Circle().fill(WinnowDesign.brightIndigo).frame(width: 6, height: 6)
-                                    }
-                                    Text(item.senderDisplayName)
-                                        .font(.subheadline.weight(.semibold))
-                                        .lineLimit(1)
+                            AccountAvatarBadge(account: account, size: 17)
+                                .offset(x: 4, y: 4)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 5) {
+                                if item.isUnread {
+                                    Circle().fill(WinnowDesign.brightIndigo).frame(width: 6, height: 6)
                                 }
-                                Text(item.account)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                Text(item.senderDisplayName)
+                                    .font(.subheadline.weight(item.isUnread ? .bold : .regular))
+                                    .foregroundStyle(item.isUnread ? .primary : .secondary)
                                     .lineLimit(1)
                             }
-                            Spacer(minLength: 6)
-                            if isPerforming {
-                                ProgressView().controlSize(.small)
-                            } else if let date = item.displayDate {
-                                Text(date.relativeWinnowTime)
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-
-                        Text(item.subject)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-
-                        if !item.summary.isEmpty || !item.snippet.isEmpty {
-                            Text(item.summary.isEmpty ? item.snippet : item.summary)
-                                .font(.footnote)
+                            Text(item.account)
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-
-                        if let action = item.meaningfulAction {
-                            HStack(alignment: .top, spacing: 6) {
-                                Image(systemName: "arrow.turn.down.right")
-                                    .foregroundStyle(WinnowDesign.brightIndigo)
-                                Text(action)
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(2)
-                            }
+                                .lineLimit(1)
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
 
+                    Text(item.subject)
+                        .font(.subheadline.weight(item.isUnread ? .bold : .regular))
+                        .foregroundStyle(item.isUnread ? .primary : .secondary)
+                        .lineLimit(2)
+
+                    if !item.summary.isEmpty || !item.snippet.isEmpty {
+                        Text(item.summary.isEmpty ? item.snippet : item.summary)
+                            .font(.footnote)
+                            .foregroundStyle(item.isUnread ? .secondary : .tertiary)
+                            .lineLimit(2)
+                    }
+
+                    if let action = item.meaningfulAction {
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "arrow.turn.down.right")
+                                .foregroundStyle(WinnowDesign.brightIndigo)
+                            Text(action)
+                                .font(.caption.weight(item.isUnread ? .semibold : .regular))
+                                .foregroundStyle(item.isUnread ? .primary : .secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.trailing, 78)
+
+                VStack(alignment: .trailing, spacing: 0) {
+                    if isPerforming {
+                        ProgressView().controlSize(.small)
+                    } else if let date = item.displayDate {
+                        Text(date.relativeWinnowTime)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(width: 70, alignment: .trailing)
+                .frame(maxHeight: .infinity, alignment: .top)
+
+                VStack {
+                    Spacer(minLength: 0)
                     Image(systemName: "chevron.right")
                         .font(.footnote.weight(.bold))
                         .foregroundStyle(.tertiary)
-                        .frame(width: 14)
+                        .frame(width: 70, alignment: .trailing)
                         .accessibilityHidden(true)
+                    Spacer(minLength: 0)
                 }
-                .padding(.leading, 12)
-                .padding(.trailing, 15)
-                .padding(.vertical, 11)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .accessibilityHint("Shows email details")
-
-            Divider().opacity(0.6)
-
-            HStack(spacing: 8) {
-                Button(action: primaryAction) {
-                    Label(mailbox.primaryAction.label, systemImage: mailbox.primaryAction.systemImage)
-                }
-                .buttonStyle(WinnowCompactActionButtonStyle(color: WinnowDesign.indigo))
-
-                if mailbox == .archived, item.canUnsubscribe {
-                    Button(role: .destructive, action: unsubscribeAction) {
-                        Label("Unsubscribe", systemImage: "person.crop.circle.badge.minus")
-                    }
-                    .buttonStyle(WinnowCompactActionButtonStyle(color: WinnowDesign.deepRose))
-                }
-
-                Spacer(minLength: 0)
-            }
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.leading, 12)
+            .padding(.trailing, 15)
+            .padding(.vertical, 11)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows email details")
         .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
