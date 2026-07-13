@@ -37,11 +37,10 @@ struct AssistantMailboxView: View {
 }
 
 struct AssistantConversationView: View {
-    @StateObject private var viewModel: AssistantViewModel
-    @State private var composerText = ""
-    @State private var reviewedProposal: AssistantProposal?
-    @FocusState private var composerFocused: Bool
-
+    private let configuration: ServerConfiguration
+    private let scope: AssistantScope
+    private let account: String?
+    private let emailItemID: String?
     private let contextTitle: String?
     private let onMailboxChanged: () async -> Void
 
@@ -53,6 +52,96 @@ struct AssistantConversationView: View {
         contextTitle: String?,
         onMailboxChanged: @escaping () async -> Void
     ) {
+        self.configuration = configuration
+        self.scope = scope
+        self.account = account
+        self.emailItemID = emailItemID
+        self.contextTitle = contextTitle
+        self.onMailboxChanged = onMailboxChanged
+    }
+
+    var body: some View {
+        AssistantConversationHost(
+            configuration: configuration,
+            scope: scope,
+            account: account,
+            emailItemID: emailItemID,
+            contextTitle: contextTitle,
+            presentation: .standalone,
+            onMailboxChanged: onMailboxChanged
+        ) {
+            EmptyView()
+        }
+    }
+}
+
+/// Owns the detail screen's only vertical scroll view and keeps the email-scoped
+/// composer above the keyboard. Put all of the email metadata and action content
+/// in `detailContent`; the persistent Winnow conversation is appended below it.
+struct EmailAssistantThreadView<DetailContent: View>: View {
+    private let configuration: ServerConfiguration
+    private let account: String
+    private let emailItemID: String
+    private let contextTitle: String?
+    private let onMailboxChanged: () async -> Void
+    private let detailContent: DetailContent
+
+    init(
+        configuration: ServerConfiguration,
+        account: String,
+        emailItemID: String,
+        contextTitle: String?,
+        onMailboxChanged: @escaping () async -> Void,
+        @ViewBuilder detailContent: () -> DetailContent
+    ) {
+        self.configuration = configuration
+        self.account = account
+        self.emailItemID = emailItemID
+        self.contextTitle = contextTitle
+        self.onMailboxChanged = onMailboxChanged
+        self.detailContent = detailContent()
+    }
+
+    var body: some View {
+        AssistantConversationHost(
+            configuration: configuration,
+            scope: .email,
+            account: account,
+            emailItemID: emailItemID,
+            contextTitle: contextTitle,
+            presentation: .inlineEmail,
+            onMailboxChanged: onMailboxChanged
+        ) {
+            detailContent
+        }
+        // A detail view can be reused by a NavigationStack. This identity makes
+        // the conversation StateObject follow the selected email in that case.
+        .id(emailItemID)
+    }
+}
+
+private enum AssistantPresentation {
+    case standalone
+    case inlineEmail
+}
+
+private struct AssistantConversationHost<LeadingContent: View>: View {
+    @StateObject private var viewModel: AssistantViewModel
+    private let contextTitle: String?
+    private let presentation: AssistantPresentation
+    private let onMailboxChanged: () async -> Void
+    private let leadingContent: LeadingContent
+
+    init(
+        configuration: ServerConfiguration,
+        scope: AssistantScope,
+        account: String?,
+        emailItemID: String?,
+        contextTitle: String?,
+        presentation: AssistantPresentation,
+        onMailboxChanged: @escaping () async -> Void,
+        @ViewBuilder leadingContent: () -> LeadingContent
+    ) {
         _viewModel = StateObject(wrappedValue: AssistantViewModel(
             configuration: configuration,
             scope: scope,
@@ -60,14 +149,56 @@ struct AssistantConversationView: View {
             emailItemID: emailItemID
         ))
         self.contextTitle = contextTitle
+        self.presentation = presentation
         self.onMailboxChanged = onMailboxChanged
+        self.leadingContent = leadingContent()
+    }
+
+    var body: some View {
+        AssistantConversationLayout(
+            viewModel: viewModel,
+            contextTitle: contextTitle,
+            presentation: presentation,
+            onMailboxChanged: onMailboxChanged
+        ) {
+            leadingContent
+        }
+    }
+}
+
+private struct AssistantConversationLayout<LeadingContent: View>: View {
+    @ObservedObject var viewModel: AssistantViewModel
+    @State private var composerText = ""
+    @State private var reviewedProposal: AssistantProposal?
+    @State private var inlineThreadActivated = false
+    @FocusState private var composerFocused: Bool
+
+    let contextTitle: String?
+    let presentation: AssistantPresentation
+    let onMailboxChanged: () async -> Void
+    let leadingContent: LeadingContent
+
+    init(
+        viewModel: AssistantViewModel,
+        contextTitle: String?,
+        presentation: AssistantPresentation,
+        onMailboxChanged: @escaping () async -> Void,
+        @ViewBuilder leadingContent: () -> LeadingContent
+    ) {
+        self.viewModel = viewModel
+        self.contextTitle = contextTitle
+        self.presentation = presentation
+        self.onMailboxChanged = onMailboxChanged
+        self.leadingContent = leadingContent()
     }
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 14) {
+                    LazyVStack(spacing: presentation == .inlineEmail ? 16 : 14) {
+                        leadingContent
+
                         scopeLabel
 
                         if viewModel.isLoading && viewModel.messages.isEmpty {
@@ -112,6 +243,11 @@ struct AssistantConversationView: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: viewModel.messages.count) { _, _ in
+                    // Opening an email should show its header rather than jump
+                    // past it to restored history. The first send activates the
+                    // thread before its response arrives, so new messages still
+                    // scroll immediately even when the initial history was empty.
+                    if presentation == .inlineEmail, !inlineThreadActivated { return }
                     withAnimation { proxy.scrollTo("assistant-bottom", anchor: .bottom) }
                 }
                 .onChange(of: viewModel.isSending) { _, sending in
@@ -143,13 +279,23 @@ struct AssistantConversationView: View {
     }
 
     private var scopeLabel: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(viewModel.scope == .email ? "Asking about this email · \(scopeDescription)" : "Searching \(scopeDescription)")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            if let contextTitle, !contextTitle.isEmpty {
-                Text(contextTitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        VStack(alignment: .leading, spacing: presentation == .inlineEmail ? 5 : 2) {
+            if presentation == .inlineEmail {
+                Label("Conversation", systemImage: "sparkles")
+                    .font(.headline)
+                    .foregroundStyle(WinnowDesign.indigo)
+                Text("This email · \(scopeDescription)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text(viewModel.scope == .email ? "Asking about this email · \(scopeDescription)" : "Searching \(scopeDescription)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if let contextTitle, !contextTitle.isEmpty {
+                    Text(contextTitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -166,92 +312,113 @@ struct AssistantConversationView: View {
     private var loadingState: some View {
         VStack(spacing: 12) {
             ProgressView()
-            Text("Starting a private conversation…")
+            Text(presentation == .inlineEmail ? "Loading conversation…" : "Starting a private conversation…")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 50)
+        .padding(.vertical, presentation == .inlineEmail ? 24 : 50)
     }
 
+    @ViewBuilder
     private var emptyState: some View {
-        VStack(spacing: 18) {
-            VStack(spacing: 8) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(WinnowDesign.brightIndigo)
-                Text(viewModel.scope == .email ? "Ask about this message" : "Ask across your mailbox")
-                    .font(.title3.bold())
-                Text(viewModel.scope == .email
-                     ? "Get answers, draft a reply, archive future messages, or safely unsubscribe."
-                     : "Find an order, receipt, EIN, or anything else in your connected accounts.")
+        if presentation == .inlineEmail {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Ask a question or tell Winnow what to do with this message.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
 
-            VStack(spacing: 8) {
-                ForEach(suggestions, id: \.self) { suggestion in
-                    Button {
-                        composerText = suggestion
-                        composerFocused = true
-                    } label: {
-                        HStack {
-                            Text(suggestion).multilineTextAlignment(.leading)
-                            Spacer()
-                            Image(systemName: "arrow.up.right")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(suggestions, id: \.self) { suggestion in
+                            Button(suggestion) {
+                                composerText = suggestion
+                                composerFocused = true
+                            }
+                            .font(.caption.weight(.semibold))
+                            .buttonStyle(.bordered)
+                            .tint(WinnowDesign.indigo)
+                            .fixedSize(horizontal: true, vertical: false)
                         }
-                        .font(.subheadline.weight(.medium))
-                        .padding(12)
-                        .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(WinnowDesign.indigo)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 4)
+            .padding(.bottom, 4)
+        } else {
+            VStack(spacing: 18) {
+                VStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(WinnowDesign.brightIndigo)
+                    Text(viewModel.scope == .email ? "Ask about this message" : "Ask across your mailbox")
+                        .font(.title3.bold())
+                    Text(viewModel.scope == .email
+                         ? "Get answers, draft a reply, archive future messages, or safely unsubscribe."
+                         : "Find an order, receipt, EIN, or anything else in your connected accounts.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                VStack(spacing: 8) {
+                    ForEach(suggestions, id: \.self) { suggestion in
+                        Button {
+                            composerText = suggestion
+                            composerFocused = true
+                        } label: {
+                            HStack {
+                                Text(suggestion).multilineTextAlignment(.leading)
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                            }
+                            .font(.subheadline.weight(.medium))
+                            .padding(12)
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(WinnowDesign.indigo)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .winnowCard()
         }
-        .frame(maxWidth: .infinity)
-        .winnowCard()
     }
 
     private var suggestions: [String] {
         if viewModel.scope == .email {
-            return ["What do I need to know?", "Draft a reply", "Unsubscribe me from this sender"]
+            return ["What matters here?", "Draft a reply", "Handle these in the future"]
         }
         return ["Find my most recent order", "Where can I find my EIN?", "Show receipts from this month"]
     }
 
     private var composer: some View {
-        VStack(spacing: 8) {
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField("Ask Winnow…", text: $composerText, axis: .vertical)
-                    .lineLimit(1...5)
-                    .focused($composerFocused)
-                    .submitLabel(.send)
-                    .onSubmit(send)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        HStack(alignment: .bottom, spacing: 10) {
+            TextField("Ask Winnow…", text: $composerText, axis: .vertical)
+                .lineLimit(1...5)
+                .focused($composerFocused)
+                .submitLabel(.send)
+                .onSubmit(send)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-                Button(action: send) {
-                    Image(systemName: "arrow.up")
-                        .font(.headline.bold())
-                        .foregroundStyle(.white)
-                        .frame(width: 42, height: 42)
-                        .background(WinnowDesign.heroGradient, in: Circle())
-                }
-                .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isWorking)
-                .opacity(viewModel.isWorking ? 0.55 : 1)
-                .accessibilityLabel("Send message")
+            Button(action: send) {
+                Image(systemName: "arrow.up")
+                    .font(.headline.bold())
+                    .foregroundStyle(.white)
+                    .frame(width: 42, height: 42)
+                    .background(WinnowDesign.heroGradient, in: Circle())
             }
-            Text("Winnow asks before sending or making persistent changes.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isWorking)
+            .opacity(viewModel.isWorking ? 0.55 : 1)
+            .accessibilityLabel("Send message")
         }
         .padding(.horizontal, 14)
         .padding(.top, 10)
-        .padding(.bottom, 7)
+        .padding(.bottom, 8)
         .background(.ultraThinMaterial)
     }
 
@@ -276,6 +443,7 @@ struct AssistantConversationView: View {
     private func send() {
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !viewModel.isWorking else { return }
+        inlineThreadActivated = true
         composerText = ""
         composerFocused = false
         Task {
@@ -286,6 +454,7 @@ struct AssistantConversationView: View {
     }
 
     private func confirm(_ proposal: AssistantProposal) {
+        inlineThreadActivated = true
         Task {
             let succeeded = await viewModel.confirm(proposal)
             if succeeded {
@@ -296,6 +465,7 @@ struct AssistantConversationView: View {
     }
 
     private func cancel(_ proposal: AssistantProposal) {
+        inlineThreadActivated = true
         Task {
             let succeeded = await viewModel.cancel(proposal)
             if succeeded { reviewedProposal = nil }
