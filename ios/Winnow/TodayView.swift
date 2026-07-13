@@ -51,7 +51,18 @@ struct StatsView: View {
 
                                 VStack(spacing: 0) {
                                     ForEach(Array(model.lifetimeSummary.recentActivity.prefix(20).enumerated()), id: \.element.id) { index, event in
-                                        ActivityRow(event: event)
+                                        if let emailID = event.resolvedEmailID(in: model.emails) {
+                                            NavigationLink {
+                                                EmailDetailView(emailID: emailID)
+                                            } label: {
+                                                ActivityRow(event: event, isNavigable: true)
+                                            }
+                                            .buttonStyle(.plain)
+                                            .accessibilityHint("Shows email details")
+                                        } else {
+                                            ActivityRow(event: event, isNavigable: false)
+                                                .accessibilityHint("The related email is no longer available")
+                                        }
                                         if index < min(model.lifetimeSummary.recentActivity.count, 20) - 1 {
                                             Divider().padding(.leading, 46)
                                         }
@@ -185,6 +196,7 @@ private struct TodayMetric: View {
 
 private struct ActivityRow: View {
     let event: SummaryItem
+    let isNavigable: Bool
 
     private var presentation: (label: String, icon: String, color: Color) {
         switch event.actionType {
@@ -220,7 +232,16 @@ private struct ActivityRow: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+            if isNavigable {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, 2)
+                    .accessibilityHidden(true)
+            }
         }
-        .padding(10)
+        .padding(.leading, 10)
+        .padding(.trailing, 12)
+        .padding(.vertical, 10)
     }
 }

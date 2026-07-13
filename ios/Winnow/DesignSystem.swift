@@ -6,6 +6,7 @@ enum WinnowDesign {
     static let mint = Color(red: 0.19, green: 0.72, blue: 0.60)
     static let amber = Color(red: 0.94, green: 0.58, blue: 0.20)
     static let rose = Color(red: 0.92, green: 0.30, blue: 0.43)
+    static let deepRose = Color(red: 0.68, green: 0.12, blue: 0.25)
     static let ink = Color(red: 0.07, green: 0.08, blue: 0.14)
 
     static let heroGradient = LinearGradient(
@@ -25,6 +26,24 @@ enum WinnowDesign {
         let hash = seed.unicodeScalars.reduce(UInt(5381)) { ($0 &* 33) &+ UInt($1.value) }
         let index = Int(hash % UInt(palettes.count))
         return LinearGradient(colors: palettes[index], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+}
+
+struct WinnowCompactActionButtonStyle: ButtonStyle {
+    let color: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .symbolRenderingMode(.monochrome)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 8)
+            .background(
+                color.opacity(configuration.isPressed ? 0.78 : 1),
+                in: Capsule()
+            )
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 

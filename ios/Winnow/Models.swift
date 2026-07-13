@@ -65,15 +65,22 @@ struct EmailItem: Decodable, Identifiable, Equatable {
 
     var displayDate: Date? { processedAt.winnowDate ?? createdAt.winnowDate }
 
-    var gmailURL: URL? {
+    var gmailDestination: GmailDestination? {
         guard canOpenInGmail else { return nil }
         var components = URLComponents(string: "https://mail.google.com/mail/u/")
         if !account.isEmpty {
             components?.queryItems = [URLQueryItem(name: "authuser", value: account)]
         }
         components?.fragment = "all/\(threadId)"
-        return components?.url
+        guard let exactMessageURL = components?.url else { return nil }
+        return GmailDestination(
+            exactMessageURL: exactMessageURL,
+            accountHint: account
+        )
     }
+
+    // Kept as a convenience for call sites that only need the exact web permalink.
+    var gmailURL: URL? { gmailDestination?.exactMessageURL }
 
     private enum CodingKeys: String, CodingKey {
         case id, account, messageId, threadId, fromName, fromEmail, from, subject, snippet
@@ -194,6 +201,7 @@ struct SummaryLists: Decodable, Equatable {
 
 struct SummaryItem: Decodable, Equatable, Identifiable {
     let eventId: Int
+    let emailItemId: String
     let timestamp: String
     let account: String
     let threadId: String
@@ -208,6 +216,56 @@ struct SummaryItem: Decodable, Equatable, Identifiable {
 
     var id: Int { eventId }
     var displayDate: Date? { timestamp.winnowDate }
+
+    private enum CodingKeys: String, CodingKey {
+        case eventId, emailItemId, timestamp, account, threadId, messageId, from
+        case subject, summary, actionType, source, reason, confidence
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        eventId = try values.decode(Int.self, forKey: .eventId)
+        emailItemId = try values.decodeIfPresent(String.self, forKey: .emailItemId) ?? ""
+        timestamp = try values.decodeIfPresent(String.self, forKey: .timestamp) ?? ""
+        account = try values.decodeIfPresent(String.self, forKey: .account) ?? ""
+        threadId = try values.decodeIfPresent(String.self, forKey: .threadId) ?? ""
+        messageId = try values.decodeIfPresent(String.self, forKey: .messageId) ?? ""
+        from = try values.decodeIfPresent(String.self, forKey: .from) ?? ""
+        subject = try values.decodeIfPresent(String.self, forKey: .subject) ?? ""
+        summary = try values.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        actionType = try values.decodeIfPresent(String.self, forKey: .actionType) ?? ""
+        source = try values.decodeIfPresent(String.self, forKey: .source) ?? ""
+        reason = try values.decodeIfPresent(String.self, forKey: .reason) ?? ""
+        confidence = try values.decodeIfPresent(Int.self, forKey: .confidence)
+    }
+
+    func resolvedEmailID(in emails: [EmailItem]) -> String? {
+        if !emailItemId.isEmpty, emails.contains(where: { $0.id == emailItemId }) {
+            return emailItemId
+        }
+        if !messageId.isEmpty,
+           let match = emails.first(where: { $0.account == account && $0.messageId == messageId }) {
+            return match.id
+        }
+        if !threadId.isEmpty,
+           let match = emails.first(where: { $0.account == account && $0.threadId == threadId }) {
+            return match.id
+        }
+        return nil
+    }
+}
+
+struct GmailDestination: Equatable {
+    static let nativeAppURL = URL(string: "googlegmail://")!
+
+    let exactMessageURL: URL
+    let accountHint: String
+
+    var exactMessageAccessibilityHint: String {
+        accountHint.isEmpty
+            ? "Opens the exact message in Gmail on the web."
+            : "Opens the exact message using the \(accountHint) Gmail account."
+    }
 }
 
 struct RuntimeStatus: Decodable, Equatable {

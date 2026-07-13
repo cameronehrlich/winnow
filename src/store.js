@@ -694,6 +694,7 @@ function summaryItem(event) {
   const email = event.email || {};
   return {
     eventId: event.id,
+    emailItemId: event.emailItemId || email.id || '',
     timestamp: event.timestamp,
     account: event.account,
     threadId: event.threadId || email.threadId || '',

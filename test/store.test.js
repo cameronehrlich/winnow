@@ -163,6 +163,7 @@ describe('daily action summary', () => {
     assert.equal(lifetime.counters.processed, 3);
     assert.equal(lifetime.recentActivity.length, 2);
     assert.equal(lifetime.recentActivity[0].timestamp, '2026-06-30T17:00:00.000Z');
+    assert.equal(lifetime.recentActivity[0].emailItemId, kept.id);
   });
 
   it('upserts Slack delivery records for the same email item', () => {

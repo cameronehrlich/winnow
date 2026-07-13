@@ -113,6 +113,7 @@ describe('local API', () => {
     assert.equal(lifetimeJson.scope, 'lifetime');
     assert.equal(lifetimeJson.counters.processed, 1);
     assert.ok(lifetimeJson.recentActivity.length > 0);
+    assert.equal(lifetimeJson.recentActivity[0].emailItemId, emailJson.items[0].id);
   });
 
   it('returns status and account routing metadata without secrets', async () => {

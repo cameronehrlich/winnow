@@ -1,10 +1,12 @@
 import SwiftUI
+import UIKit
 
 struct EmailDetailView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openURL) private var openURL
     let emailID: String
     @State private var confirmUnsubscribe = false
+    @State private var gmailAppAvailable = false
 
     private var item: EmailItem? { model.email(id: emailID) }
 
@@ -93,6 +95,7 @@ struct EmailDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task(id: emailID) {
             guard let item = model.email(id: emailID) else { return }
+            gmailAppAvailable = UIApplication.shared.canOpenURL(GmailDestination.nativeAppURL)
             await model.markReadWhenOpened(item)
         }
     }
@@ -119,12 +122,34 @@ struct EmailDetailView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
-            if let gmailURL = item.gmailURL {
-                Button { openURL(gmailURL) } label: {
-                    Label("Open in Gmail", systemImage: "arrow.up.right.square")
-                        .font(.subheadline.weight(.semibold))
+            if let destination = item.gmailDestination {
+                VStack(alignment: .leading, spacing: 9) {
+                    if gmailAppAvailable {
+                        Button { openURL(GmailDestination.nativeAppURL) } label: {
+                            Label("Open Gmail app", systemImage: "envelope.open.fill")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(WinnowDesign.indigo)
+
+                        Button { openURL(destination.exactMessageURL) } label: {
+                            Label("Open exact message", systemImage: "arrow.up.right.square")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+
+                        Text("Gmail does not document an iOS link that selects a message or account. The app opens its current account; the exact-message link uses \(destination.accountHint.isEmpty ? "your web Gmail session" : destination.accountHint) instead.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button { openURL(destination.exactMessageURL) } label: {
+                            Label("Open exact message", systemImage: "arrow.up.right.square")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityHint(destination.exactMessageAccessibilityHint)
+                    }
                 }
-                .buttonStyle(.bordered)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
