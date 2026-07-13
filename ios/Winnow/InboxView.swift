@@ -106,16 +106,7 @@ struct InboxView: View {
                 WinnowSettingsToolbarItem(action: openSettings)
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if model.accounts.count > 1 {
-                        Menu {
-                            Button("All Accounts") { account = "" }
-                            Divider()
-                            ForEach(model.accounts) { item in
-                                Button(item.email) { account = item.email }
-                            }
-                        } label: {
-                            Image(systemName: account.isEmpty ? "person.2" : "person.crop.circle")
-                        }
-                        .accessibilityLabel("Filter account")
+                        AccountFilterMenu(selection: $account, accounts: model.accounts)
                     }
                     ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
                 }
@@ -233,16 +224,11 @@ struct EmailSearchView: View {
                 WinnowSettingsToolbarItem(action: openSettings)
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if model.accounts.count > 1 {
-                        Menu {
-                            Button("All Accounts") { account = "" }
-                            Divider()
-                            ForEach(model.accounts) { item in
-                                Button(item.email) { account = item.email }
-                            }
-                        } label: {
-                            Image(systemName: account.isEmpty ? "person.2" : "person.crop.circle")
-                        }
-                        .accessibilityLabel("Filter search account")
+                        AccountFilterMenu(
+                            selection: $account,
+                            accounts: model.accounts,
+                            accessibilityLabel: "Filter search account"
+                        )
                     }
                     ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
                 }
@@ -300,16 +286,6 @@ struct EmailCard: View {
                             .lineLimit(2)
                     }
 
-                    if let action = item.meaningfulAction {
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: "arrow.turn.down.right")
-                                .foregroundStyle(WinnowDesign.brightIndigo)
-                            Text(action)
-                                .font(.caption.weight(item.isUnread ? .semibold : .regular))
-                                .foregroundStyle(item.isUnread ? .primary : .secondary)
-                                .lineLimit(2)
-                        }
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 78)

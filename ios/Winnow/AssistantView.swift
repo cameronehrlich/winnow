@@ -8,74 +8,31 @@ struct AssistantMailboxView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                if model.accounts.count > 1 {
-                    accountScopePicker
-                }
-
-                AssistantConversationView(
-                    configuration: model.configuration,
-                    scope: .mailbox,
-                    account: selectedAccount.nilIfEmpty,
-                    emailItemID: nil,
-                    contextTitle: nil,
-                    onMailboxChanged: { await model.refresh(silent: true) }
-                )
-                .id(selectedAccount)
-            }
+            AssistantConversationView(
+                configuration: model.configuration,
+                scope: .mailbox,
+                account: selectedAccount.nilIfEmpty,
+                emailItemID: nil,
+                contextTitle: nil,
+                onMailboxChanged: { await model.refresh(silent: true) }
+            )
+            .id(selectedAccount)
             .navigationTitle("Ask Winnow")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 WinnowSettingsToolbarItem(action: openSettings)
-            }
-        }
-    }
-
-    private var accountScopePicker: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                accountScopeButton(account: nil)
-                ForEach(model.accounts) { account in
-                    accountScopeButton(account: account)
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if model.accounts.count > 1 {
+                        AccountFilterMenu(
+                            selection: $selectedAccount,
+                            accounts: model.accounts,
+                            accessibilityLabel: "Choose accounts to search"
+                        )
+                    }
+                    ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
                 }
             }
-            .padding(.horizontal, 16)
         }
-        .scrollClipDisabled()
-        .padding(.vertical, 9)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .bottom) { Divider() }
-    }
-
-    private func accountScopeButton(account: AccountStatus?) -> some View {
-        let email = account?.email ?? ""
-        let isSelected = selectedAccount == email
-        return Button {
-            selectedAccount = email
-        } label: {
-            HStack(spacing: 7) {
-                if let account {
-                    AccountAvatarBadge(account: account, size: 22)
-                } else {
-                    Image(systemName: "person.2.fill")
-                        .font(.caption.weight(.semibold))
-                        .frame(width: 22, height: 22)
-                }
-                Text(account?.email ?? "All accounts")
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(isSelected ? Color.white : Color.primary)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 8)
-            .background(
-                isSelected ? AnyShapeStyle(WinnowDesign.heroGradient) : AnyShapeStyle(Color.primary.opacity(0.06)),
-                in: Capsule()
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(account == nil ? "Search all accounts" : "Search \(email)")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -107,12 +64,11 @@ struct AssistantConversationView: View {
     }
 
     var body: some View {
-        ZStack {
-            AppBackdrop()
+        VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 14) {
-                        scopeBanner
+                        scopeLabel
 
                         if viewModel.isLoading && viewModel.messages.isEmpty {
                             loadingState
@@ -169,14 +125,10 @@ struct AssistantConversationView: View {
                     }
                 }
             }
+
+            composer
         }
-        .safeAreaInset(edge: .bottom) { composer }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") { composerFocused = false }
-            }
-        }
+        .background { AppBackdrop() }
         .task { await viewModel.startIfNeeded() }
         .sheet(item: $reviewedProposal) { proposal in
             ProposalConfirmationView(
@@ -190,37 +142,25 @@ struct AssistantConversationView: View {
         }
     }
 
-    private var scopeBanner: some View {
-        HStack(alignment: .top, spacing: 11) {
-            Image(systemName: viewModel.scope == .email ? "envelope" : "tray.2")
-                .foregroundStyle(WinnowDesign.brightIndigo)
-                .frame(width: 24)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(viewModel.scope == .email ? "ASKING ABOUT THIS EMAIL" : "SEARCHING")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                Text(scopeDescription)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
-                if let contextTitle, !contextTitle.isEmpty {
-                    Text(contextTitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                }
-            }
-            Spacer()
-            Image(systemName: "lock.fill")
-                .font(.caption)
+    private var scopeLabel: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(viewModel.scope == .email ? "Asking about this email · \(scopeDescription)" : "Searching \(scopeDescription)")
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .accessibilityLabel("Private")
+                .lineLimit(1)
+            if let contextTitle, !contextTitle.isEmpty {
+                Text(contextTitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .winnowCard(padding: 14)
+        .padding(.horizontal, 4)
     }
 
     private var scopeDescription: String {
         if viewModel.scope == .email {
             return viewModel.account ?? "This email's account"
         }
-        return viewModel.account ?? "All Winnow Accounts"
+        return viewModel.account ?? "all accounts"
     }
 
     private var loadingState: some View {
@@ -304,7 +244,7 @@ struct AssistantConversationView: View {
                 .opacity(viewModel.isWorking ? 0.55 : 1)
                 .accessibilityLabel("Send message")
             }
-            Text("Email content is untrusted. Winnow always asks before sending or making persistent changes.")
+            Text("Winnow asks before sending or making persistent changes.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)

@@ -108,6 +108,26 @@ struct WinnowSettingsToolbarItem: ToolbarContent {
     }
 }
 
+struct AccountFilterMenu: View {
+    @Binding var selection: String
+    let accounts: [AccountStatus]
+    var accessibilityLabel = "Filter account"
+
+    var body: some View {
+        Menu {
+            Picker("Account", selection: $selection) {
+                Text("All Accounts").tag("")
+                ForEach(accounts) { account in
+                    Text(account.email).tag(account.email)
+                }
+            }
+        } label: {
+            Image(systemName: selection.isEmpty ? "person.2" : "person.crop.circle")
+        }
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
 struct SenderAvatar: View {
     let initials: String
     let seed: String
