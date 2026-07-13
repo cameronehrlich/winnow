@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { loadConfig } from './config.js';
+import { getAssistantModelName, loadConfig } from './config.js';
 
 const MAX_CONTEXT_CHARS = 24000;
 const MAX_OUTPUT_CHARS = 12000;
@@ -117,7 +117,7 @@ export class GeminiAssistantModel {
   async respond(input) {
     const config = loadConfig();
     const model = this.#client.getGenerativeModel({
-      model: config.model?.assistant_name || config.model?.name || 'gemini-2.0-flash',
+      model: getAssistantModelName(config),
       systemInstruction: ASSISTANT_SYSTEM_PROMPT,
       generationConfig: { responseMimeType: 'application/json' },
     });

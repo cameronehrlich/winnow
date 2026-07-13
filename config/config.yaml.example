@@ -39,7 +39,8 @@ reconcile:
 
 # AI model configuration (uses GEMINI_API_KEY env var)
 model:
-  name: gemini-2.5-flash
+  classification_name: gemini-3.1-flash-lite
+  assistant_name: gemini-3.5-flash
 
 # Scan settings
 scan:

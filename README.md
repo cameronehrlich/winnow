@@ -93,7 +93,8 @@ slack:
   # account-level slack tokens override these for separate workspaces
 
 model:
-  name: gemini-2.5-flash
+  classification_name: gemini-3.1-flash-lite
+  assistant_name: gemini-3.5-flash
 
 feed: true  # post every processed email to Slack
 
@@ -101,6 +102,11 @@ scan:
   max_messages: 50
   search_query: "in:inbox is:unread newer_than:1d"
 ```
+
+Winnow keeps its high-volume classification/summarization path separate from the conversational assistant.
+`classification_name` controls scan-time triage; `assistant_name` controls mailbox questions and agentic tools.
+The legacy shared `model.name` key remains supported as a fallback for existing installations; setting the two
+specific keys is recommended so each workload can be tuned independently.
 
 Set credentials in `.env`:
 

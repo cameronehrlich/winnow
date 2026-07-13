@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { loadConfig } from './config.js';
+import { getClassificationModelName, loadConfig } from './config.js';
 import { normalizeMessageContent } from './message-content.js';
 import { loadAllRules, formatRulesForPrompt } from './rules.js';
 
@@ -139,7 +139,7 @@ export async function classifyEmail(email, { account } = {}) {
 
   const userPrompt = buildClassificationPrompt(email, rulesText);
 
-  const modelName = config.model?.name || 'gemini-2.0-flash';
+  const modelName = getClassificationModelName(config);
   const model = getClient().getGenerativeModel({
     model: modelName,
     systemInstruction: SYSTEM_PROMPT,

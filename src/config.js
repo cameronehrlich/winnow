@@ -146,6 +146,27 @@ export function getScanSearchQuery(config = loadConfig()) {
   return config.scan?.search_query || 'in:inbox is:unread newer_than:1d';
 }
 
+export const DEFAULT_CLASSIFICATION_MODEL = 'gemini-3.1-flash-lite';
+export const DEFAULT_ASSISTANT_MODEL = 'gemini-3.5-flash';
+
+function configuredModelName(value, fallback) {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+export function getClassificationModelName(config = loadConfig()) {
+  return configuredModelName(
+    config.model?.classification_name,
+    configuredModelName(config.model?.name, DEFAULT_CLASSIFICATION_MODEL)
+  );
+}
+
+export function getAssistantModelName(config = loadConfig()) {
+  return configuredModelName(
+    config.model?.assistant_name,
+    configuredModelName(config.model?.name, DEFAULT_ASSISTANT_MODEL)
+  );
+}
+
 export function getChannelForAccount(email) {
   return getSlackRoutingForAccount(email).channelId;
 }

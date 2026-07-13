@@ -4,6 +4,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  DEFAULT_ASSISTANT_MODEL,
+  DEFAULT_CLASSIFICATION_MODEL,
+  getAssistantModelName,
+  getClassificationModelName,
   getSlackActionRoutings,
   getSlackRoutingForAccount,
   getScanSearchQuery,
@@ -33,6 +37,44 @@ slack:
   feed_mode: all
 `, 'utf8');
   reloadConfig();
+});
+
+describe('AI model routing', () => {
+  it('uses separate durable defaults for classification and the assistant', () => {
+    assert.equal(DEFAULT_CLASSIFICATION_MODEL, 'gemini-3.1-flash-lite');
+    assert.equal(DEFAULT_ASSISTANT_MODEL, 'gemini-3.5-flash');
+    assert.equal(getClassificationModelName({}), 'gemini-3.1-flash-lite');
+    assert.equal(getAssistantModelName({}), 'gemini-3.5-flash');
+  });
+
+  it('allows each model path to be overridden independently', () => {
+    const config = {
+      model: {
+        classification_name: 'classification-test-model',
+        assistant_name: 'assistant-test-model',
+      },
+    };
+    assert.equal(getClassificationModelName(config), 'classification-test-model');
+    assert.equal(getAssistantModelName(config), 'assistant-test-model');
+  });
+
+  it('supports the legacy shared name as a backwards-compatible fallback', () => {
+    const legacy = { model: { name: 'legacy-shared-model' } };
+    assert.equal(getClassificationModelName(legacy), 'legacy-shared-model');
+    assert.equal(getAssistantModelName(legacy), 'legacy-shared-model');
+  });
+
+  it('prefers path-specific names over the legacy shared fallback', () => {
+    const config = {
+      model: {
+        name: 'legacy-shared-model',
+        classification_name: 'classification-test-model',
+        assistant_name: 'assistant-test-model',
+      },
+    };
+    assert.equal(getClassificationModelName(config), 'classification-test-model');
+    assert.equal(getAssistantModelName(config), 'assistant-test-model');
+  });
 });
 
 afterEach(() => {
