@@ -13,6 +13,7 @@ import { getRuntimeStatus, listAccountStatus } from './status.js';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_INFO = { name: 'winnow', version: '1.0.0' };
+const SCAN_BOOLEAN_KEYS = ['postToFeed', 'runHooks', 'sendPush'];
 
 function jsonSchema(properties = {}, required = []) {
   return {
@@ -133,6 +134,33 @@ function requireEmail(id) {
   return item;
 }
 
+function argumentError(message) {
+  return Object.assign(new Error(message), { code: 'invalid_arguments' });
+}
+
+function optionalBoolean(args, key, fallback = undefined) {
+  if (args[key] === undefined) return fallback;
+  if (typeof args[key] !== 'boolean') throw argumentError(`${key} must be a boolean`);
+  return args[key];
+}
+
+function validateScanArguments(args = {}) {
+  const configuredAccounts = getAccounts().map(account => account.email);
+  if (args.account !== undefined && (typeof args.account !== 'string' || !configuredAccounts.includes(args.account))) {
+    throw argumentError('account must be one of the configured accounts');
+  }
+  if (args.searchQuery !== undefined && (
+    typeof args.searchQuery !== 'string'
+    || !args.searchQuery.trim()
+    || args.searchQuery.length > 1000
+  )) {
+    throw argumentError('searchQuery must be a non-empty string up to 1000 characters');
+  }
+  optionalBoolean(args, 'dryRun', true);
+  for (const key of SCAN_BOOLEAN_KEYS) optionalBoolean(args, key);
+  return configuredAccounts;
+}
+
 async function mutateEmail(id, action, reason = '') {
   const item = requireEmail(id);
   const handlers = {
@@ -187,12 +215,13 @@ async function unsubscribeEmail(id) {
 }
 
 async function runScanTool(args = {}) {
-  const dryRun = args.dryRun !== undefined ? Boolean(args.dryRun) : true;
-  const accounts = args.account ? [args.account] : getAccounts().map(account => account.email);
+  const configuredAccounts = validateScanArguments(args);
+  const dryRun = optionalBoolean(args, 'dryRun', true);
+  const accounts = args.account ? [args.account] : configuredAccounts;
   const scanOpts = { dryRun };
   if (args.searchQuery) scanOpts.searchQuery = args.searchQuery;
-  for (const key of ['postToFeed', 'runHooks', 'sendPush']) {
-    if (args[key] !== undefined) scanOpts[key] = Boolean(args[key]);
+  for (const key of SCAN_BOOLEAN_KEYS) {
+    if (args[key] !== undefined) scanOpts[key] = args[key];
   }
 
   const results = [];
@@ -260,6 +289,7 @@ async function handleSingleMessage(message) {
   } catch (err) {
     if (err.code === 'email_not_found') return failure(id, -32004, 'email_not_found');
     if (err.code === 'unknown_tool') return failure(id, -32602, err.message);
+    if (err.code === 'invalid_arguments') return failure(id, -32602, err.message);
     return failure(id, -32000, err.message);
   }
 }

@@ -212,6 +212,47 @@ describe('local API', () => {
     assert.equal((await primitive.json()).error.code, -32600);
   });
 
+  it('rejects unsafe MCP scan arguments instead of coercing them', async () => {
+    const headers = {
+      Authorization: 'Bearer test-token',
+      'Content-Type': 'application/json',
+    };
+
+    const invalidBoolean = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 20,
+        method: 'tools/call',
+        params: {
+          name: 'winnow_scan',
+          arguments: { dryRun: false, postToFeed: 'false' },
+        },
+      }),
+    });
+    const invalidBooleanJson = await invalidBoolean.json();
+    assert.equal(invalidBooleanJson.error.code, -32602);
+    assert.match(invalidBooleanJson.error.message, /postToFeed must be a boolean/);
+
+    const invalidAccount = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 21,
+        method: 'tools/call',
+        params: {
+          name: 'winnow_scan',
+          arguments: { account: 'other@example.com' },
+        },
+      }),
+    });
+    const invalidAccountJson = await invalidAccount.json();
+    assert.equal(invalidAccountJson.error.code, -32602);
+    assert.match(invalidAccountJson.error.message, /configured accounts/);
+  });
+
   it('reports mailto unsubscribe as manual and deduplicates repeat taps', async () => {
     const headers = { Authorization: 'Bearer test-token' };
     const feed = await fetch(`${baseUrl}/v1/emails?limit=1`, { headers });
