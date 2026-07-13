@@ -6,7 +6,6 @@ struct EmailDetailView: View {
     @Environment(\.openURL) private var openURL
     let emailID: String
     @State private var confirmUnsubscribe = false
-    @State private var assistantPresented = false
 
     private var item: EmailItem? { model.email(id: emailID) }
 
@@ -18,7 +17,13 @@ struct EmailDetailView: View {
         ZStack {
             AppBackdrop()
             if let item {
-                ScrollView {
+                EmailAssistantThreadView(
+                    configuration: model.configuration,
+                    account: item.account,
+                    emailItemID: item.id,
+                    contextTitle: item.subject,
+                    onMailboxChanged: { await model.refresh(silent: true) }
+                ) {
                     VStack(spacing: 16) {
                         senderHeader(item)
 
@@ -36,34 +41,12 @@ struct EmailDetailView: View {
                             InsightBlock(title: "Message preview", symbol: "quote.opening", text: item.snippet, color: .secondary)
                         }
 
-                        Button { assistantPresented = true } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "sparkles")
-                                    .font(.title3.weight(.semibold))
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Ask Winnow").font(.headline)
-                                    Text("Ask a question, draft a reply, or handle future messages.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(16)
-                            .background(WinnowDesign.brightIndigo.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-
                         if item.unsubscribeState == "succeeded" {
                             InsightBlock(title: "Unsubscribed", symbol: "checkmark.circle.fill", text: "Winnow completed the unsubscribe request.", color: WinnowDesign.mint)
                         } else if item.unsubscribeState == "attempted" {
                             InsightBlock(title: "Manual step needed", symbol: "envelope.badge", text: "This sender requires an email-based unsubscribe. Open the message in Gmail to finish.", color: WinnowDesign.amber)
                         }
-
-                        Spacer(minLength: 24)
                     }
-                    .padding(16)
                 }
                 .confirmationDialog(
                     "Unsubscribe from this sender?",
@@ -83,29 +66,6 @@ struct EmailDetailView: View {
         }
         .navigationTitle("Email")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $assistantPresented) {
-            NavigationStack {
-                if let item {
-                    AssistantConversationView(
-                        configuration: model.configuration,
-                        scope: .email,
-                        account: item.account,
-                        emailItemID: item.id,
-                        contextTitle: item.subject,
-                        onMailboxChanged: { await model.refresh(silent: true) }
-                    )
-                    .navigationTitle("Ask Winnow")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("Done") { assistantPresented = false }
-                        }
-                    }
-                } else {
-                    ContentUnavailableView("Email unavailable", systemImage: "envelope.badge")
-                }
-            }
-        }
         .task(id: emailID) {
             guard let item = model.email(id: emailID) else { return }
             await model.markReadWhenOpened(item)

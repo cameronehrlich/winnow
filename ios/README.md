@@ -7,7 +7,7 @@ A personal, native SwiftUI client for Winnow. V1 keeps the useful, dynamic parts
 - Separate Inbox and Archived tabs, each with account filtering and its own search
 - Compact cards with bold unread typography, quieter read messages, and Gmail account-photo badges
 - Swipe right from Inbox to archive; swipe left from Archived to restore
-- Winnow's summary and meaningful recommended action in the feed, with deadline, impact, handling, reason, and confidence in detail
+- One Winnow summary in detail, followed by a compact next-step, deadline, impact, handling, and confidence card
 - Opening an in-app detail marks the message read; manual read/unread remains available in detail
 - A safe confirmation step and truthful manual-action state for unsubscribe flows
 - One account-aware **Open in Gmail** action on every email detail
@@ -18,7 +18,7 @@ A personal, native SwiftUI client for Winnow. V1 keeps the useful, dynamic parts
 - Inbox app-icon/tab badges plus a "new since viewed" Archived tab badge
 - Small and medium Inbox widgets with current attention count and email deep links
 - A global Ask tab for mailbox questions and search, with an explicit account scope
-- A contextual Ask Winnow sheet on every email for questions, drafting, unsubscribe, and future-mail handling
+- A persistent inline Winnow conversation on every email for questions, drafting, unsubscribe, and future-mail handling
 - Evidence cards, draft review/revision, and exact confirmation sheets for persistent or outbound actions
 - Loading, empty, offline, and action-error states
 - Server URL in preferences and bearer token in the iOS Keychain
@@ -112,6 +112,6 @@ while keeping each registered device token's environment explicit.
 - Slack remains a notification fallback if APNs credentials are not installed.
 - Gmail does not publish its exact-conversation iOS URL contract. Winnow uses Gmail's one-based account slot from `gmail_app_account_id`; keep that value aligned with the account order inside the Gmail app. Devices without Gmail fall back to the exact account-hinted web URL.
 - The normal feed keeps email bodies in Gmail and shows bounded snippets and structured triage fields. Ask Winnow fetches a bounded thread excerpt on demand and sends it to the configured Gemini model, but does not persist the incoming raw body in assistant tables.
-- Assistant conversations are current-session UI in V1; there is no conversation-history picker yet.
+- Each email reopens its canonical Winnow conversation and saved history; there is no general conversation-history picker yet.
 - Draft changes are requested conversationally. There is no direct rich-text draft editor in V1.
 - This is deliberately personal-use infrastructure: no user accounts, onboarding service, analytics, or multi-tenant product work.
