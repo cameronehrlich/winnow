@@ -135,7 +135,7 @@ struct InboxView: View {
     }
 
     private func perform(_ action: EmailAction, on item: EmailItem) {
-        Task { _ = await model.perform(action, on: item) }
+        Task { _ = await model.perform(action, on: item, optimisticDelay: .milliseconds(140)) }
     }
 }
 
@@ -197,7 +197,13 @@ struct EmailSearchView: View {
                             .listRowBackground(Color.clear)
                             .swipeActions(edge: mailbox.swipeEdge, allowsFullSwipe: true) {
                                 Button {
-                                    Task { _ = await model.perform(mailbox.primaryAction, on: item) }
+                                    Task {
+                                        _ = await model.perform(
+                                            mailbox.primaryAction,
+                                            on: item,
+                                            optimisticDelay: .milliseconds(140)
+                                        )
+                                    }
                                 } label: {
                                     Label(mailbox.primaryAction.label, systemImage: mailbox.primaryAction.systemImage)
                                 }

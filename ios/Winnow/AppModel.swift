@@ -180,26 +180,41 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func perform(_ action: EmailAction, on item: EmailItem, showsConfirmation: Bool = true) async -> Bool {
+    func perform(
+        _ action: EmailAction,
+        on item: EmailItem,
+        showsConfirmation: Bool = true,
+        optimisticDelay: Duration = .zero
+    ) async -> Bool {
         guard !performingEmailIDs.contains(item.id) else { return false }
         let originalItem = email(id: item.id) ?? item
         let appliesOptimistically = action.supportsOptimisticUpdate
+        async let actionResponse = APIClient(configuration: configuration).perform(action, emailID: item.id)
 
         performingEmailIDs.insert(item.id)
         defer { performingEmailIDs.remove(item.id) }
 
         if appliesOptimistically {
+            if optimisticDelay > .zero {
+                do {
+                    try await Task.sleep(for: optimisticDelay)
+                } catch {
+                    return false
+                }
+            }
             refreshGeneration &+= 1
             pendingOptimisticActions[item.id] = action
-            applyOptimistic(action, to: item.id)
-            publishEmailState()
+            withAnimation(.snappy(duration: 0.3, extraBounce: 0)) {
+                applyOptimistic(action, to: item.id)
+                publishEmailState()
+            }
             if showsConfirmation {
                 toast = ToastMessage(text: successMessage(for: action), symbol: action.systemImage)
             }
         }
 
         do {
-            let response = try await APIClient(configuration: configuration).perform(action, emailID: item.id)
+            let response = try await actionResponse
             pendingOptimisticActions.removeValue(forKey: item.id)
             refreshGeneration &+= 1
             if let updated = response.item {
@@ -230,8 +245,10 @@ final class AppModel: ObservableObject {
             if appliesOptimistically {
                 pendingOptimisticActions.removeValue(forKey: item.id)
                 refreshGeneration &+= 1
-                replace(originalItem)
-                publishEmailState()
+                withAnimation(.snappy(duration: 0.3, extraBounce: 0)) {
+                    replace(originalItem)
+                    publishEmailState()
+                }
                 toast = nil
             }
             presentedError = PresentedError(title: "Action failed", message: error.localizedDescription)
