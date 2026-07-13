@@ -421,6 +421,8 @@ curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
 curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
   "http://127.0.0.1:3777/v1/summaries/daily?date=2026-06-29"
 curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
+  "http://127.0.0.1:3777/v1/summaries/lifetime?recentLimit=25"
+curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
   "http://127.0.0.1:3777/v1/emails?state=all&limit=50"
 ```
 
@@ -435,7 +437,7 @@ POST /v1/emails/:id/mark-unread
 POST /v1/emails/:id/unsubscribe
 ```
 
-Successful actions return `{ ok, action, item }`, with the refreshed item included so clients do not need to guess local state. Items also expose `unsubscribeState` (`available`, `succeeded`, `attempted`, `failed`, or `unavailable`). Unsubscribe responses add `outcome` and `requiresManualAction`; mailto links are reported as attempted/manual rather than falsely reported as complete, and repeated completed attempts are deduplicated across the API and Slack. `GET /v1/bootstrap` returns the configured accounts, defaults, and server capabilities. APNs device registration is scaffolded, but push delivery remains disabled until credentials and dispatch are deliberately enabled; the V1 app should refresh or poll.
+Successful actions return `{ ok, action, item }`, with the refreshed item included so clients do not need to guess local state. Items also expose `unsubscribeState` (`available`, `succeeded`, `attempted`, `failed`, or `unavailable`). Unsubscribe responses add `outcome` and `requiresManualAction`; mailto links are reported as attempted/manual rather than falsely reported as complete, and repeated completed attempts are deduplicated across the API and Slack. `GET /v1/summaries/lifetime` returns all-time action counters plus bounded recent activity for the Stats tab. `GET /v1/bootstrap` returns the configured accounts, defaults, and server capabilities. APNs device registration is scaffolded, but push delivery remains disabled until credentials and dispatch are deliberately enabled; the V1 app should refresh or poll.
 
 `POST /v1/scans` defaults to `dryRun: true`; pass `{"dryRun": false}` only when an API client should apply Gmail/Slack side effects.
 The same bearer token also protects `/mcp`, a Streamable-HTTP-style JSON-RPC endpoint exposing Winnow status, account routing, email lists, summaries, events, dry-run scans, and email actions as MCP tools.

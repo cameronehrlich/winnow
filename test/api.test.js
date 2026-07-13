@@ -106,6 +106,13 @@ describe('local API', () => {
     const summaryJson = await summary.json();
     assert.equal(summaryJson.counters.processed, 1);
     assert.equal(summaryJson.counters.kept, 1);
+
+    const lifetime = await fetch(`${baseUrl}/v1/summaries/lifetime?recentLimit=5`, { headers });
+    assert.equal(lifetime.status, 200);
+    const lifetimeJson = await lifetime.json();
+    assert.equal(lifetimeJson.scope, 'lifetime');
+    assert.equal(lifetimeJson.counters.processed, 1);
+    assert.ok(lifetimeJson.recentActivity.length > 0);
   });
 
   it('returns status and account routing metadata without secrets', async () => {

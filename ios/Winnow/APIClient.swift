@@ -75,6 +75,12 @@ struct APIClient {
         return try await request(path: "/v1/summaries/daily", queryItems: query)
     }
 
+    func lifetimeSummary(account: String = "", recentLimit: Int = 25) async throws -> LifetimeSummary {
+        var query = [URLQueryItem(name: "recentLimit", value: String(recentLimit))]
+        if !account.isEmpty { query.append(URLQueryItem(name: "account", value: account)) }
+        return try await request(path: "/v1/summaries/lifetime", queryItems: query)
+    }
+
     func perform(_ action: EmailAction, emailID: String) async throws -> ActionResponse {
         let encodedID = emailID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? emailID
         return try await request(path: "/v1/emails/\(encodedID)/\(action.rawValue)", method: "POST")

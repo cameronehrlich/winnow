@@ -708,17 +708,19 @@ function summaryItem(event) {
   };
 }
 
-export function getDailyActionSummary({ date = localDateString(Date.now()), account = '', timeZone = LA_TIME_ZONE } = {}) {
-  const events = getDb().prepare(`
+function listActionSummaryEvents({ account = '', date = '', timeZone = LA_TIME_ZONE } = {}) {
+  return getDb().prepare(`
     SELECT ${EVENT_JOIN_SELECT}
     FROM events e
     LEFT JOIN email_items i ON i.id = e.email_item_id
     ORDER BY e.id ASC
   `).all().map(rowToEvent).filter(event => {
     if (account && event.account !== account) return false;
-    return localDateString(event.timestamp, timeZone) === date;
+    return !date || localDateString(event.timestamp, timeZone) === date;
   });
+}
 
+function summarizeActionEvents(events, { date, account, timeZone }) {
   const summary = {
     date,
     timeZone,
@@ -786,6 +788,36 @@ export function getDailyActionSummary({ date = localDateString(Date.now()), acco
   }
 
   return summary;
+}
+
+export function getDailyActionSummary({ date = localDateString(Date.now()), account = '', timeZone = LA_TIME_ZONE } = {}) {
+  const events = listActionSummaryEvents({ account, date, timeZone });
+  return summarizeActionEvents(events, { date, account, timeZone });
+}
+
+export function getLifetimeActionSummary({ account = '', timeZone = LA_TIME_ZONE, recentLimit = 25 } = {}) {
+  const boundedRecentLimit = Math.min(Math.max(Number(recentLimit) || 25, 1), 100);
+  const events = listActionSummaryEvents({ account, timeZone });
+  const summary = summarizeActionEvents(events, { date: 'lifetime', account, timeZone });
+  const recentActivityTypes = new Set([
+    'email.kept',
+    'email.auto_archived',
+    'email.manual_archived',
+    'email.restored_to_inbox',
+    'email.unsubscribed',
+    'email.unsubscribe_attempted',
+    'email.unsubscribe_failed',
+  ]);
+  return {
+    scope: 'lifetime',
+    timeZone,
+    account: account || 'all',
+    counters: summary.counters,
+    recentActivity: summary.lists.actedOn
+      .filter(item => recentActivityTypes.has(item.actionType))
+      .slice(-boundedRecentLimit)
+      .reverse(),
+  };
 }
 
 function importLegacyStateOnce() {

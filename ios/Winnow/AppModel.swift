@@ -6,6 +6,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var configuration: ServerConfiguration
     @Published private(set) var emails: [EmailItem] = []
     @Published private(set) var summary: DailySummary = .empty
+    @Published private(set) var lifetimeSummary: LifetimeSummary = .empty
     @Published private(set) var status: RuntimeStatus?
     @Published private(set) var accounts: [AccountStatus] = []
     @Published private(set) var isLoading = false
@@ -52,20 +53,25 @@ final class AppModel: ObservableObject {
 
         let client = APIClient(configuration: configuration)
         do {
-            async let fetchedEmails = client.emails(limit: 200)
+            async let fetchedInbox = client.emails(state: "inbox", limit: 200)
+            async let fetchedArchived = client.emails(state: "archived", limit: 200)
             async let fetchedSummary = client.dailySummary()
+            async let fetchedLifetimeSummary = client.lifetimeSummary()
             async let fetchedStatus = client.status()
             async let fetchedAccounts = client.accounts()
 
-            let (emailPage, dailySummary, runtimeStatus, accountList) = try await (
-                fetchedEmails,
+            let (inboxPage, archivedPage, dailySummary, lifetime, runtimeStatus, accountList) = try await (
+                fetchedInbox,
+                fetchedArchived,
                 fetchedSummary,
+                fetchedLifetimeSummary,
                 fetchedStatus,
                 fetchedAccounts
             )
             guard generation == refreshGeneration else { return }
-            emails = emailPage.items
+            emails = inboxPage.items + archivedPage.items
             summary = dailySummary
+            lifetimeSummary = lifetime
             status = runtimeStatus
             accounts = accountList
             lastRefresh = Date()
@@ -131,6 +137,7 @@ final class AppModel: ObservableObject {
             configuration = ServerConfiguration(serverURL: "", token: "")
             emails = []
             summary = .empty
+            lifetimeSummary = .empty
             status = nil
             accounts = []
             hasLoaded = false
@@ -140,7 +147,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func perform(_ action: EmailAction, on item: EmailItem) async -> Bool {
+    func perform(_ action: EmailAction, on item: EmailItem, showsConfirmation: Bool = true) async -> Bool {
         guard !performingEmailIDs.contains(item.id) else { return false }
         performingEmailIDs.insert(item.id)
         defer { performingEmailIDs.remove(item.id) }
@@ -167,12 +174,19 @@ final class AppModel: ObservableObject {
                 )
                 return true
             }
-            toast = ToastMessage(text: successMessage(for: action), symbol: action.systemImage)
+            if showsConfirmation {
+                toast = ToastMessage(text: successMessage(for: action), symbol: action.systemImage)
+            }
             return true
         } catch {
             presentedError = PresentedError(title: "Action failed", message: error.localizedDescription)
             return false
         }
+    }
+
+    func markReadWhenOpened(_ item: EmailItem) async {
+        guard item.isUnread else { return }
+        _ = await perform(.markRead, on: item, showsConfirmation: false)
     }
 
     func startAutoRefresh() {

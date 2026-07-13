@@ -10,6 +10,7 @@ import {
   configureDatabaseForTests,
   ensureStore,
   getDailyActionSummary,
+  getLifetimeActionSummary,
   listDeliveryRecords,
   recordDelivery,
   upsertEmailItemFromResult,
@@ -148,6 +149,20 @@ describe('daily action summary', () => {
     assert.equal(summary.lists.kept.length, 1);
     assert.equal(summary.lists.restored.length, 1);
     assert.equal(summary.lists.unsubscribed.length, 1);
+
+    appendEmailEvent('email.scanned', kept, {
+      source: 'test',
+      timestamp: '2026-06-30T17:00:00.000Z',
+    });
+    appendEmailEvent('email.kept', kept, {
+      source: 'test',
+      timestamp: '2026-06-30T17:00:00.000Z',
+    });
+    const lifetime = getLifetimeActionSummary({ recentLimit: 2 });
+    assert.equal(lifetime.scope, 'lifetime');
+    assert.equal(lifetime.counters.processed, 3);
+    assert.equal(lifetime.recentActivity.length, 2);
+    assert.equal(lifetime.recentActivity[0].timestamp, '2026-06-30T17:00:00.000Z');
   });
 
   it('upserts Slack delivery records for the same email item', () => {

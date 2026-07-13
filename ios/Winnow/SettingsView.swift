@@ -20,7 +20,6 @@ struct SettingsView: View {
                                 Text("Private, direct, and fast").font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
                         }
                         .padding(.vertical, 5)
                     }
@@ -72,18 +71,52 @@ struct SettingsView: View {
                         .disabled(model.isLoading || serverURL.isEmpty || token.isEmpty)
                     }
 
-                    if !model.accounts.isEmpty {
-                        Section("Managed Accounts") {
+                    if model.status != nil || !model.accounts.isEmpty {
+                        Section {
+                            HStack(spacing: 12) {
+                                Image(systemName: "waveform.path.ecg")
+                                    .foregroundStyle(WinnowDesign.indigo)
+                                    .frame(width: 24)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Winnow service")
+                                        .font(.subheadline.weight(.semibold))
+                                    if let lastScan = model.status?.scans.lastScanTime?.winnowSettingsDate {
+                                        Text("Last scan \(lastScan.relativeWinnowTime)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
+                            }
+
                             ForEach(model.accounts) { account in
-                                HStack {
-                                    Image(systemName: "envelope").foregroundStyle(WinnowDesign.indigo)
-                                    Text(account.email).lineLimit(1)
+                                HStack(spacing: 12) {
+                                    Circle()
+                                        .fill(account.scan.lastScanAt == nil ? Color.secondary : WinnowDesign.mint)
+                                        .frame(width: 8, height: 8)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(account.email)
+                                            .font(.subheadline)
+                                            .lineLimit(1)
+                                        if let processed = account.scan.lastScanProcessed {
+                                            Text("\(processed) handled in latest scan")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
                                     Spacer()
                                     if let date = account.scan.lastScanAt?.winnowSettingsDate {
-                                        Text(date.relativeWinnowTime).font(.caption).foregroundStyle(.secondary)
+                                        Text(date.relativeWinnowTime)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
                                     }
                                 }
                             }
+                        } header: {
+                            Text("Managed Accounts")
+                        } footer: {
+                            Text("Service health and per-account scan activity are shown together here.")
                         }
                     }
 

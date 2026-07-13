@@ -91,6 +91,10 @@ struct EmailDetailView: View {
         }
         .navigationTitle("Email")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: emailID) {
+            guard let item = model.email(id: emailID) else { return }
+            await model.markReadWhenOpened(item)
+        }
     }
 
     private func senderHeader(_ item: EmailItem) -> some View {

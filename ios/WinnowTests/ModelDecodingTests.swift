@@ -19,6 +19,7 @@ final class ModelDecodingTests: XCTestCase {
         let item = try JSONDecoder().decode(EmailItem.self, from: json)
         XCTAssertEqual(item.subject, "Hello")
         XCTAssertTrue(item.isUnread)
+        XCTAssertEqual(item.meaningfulAction, "Reply")
         XCTAssertEqual(item.gmailURL?.host, "mail.google.com")
         XCTAssertTrue(item.gmailURL?.absoluteString.contains("authuser=me@example.com") == true)
     }
@@ -28,5 +29,36 @@ final class ModelDecodingTests: XCTestCase {
         let item = try JSONDecoder().decode(EmailItem.self, from: json)
         XCTAssertEqual(item.readState, "read")
         XCTAssertEqual(item.mailboxState, "unknown")
+        XCTAssertNil(item.meaningfulAction)
+    }
+
+    func testNoActionLanguageIsHiddenFromCompactCards() throws {
+        let json = #"{"id":"abc","action":"No action needed from the user."}"#.data(using: .utf8)!
+        let item = try JSONDecoder().decode(EmailItem.self, from: json)
+        XCTAssertNil(item.meaningfulAction)
+    }
+
+    func testLifetimeSummaryDecodesStatsAndRecentActivity() throws {
+        let json = #"""
+        {
+          "scope":"lifetime","timeZone":"America/Los_Angeles","account":"all",
+          "counters":{
+            "processed":42,"kept":12,"autoArchived":30,"manualArchived":2,
+            "restoredToInbox":1,"unsubscribedSucceeded":4,"unsubscribedFailed":0,
+            "unsubscribedAttempted":1,"ephemeral":3,"lowConfidenceKept":2
+          },
+          "recentActivity":[{
+            "eventId":7,"timestamp":"2026-07-13T10:00:00.000Z","account":"me@example.com",
+            "threadId":"t1","messageId":"m1","from":"Sender","subject":"Update",
+            "summary":"Summary","actionType":"email.auto_archived","source":"scan",
+            "reason":"Routine update","confidence":95
+          }]
+        }
+        """#.data(using: .utf8)!
+
+        let summary = try JSONDecoder().decode(LifetimeSummary.self, from: json)
+        XCTAssertEqual(summary.counters.processed, 42)
+        XCTAssertEqual(summary.counters.totalArchived, 32)
+        XCTAssertEqual(summary.recentActivity.first?.actionType, "email.auto_archived")
     }
 }

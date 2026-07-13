@@ -40,6 +40,13 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         !unsubscribeLink.isEmpty && !["succeeded", "attempted"].contains(unsubscribeState)
     }
     var isUnread: Bool { readState == "unread" }
+    var meaningfulAction: String? {
+        let value = action.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = value.lowercased()
+        guard !value.isEmpty else { return nil }
+        let noActionPhrases = ["no action", "nothing required", "none required", "not required"]
+        return noActionPhrases.contains(where: normalized.contains) ? nil : value
+    }
 
     var senderDisplayName: String {
         if !fromName.isEmpty { return fromName }
@@ -128,6 +135,22 @@ struct DailySummary: Decodable, Equatable {
         account: "all",
         counters: .empty,
         lists: .empty
+    )
+}
+
+struct LifetimeSummary: Decodable, Equatable {
+    let scope: String
+    let timeZone: String
+    let account: String
+    let counters: SummaryCounters
+    let recentActivity: [SummaryItem]
+
+    static let empty = LifetimeSummary(
+        scope: "lifetime",
+        timeZone: "America/Los_Angeles",
+        account: "all",
+        counters: .empty,
+        recentActivity: []
     )
 }
 

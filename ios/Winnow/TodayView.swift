@@ -1,9 +1,9 @@
 import SwiftUI
 
-struct TodayView: View {
+struct StatsView: View {
     @EnvironmentObject private var model: AppModel
 
-    private let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
     var body: some View {
         NavigationStack {
@@ -11,27 +11,50 @@ struct TodayView: View {
                 AppBackdrop()
                 ScrollView {
                     VStack(spacing: 18) {
-                        summaryHero
+                        lifetimeHero
 
-                        LazyVGrid(columns: columns, spacing: 12) {
-                            MetricCard(title: "Kept", value: model.summary.counters.kept, symbol: "tray", color: WinnowDesign.mint)
-                            MetricCard(title: "Archived", value: model.summary.counters.totalArchived, symbol: "archivebox", color: WinnowDesign.amber)
-                            MetricCard(title: "Unsubscribed", value: model.summary.counters.unsubscribedSucceeded, symbol: "person.crop.circle.badge.minus", color: WinnowDesign.rose)
-                            MetricCard(title: "Restored", value: model.summary.counters.restoredToInbox, symbol: "arrow.uturn.backward", color: WinnowDesign.brightIndigo)
+                        LazyVGrid(columns: columns, spacing: 10) {
+                            MetricCard(
+                                title: "Auto-handled",
+                                value: model.lifetimeSummary.counters.autoArchived,
+                                symbol: "wand.and.stars",
+                                color: WinnowDesign.amber
+                            )
+                            MetricCard(
+                                title: "Kept for you",
+                                value: model.lifetimeSummary.counters.kept,
+                                symbol: "tray.full",
+                                color: WinnowDesign.mint
+                            )
+                            MetricCard(
+                                title: "Unsubscribed",
+                                value: model.lifetimeSummary.counters.unsubscribedSucceeded,
+                                symbol: "person.crop.circle.badge.minus",
+                                color: WinnowDesign.rose
+                            )
+                            MetricCard(
+                                title: "Restored",
+                                value: model.lifetimeSummary.counters.restoredToInbox,
+                                symbol: "arrow.uturn.backward",
+                                color: WinnowDesign.brightIndigo
+                            )
                         }
 
-                        runtimeCard
+                        todayCard
 
-                        if !model.summary.lists.actedOn.isEmpty {
-                            VStack(alignment: .leading, spacing: 12) {
+                        if !model.lifetimeSummary.recentActivity.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
                                 Text("RECENT ACTIVITY")
                                     .font(.caption2.weight(.bold))
                                     .foregroundStyle(.secondary)
                                     .padding(.horizontal, 4)
+
                                 VStack(spacing: 0) {
-                                    ForEach(Array(model.summary.lists.actedOn.suffix(12).reversed().enumerated()), id: \.element.id) { index, event in
+                                    ForEach(Array(model.lifetimeSummary.recentActivity.prefix(20).enumerated()), id: \.element.id) { index, event in
                                         ActivityRow(event: event)
-                                        if index < min(model.summary.lists.actedOn.count, 12) - 1 { Divider().padding(.leading, 42) }
+                                        if index < min(model.lifetimeSummary.recentActivity.count, 20) - 1 {
+                                            Divider().padding(.leading, 46)
+                                        }
                                     }
                                 }
                                 .winnowCard(padding: 4)
@@ -42,7 +65,7 @@ struct TodayView: View {
                 }
                 .refreshable { await model.refresh() }
             }
-            .navigationTitle("Today")
+            .navigationTitle("Stats")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
@@ -51,14 +74,14 @@ struct TodayView: View {
         }
     }
 
-    private var summaryHero: some View {
-        VStack(alignment: .leading, spacing: 16) {
+    private var lifetimeHero: some View {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(model.summary.date.isEmpty ? "TODAY" : model.summary.date)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("ALL TIME")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.white.opacity(0.72))
-                    Text("\(model.summary.counters.processed)")
+                    Text("\(model.lifetimeSummary.counters.processed)")
                         .font(.system(size: 50, weight: .bold, design: .rounded))
                         .contentTransition(.numericText())
                     Text("emails processed")
@@ -70,48 +93,42 @@ struct TodayView: View {
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.24)))
             }
 
-            if model.summary.counters.processed > 0 {
-                GeometryReader { proxy in
-                    let handled = model.summary.counters.totalArchived
-                    let ratio = min(Double(handled) / Double(model.summary.counters.processed), 1)
-                    Capsule().fill(.white.opacity(0.16))
-                        .overlay(alignment: .leading) {
-                            Capsule().fill(.white.opacity(0.78)).frame(width: proxy.size.width * ratio)
-                        }
-                }
-                .frame(height: 7)
+            let processed = model.lifetimeSummary.counters.processed
+            if processed > 0 {
+                let handled = model.lifetimeSummary.counters.autoArchived
+                let percent = Int((Double(handled) / Double(processed) * 100).rounded())
+                Label("\(percent)% handled automatically", systemImage: "sparkles")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.82))
             }
         }
         .foregroundStyle(.white)
-        .padding(22)
-        .background(WinnowDesign.heroGradient, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .shadow(color: WinnowDesign.indigo.opacity(0.24), radius: 22, y: 10)
+        .padding(20)
+        .background(WinnowDesign.heroGradient, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .shadow(color: WinnowDesign.indigo.opacity(0.22), radius: 20, y: 9)
     }
 
-    private var runtimeCard: some View {
+    private var todayCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Label("Winnow status", systemImage: "waveform.path.ecg")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("TODAY")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(WinnowDesign.indigo)
+                    Text(model.summary.date)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-                ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
+                Image(systemName: "calendar")
+                    .foregroundStyle(WinnowDesign.indigo)
             }
-            if let lastScan = model.status?.scans.lastScanTime?.winnowParsedDate {
-                HStack {
-                    Text("Last scan").foregroundStyle(.secondary)
-                    Spacer()
-                    Text(lastScan.relativeWinnowTime).fontWeight(.semibold)
-                }
-                .font(.subheadline)
-            }
-            ForEach(model.accounts) { account in
-                HStack(spacing: 10) {
-                    Circle().fill(account.scan.lastScanAt == nil ? Color.secondary : WinnowDesign.mint).frame(width: 7, height: 7)
-                    Text(account.email).lineLimit(1)
-                    Spacer()
-                    if let count = account.scan.lastScanProcessed { Text("\(count) handled").foregroundStyle(.secondary) }
-                }
-                .font(.caption)
+
+            HStack(spacing: 0) {
+                TodayMetric(title: "Processed", value: model.summary.counters.processed)
+                TodayMetric(title: "Inbox", value: model.summary.counters.kept)
+                TodayMetric(title: "Archived", value: model.summary.counters.totalArchived)
+                TodayMetric(title: "Unsubscribed", value: model.summary.counters.unsubscribedSucceeded)
             }
         }
         .winnowCard()
@@ -125,58 +142,85 @@ private struct MetricCard: View {
     let color: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        HStack(spacing: 11) {
             Image(systemName: symbol)
-                .font(.headline)
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(color)
-                .frame(width: 34, height: 34)
-                .background(color.opacity(0.11), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            Text("\(value)").font(.title.bold()).contentTransition(.numericText())
-            Text(title).font(.caption).foregroundStyle(.secondary)
+                .frame(width: 32, height: 32)
+                .background(color.opacity(0.11), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(value)")
+                    .font(.title3.bold())
+                    .contentTransition(.numericText())
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .winnowCard()
+        .winnowCard(padding: 12)
+    }
+}
+
+private struct TodayMetric: View {
+    let title: String
+    let value: Int
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Text("\(value)")
+                .font(.title3.bold())
+                .contentTransition(.numericText())
+            Text(title)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
 private struct ActivityRow: View {
     let event: SummaryItem
 
-    private var icon: String {
-        if event.actionType.contains("archive") { return "archivebox.fill" }
-        if event.actionType.contains("unsubscribe") { return "person.crop.circle.badge.minus" }
-        if event.actionType.contains("restored") { return "arrow.uturn.backward" }
-        if event.actionType.contains("kept") { return "tray.fill" }
-        return "sparkles"
+    private var presentation: (label: String, icon: String, color: Color) {
+        switch event.actionType {
+        case "email.auto_archived": ("Archived automatically", "archivebox.fill", WinnowDesign.amber)
+        case "email.manual_archived": ("Archived", "archivebox.fill", WinnowDesign.indigo)
+        case "email.restored_to_inbox": ("Moved to Inbox", "arrow.uturn.backward", WinnowDesign.brightIndigo)
+        case "email.unsubscribed": ("Unsubscribed", "person.crop.circle.badge.minus", WinnowDesign.rose)
+        case "email.unsubscribe_attempted": ("Unsubscribe needs a manual step", "envelope.badge", WinnowDesign.amber)
+        case "email.unsubscribe_failed": ("Unsubscribe failed", "exclamationmark.triangle", WinnowDesign.rose)
+        default: ("Kept in Inbox", "tray.fill", WinnowDesign.mint)
+        }
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 11) {
-            Image(systemName: icon)
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: presentation.icon)
                 .font(.caption.weight(.bold))
-                .foregroundStyle(WinnowDesign.indigo)
+                .foregroundStyle(presentation.color)
                 .frame(width: 30, height: 30)
-                .background(WinnowDesign.indigo.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(event.subject.isEmpty ? event.actionType.replacingOccurrences(of: ".", with: " ").capitalized : event.subject)
+                .background(presentation.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(event.subject.isEmpty ? presentation.label : event.subject)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                Text(event.reason.isEmpty ? event.account : event.reason)
+                Text("\(presentation.label) · \(event.account)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(1)
             }
-            Spacer()
-            if let date = event.displayDate { Text(date.relativeWinnowTime).font(.caption2).foregroundStyle(.tertiary) }
+            Spacer(minLength: 6)
+            if let date = event.displayDate {
+                Text(date.relativeWinnowTime)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
-        .padding(12)
-    }
-}
-
-private extension String {
-    var winnowParsedDate: Date? {
-        let precise = ISO8601DateFormatter()
-        precise.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return precise.date(from: self) ?? ISO8601DateFormatter().date(from: self)
+        .padding(10)
     }
 }

@@ -12,6 +12,7 @@ import {
   deletePushDevice,
   ensureStore,
   getDailyActionSummary,
+  getLifetimeActionSummary,
   getEmailItem,
   listEmailItems,
   listEvents,
@@ -190,6 +191,7 @@ async function handleAuthed(req, res, url) {
         eventPolling: true,
         eventStream: true,
         dailySummary: true,
+        lifetimeSummary: true,
         manualScan: true,
         push: getPushCapabilities(),
       },
@@ -400,6 +402,14 @@ async function handleAuthed(req, res, url) {
     sendJson(res, 200, getDailyActionSummary({
       date: queryDate(url),
       account: url.searchParams.get('account') || '',
+    }));
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/v1/summaries/lifetime') {
+    sendJson(res, 200, getLifetimeActionSummary({
+      account: url.searchParams.get('account') || '',
+      recentLimit: queryInteger(url, 'recentLimit', { fallback: 25, min: 1, max: 100 }),
     }));
     return;
   }

@@ -9,17 +9,21 @@ struct RootView: View {
         Group {
             if model.isConfigured {
                 TabView(selection: $selectedTab) {
-                    InboxView()
+                    InboxView(mailbox: .inbox)
                         .tabItem { Label("Inbox", systemImage: "tray.full") }
                         .tag(0)
 
-                    TodayView()
-                        .tabItem { Label("Today", systemImage: "sparkles") }
+                    InboxView(mailbox: .archived)
+                        .tabItem { Label("Archived", systemImage: "archivebox") }
                         .tag(1)
+
+                    StatsView()
+                        .tabItem { Label("Stats", systemImage: "chart.bar.xaxis") }
+                        .tag(2)
 
                     SettingsView()
                         .tabItem { Label("Settings", systemImage: "gearshape") }
-                        .tag(2)
+                        .tag(3)
                 }
                 .transition(.opacity)
             } else {

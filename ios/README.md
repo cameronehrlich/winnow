@@ -4,12 +4,15 @@ A personal, native SwiftUI client for Winnow. V1 keeps the useful, dynamic parts
 
 ## What V1 includes
 
-- Inbox, all-mail, and archived feeds with account filtering and search
-- Winnow's summary, recommended action, deadline, impact, handling, reason, and confidence fields
-- Archive, move to inbox, mark read/unread, and unsubscribe actions
+- Separate Inbox and Archived tabs, each with account filtering and its own search
+- Compact Slack-inspired cards with contextual Archive, Move to Inbox, and Unsubscribe buttons
+- Swipe right from Inbox to archive; swipe left from Archived to restore
+- Winnow's summary and meaningful recommended action in the feed, with deadline, impact, handling, reason, and confidence in detail
+- Opening an in-app detail marks the message read; manual read/unread remains available in detail
 - A safe confirmation step and truthful manual-action state for unsubscribe flows
 - An account-aware **Open in Gmail** link on every email detail
-- Today's totals, recent activity, account scan state, and server status
+- Lifetime and Today stats plus recent activity
+- Server health merged with per-account scan state in Settings
 - Pull to refresh, refresh whenever the app becomes active, and 30-second foreground refresh
 - Loading, empty, offline, and action-error states
 - Server URL in preferences and bearer token in the iOS Keychain
