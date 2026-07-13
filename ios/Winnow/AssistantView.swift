@@ -7,38 +7,83 @@ struct AssistantMailboxView: View {
 
     var body: some View {
         NavigationStack {
-            AssistantConversationView(
-                configuration: model.configuration,
-                scope: .mailbox,
-                account: selectedAccount.nilIfEmpty,
-                emailItemID: nil,
-                contextTitle: nil,
-                onMailboxChanged: { await model.refresh(silent: true) }
-            )
-            .id(selectedAccount)
+            VStack(spacing: 0) {
+                if model.accounts.count > 1 {
+                    accountScopePicker
+                }
+
+                AssistantConversationView(
+                    configuration: model.configuration,
+                    scope: .mailbox,
+                    account: selectedAccount.nilIfEmpty,
+                    emailItemID: nil,
+                    contextTitle: nil,
+                    onMailboxChanged: { await model.refresh(silent: true) }
+                )
+                .id(selectedAccount)
+            }
             .navigationTitle("Ask Winnow")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { WinnowMark(size: 32) }
-                ToolbarItem(placement: .topBarTrailing) {
-                    if model.accounts.count > 1 {
-                        Menu {
-                            Button("All Winnow Accounts") { selectedAccount = "" }
-                            Divider()
-                            ForEach(model.accounts) { account in
-                                Button(account.email) { selectedAccount = account.email }
-                            }
-                        } label: {
-                            Label(
-                                selectedAccount.isEmpty ? "All Accounts" : selectedAccount,
-                                systemImage: selectedAccount.isEmpty ? "person.2" : "person.crop.circle"
-                            )
-                        }
-                        .accessibilityLabel("Assistant account scope")
+                if #available(iOS 26.0, *) {
+                    ToolbarItem(placement: .topBarLeading) {
+                        WinnowMark(size: 32)
+                    }
+                    .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .topBarLeading) {
+                        WinnowMark(size: 32)
                     }
                 }
             }
         }
+    }
+
+    private var accountScopePicker: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                accountScopeButton(account: nil)
+                ForEach(model.accounts) { account in
+                    accountScopeButton(account: account)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .scrollClipDisabled()
+        .padding(.vertical, 9)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func accountScopeButton(account: AccountStatus?) -> some View {
+        let email = account?.email ?? ""
+        let isSelected = selectedAccount == email
+        return Button {
+            selectedAccount = email
+        } label: {
+            HStack(spacing: 7) {
+                if let account {
+                    AccountAvatarBadge(account: account, size: 22)
+                } else {
+                    Image(systemName: "person.2.fill")
+                        .font(.caption.weight(.semibold))
+                        .frame(width: 22, height: 22)
+                }
+                Text(account?.email ?? "All accounts")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .background(
+                isSelected ? AnyShapeStyle(WinnowDesign.heroGradient) : AnyShapeStyle(Color.primary.opacity(0.06)),
+                in: Capsule()
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(account == nil ? "Search all accounts" : "Search \(email)")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -109,19 +154,37 @@ struct AssistantConversationView: View {
                         if let error = viewModel.errorMessage {
                             errorCard(error)
                         }
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id("assistant-bottom")
                     }
                     .padding(16)
                     .padding(.bottom, 8)
                 }
+                .scrollDismissesKeyboard(.interactively)
                 .onChange(of: viewModel.messages.count) { _, _ in
-                    withAnimation { proxy.scrollTo(viewModel.messages.last?.id, anchor: .bottom) }
+                    withAnimation { proxy.scrollTo("assistant-bottom", anchor: .bottom) }
                 }
                 .onChange(of: viewModel.isSending) { _, sending in
-                    if sending { withAnimation { proxy.scrollTo("assistant-working", anchor: .bottom) } }
+                    if sending { withAnimation { proxy.scrollTo("assistant-bottom", anchor: .bottom) } }
+                }
+                .onChange(of: composerFocused) { _, focused in
+                    guard focused else { return }
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(180))
+                        withAnimation { proxy.scrollTo("assistant-bottom", anchor: .bottom) }
+                    }
                 }
             }
         }
         .safeAreaInset(edge: .bottom) { composer }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { composerFocused = false }
+            }
+        }
         .task { await viewModel.startIfNeeded() }
         .sheet(item: $reviewedProposal) { proposal in
             ProposalConfirmationView(

@@ -118,8 +118,15 @@ struct InboxView: View {
                 prompt: "Sender, subject, or summary"
             )
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    WinnowMark(size: 32)
+                if #available(iOS 26.0, *) {
+                    ToolbarItem(placement: .topBarLeading) {
+                        WinnowMark(size: 32)
+                    }
+                    .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .topBarLeading) {
+                        WinnowMark(size: 32)
+                    }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if model.accounts.count > 1 {
