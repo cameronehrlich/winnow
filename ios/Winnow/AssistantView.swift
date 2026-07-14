@@ -489,7 +489,11 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         .padding(.horizontal, 14)
         .padding(.top, 10)
         .padding(.bottom, 8)
-        .background(.ultraThinMaterial)
+        .background {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea(.keyboard, edges: .bottom)
+        }
     }
 
     private func errorCard(_ error: String) -> some View {
