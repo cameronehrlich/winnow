@@ -260,7 +260,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                                     message: message,
                                     accountStatus: accountStatus,
                                     showsDraft: message.id == latestDraftMessageID,
-                                    isProposalWorking: viewModel.isSending || viewModel.activeProposalID == message.proposal?.id,
+                                    isProposalWorking: viewModel.isProposalWorking(message.proposal),
                                     reviewProposal: { reviewedProposal = $0 },
                                     cancelProposal: cancel,
                                     sendDraft: { sendDraft(message) }
@@ -513,8 +513,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
             TextField("Ask Winnow…", text: $composerText, axis: .vertical)
                 .lineLimit(1...5)
                 .focused($composerFocused)
-                .submitLabel(.send)
-                .onSubmit { send() }
+                .submitLabel(.return)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 11)
                 .modifier(AssistantComposerFieldStyle())
@@ -777,6 +776,7 @@ private struct AssistantMessageView: View {
         Text(message.formattedText)
             .font(.body)
             .foregroundStyle(isUser ? Color.white : Color.primary)
+            .textSelection(.enabled)
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
             .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))

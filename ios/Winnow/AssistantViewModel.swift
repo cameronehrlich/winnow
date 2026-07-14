@@ -43,6 +43,12 @@ final class AssistantViewModel: ObservableObject {
 
     var isWorking: Bool { isLoading || isSending || activeProposalID != nil || hasIndeterminateMessageAttempt }
 
+    func isProposalWorking(_ proposal: AssistantProposal?) -> Bool {
+        if isSending { return true }
+        guard let activeProposalID, let proposal else { return false }
+        return activeProposalID == proposal.id
+    }
+
     func startIfNeeded() async {
         guard conversation == nil, !isLoading else { return }
         await createConversation()

@@ -836,6 +836,19 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     @MainActor
+    func testAssistantViewModelDoesNotTreatDraftWithoutProposalAsWorking() {
+        let model = AssistantViewModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            scope: .email,
+            account: "me@example.com",
+            emailItemID: "email-1",
+            service: AssistantServiceStub()
+        )
+
+        XCTAssertFalse(model.isProposalWorking(nil))
+    }
+
+    @MainActor
     func testAssistantViewModelPreparesStoredDraftForExplicitConfirmation() async throws {
         let service = AssistantServiceStub()
         service.draftSendEnvelope = try JSONDecoder().decode(
