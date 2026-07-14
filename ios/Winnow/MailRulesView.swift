@@ -50,6 +50,7 @@ struct MailRulesView: View {
                         Text(account.email).tag(account.email)
                     }
                 }
+                .pickerStyle(.menu)
             } footer: {
                 Text("Rules for all accounts remain visible because they also apply to the selected mailbox.")
             }
@@ -112,6 +113,8 @@ struct MailRulesView: View {
         }
         .navigationTitle("Rules")
         .searchable(text: $searchText, prompt: "Search rules")
+        .listSectionSpacing(.compact)
+        .tint(WinnowDesign.accent)
         .overlay {
             if model.isLoadingMailRules && model.mailRules.isEmpty { ProgressView("Loading rules…") }
         }
@@ -194,83 +197,114 @@ private struct MailRuleRow: View {
     var reset: (() -> Void)?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: rule.actionSymbol)
-                    .foregroundStyle(rule.effect == "archive" ? WinnowDesign.accent : WinnowDesign.mint)
-                    .frame(width: 24)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(rule.description.isEmpty ? rule.matcherTitle : rule.description)
-                        .font(.subheadline.weight(.semibold))
-                    if !rule.description.isEmpty && rule.description != rule.matcherTitle {
-                        Text(rule.matcherTitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                    HStack(spacing: 6) {
-                        Text(rule.actionTitle)
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(rule.displayTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(rule.enabled ? Color.primary : Color.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let supportingTitle = rule.supportingTitle {
+                    Text(supportingTitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 5) {
+                    Text(rule.accountTitle)
+                    if rule.isBaselineCustomization {
                         Text("•")
-                        Text(rule.accountTitle)
-                        if rule.isBaselineCustomization {
-                            Text("•")
-                            Text("Customized")
-                        }
+                        Text("Customized")
                     }
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    if rule.type == "semantic" {
-                        Label("Classifier-cited rule", systemImage: "sparkles")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let activity = rule.activity {
-                        HStack(spacing: 6) {
-                            if activity.appliedCount30Days == 0 {
-                                Text("No tracked uses yet")
-                            } else {
-                                Text(rule.type == "semantic"
-                                     ? "\(activity.appliedCount30Days) classifier-cited in 30 days"
-                                     : "\(activity.appliedCount30Days) applied in 30 days")
-                            }
-                            if activity.appliedCount30Days > 0, let date = activity.lastAppliedDate {
-                                Text("•")
-                                Text("Last used \(date.formatted(date: .abbreviated, time: .omitted))")
-                            }
-                        }
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    if let activity = rule.activity, activity.appliedCount30Days > 0 {
+                        Text("•")
+                        Text("\(activity.appliedCount30Days) uses")
                     }
                 }
-                Spacer(minLength: 8)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .trailing, spacing: 7) {
                 if isBusy {
                     ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 51, height: 31)
                 } else if let toggle {
-                    Toggle("", isOn: Binding(get: { rule.enabled }, set: toggle))
+                    Toggle("Rule enabled", isOn: Binding(get: { rule.enabled }, set: toggle))
                         .labelsHidden()
+                        .tint(WinnowDesign.accent)
+                        .accessibilityValue(rule.enabled ? "On" : "Off")
                 } else if rule.isLockedAutomation {
                     Image(systemName: "lock.fill")
                         .foregroundStyle(.secondary)
+                        .frame(width: 31, height: 31)
                         .accessibilityLabel("Managed on server")
                 }
-            }
 
-            if edit != nil || customize != nil || (rule.canReset && reset != nil) {
-                HStack(spacing: 16) {
-                    if let edit {
-                        Button("Edit", action: edit)
-                    } else if let customize {
-                        Button(rule.isBaselineCustomization ? "Edit Customization" : "Customize", action: customize)
-                    }
-                    if rule.canReset, let reset {
-                        Button("Reset", role: .destructive, action: reset)
-                    }
+                HStack(spacing: 6) {
+                    effectIcon
+                    trailingAction
                 }
-                .font(.caption.weight(.semibold))
             }
         }
-        .padding(.vertical, 4)
-        .opacity(rule.enabled ? 1 : 0.58)
+        .padding(.vertical, 2)
+        .listRowInsets(EdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16))
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+        .alignmentGuide(.listRowSeparatorTrailing) { dimensions in dimensions.width }
+        .listRowSeparatorTint(Color(uiColor: UIColor.separator).opacity(0.65))
+    }
+
+    private var effectColor: Color {
+        rule.effect == "archive" ? WinnowDesign.accent : WinnowDesign.mint
+    }
+
+    private var effectIcon: some View {
+        Image(systemName: rule.actionSymbol)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(effectColor)
+            .frame(width: 29, height: 29)
+            .background(effectColor.opacity(0.14), in: Circle())
+            .accessibilityLabel(rule.actionTitle)
+    }
+
+    @ViewBuilder
+    private var trailingAction: some View {
+        if let edit {
+            compactButton(symbol: "pencil", label: "Edit rule", action: edit)
+        } else if let customize {
+            if rule.canReset, let reset {
+                Menu {
+                    Button("Edit Customization", systemImage: "pencil", action: customize)
+                    Button("Reset to Winnow Default", systemImage: "arrow.counterclockwise", role: .destructive, action: reset)
+                } label: {
+                    compactIcon(symbol: "ellipsis")
+                }
+                .accessibilityLabel("Rule options")
+            } else {
+                compactButton(symbol: "slider.horizontal.3", label: "Customize rule", action: customize)
+            }
+        }
+    }
+
+    private func compactButton(symbol: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            compactIcon(symbol: symbol)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private func compactIcon(symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(WinnowDesign.accent)
+            .frame(width: 29, height: 29)
+            .background(WinnowDesign.accent.opacity(0.12), in: Circle())
     }
 }
 

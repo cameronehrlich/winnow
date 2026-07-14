@@ -329,6 +329,22 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(response.rules[2].matcherTitle, "Sender: robot@example.com")
     }
 
+    func testImportedRuleUsesItsMatchAsTheVisibleTitle() throws {
+        let json = #"{"id":"imported","account":"me@example.com","type":"semantic","effect":"archive","match":"TestFlight build notifications","description":"Imported from account YAML","enabled":true,"scope":"user","source":"import","editable":true}"#.data(using: .utf8)!
+        let rule = try JSONDecoder().decode(MailRule.self, from: json)
+
+        XCTAssertEqual(rule.displayTitle, "TestFlight build notifications")
+        XCTAssertNil(rule.supportingTitle)
+    }
+
+    func testNamedRuleKeepsItsMatcherAsSupportingText() throws {
+        let json = #"{"id":"named","account":"me@example.com","type":"exact","effect":"keep","matcherKind":"sender","matcherValue":"alerts@example.com","description":"Important alerts","enabled":true,"scope":"user","source":"api","editable":true}"#.data(using: .utf8)!
+        let rule = try JSONDecoder().decode(MailRule.self, from: json)
+
+        XCTAssertEqual(rule.displayTitle, "Important alerts")
+        XCTAssertEqual(rule.supportingTitle, "Sender: alerts@example.com")
+    }
+
     func testRulePreviewToleratesEvidenceResponseShape() throws {
         let json = #"""
         {"matchCount":2,"sampledAtMost":100,"evidence":[
