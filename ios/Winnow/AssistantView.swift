@@ -330,6 +330,13 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         }
         .background { AppBackdrop() }
         .task { await viewModel.startIfNeeded() }
+        .task {
+            guard presentation == .standalone else { return }
+            // Let the sheet finish presenting before requesting focus so the
+            // keyboard appears reliably when Ask Winnow opens from the tab bar.
+            try? await Task.sleep(for: .milliseconds(350))
+            composerFocused = true
+        }
         .sheet(item: $reviewedProposal) { proposal in
             if proposal.isDeviceAction {
                 DeviceProposalReviewView(
@@ -440,33 +447,9 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                         .foregroundStyle(WinnowDesign.brightIndigo)
                     Text(viewModel.scope == .email ? "Ask about this message" : "Ask across your mailbox")
                         .font(.title3.bold())
-                    Text(viewModel.scope == .email
-                         ? "Get answers, draft a reply, archive future messages, or safely unsubscribe."
-                         : "Find an order, receipt, EIN, or anything else in your connected accounts.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
                 }
 
-                VStack(spacing: 8) {
-                    ForEach(suggestions, id: \.self) { suggestion in
-                        Button {
-                            composerText = suggestion
-                            composerFocused = true
-                        } label: {
-                            HStack {
-                                Text(suggestion).multilineTextAlignment(.leading)
-                                Spacer()
-                                Image(systemName: "arrow.up.right")
-                            }
-                            .font(.subheadline.weight(.medium))
-                            .padding(12)
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(WinnowDesign.accent)
-                    }
-                }
+                suggestionCloud
             }
             .frame(maxWidth: .infinity)
             .winnowCard()
@@ -507,7 +490,13 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                 "Why handled?",
             ]
         }
-        return ["Find my most recent order", "Where can I find my EIN?", "Show receipts from this month"]
+        return [
+            "What needs attention?",
+            "Find an order",
+            "Find a receipt",
+            "Recent payments",
+            "Find my EIN",
+        ]
     }
 
     private var composer: some View {
