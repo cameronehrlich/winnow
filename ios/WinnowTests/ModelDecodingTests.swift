@@ -26,7 +26,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(GmailDestination.nativeAppURL.scheme, "googlegmail")
         XCTAssertEqual(
             item.nativeGmailURL(accountID: 2)?.absoluteString,
-            "googlegmail:///cv=t1/accountId=2&create-new-tab"
+            "googlegmail:///cv=t1/accountId=2"
         )
     }
 

@@ -275,7 +275,9 @@ struct GmailDestination: Equatable {
         guard !threadID.isEmpty, let accountID, accountID > 0,
               let encodedThreadID = threadID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
         else { return nil }
-        return URL(string: "googlegmail:///cv=\(encodedThreadID)/accountId=\(accountID)&create-new-tab")
+        // Gmail does not publish this route. Keep it to the smallest historically
+        // supported shape; newer Gmail builds reject the old create-new-tab suffix.
+        return URL(string: "googlegmail:///cv=\(encodedThreadID)/accountId=\(accountID)")
     }
 
     var exactMessageAccessibilityHint: String {
