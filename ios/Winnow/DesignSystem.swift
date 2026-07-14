@@ -242,9 +242,6 @@ struct WinnowStatusButton: View {
                         .frame(width: 7, height: 7)
                 }
                 Text(isRefreshing ? "Syncing" : (isOnline ? "Live" : "Offline"))
-                Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.tertiary)
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
