@@ -48,6 +48,8 @@ struct InboxView: View {
 
     @State private var account = ""
     @State private var searchText = ""
+    @State private var isSearchAvailable = false
+    @State private var isSearchPresented = false
     @State private var navigationPath: [String] = []
 
     private var searchQuery: String {
@@ -117,6 +119,14 @@ struct InboxView: View {
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
                 .refreshable { await model.refresh() }
+                .modifier(SearchRevealModifier(isAvailable: $isSearchAvailable))
+                .modifier(
+                    TuckedSearchModifier(
+                        text: $searchText,
+                        isPresented: $isSearchPresented,
+                        isAvailable: isSearchAvailable
+                    )
+                )
 
                 if model.isLoading && model.emails.isEmpty {
                     ProgressView("Distilling your inbox…")
@@ -133,11 +143,6 @@ struct InboxView: View {
                 }
             }
             .navigationTitle(mailbox.title)
-            .searchable(
-                text: $searchText,
-                placement: .navigationBarDrawer(displayMode: .automatic),
-                prompt: "Sender, subject, or summary"
-            )
             .navigationDestination(for: String.self) { emailID in
                 EmailDetailView(emailID: emailID)
             }
@@ -159,6 +164,12 @@ struct InboxView: View {
                       request.mailboxState == mailbox.apiState else { return }
                 navigationPath.append(request.emailID)
                 model.consumeNavigation(request)
+            }
+            .onDisappear {
+                if searchText.isEmpty {
+                    isSearchPresented = false
+                    isSearchAvailable = false
+                }
             }
         }
     }
@@ -184,6 +195,54 @@ struct InboxView: View {
 
     private func perform(_ action: EmailAction, on item: EmailItem) {
         Task { _ = await model.perform(action, on: item, optimisticDelay: .milliseconds(140)) }
+    }
+}
+
+private struct SearchRevealModifier: ViewModifier {
+    @Binding var isAvailable: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top < -12
+            } action: { _, isPulledDown in
+                if isPulledDown {
+                    isAvailable = true
+                }
+            }
+        } else {
+            content.simultaneousGesture(
+                DragGesture(minimumDistance: 12)
+                    .onChanged { value in
+                        guard !isAvailable,
+                              value.translation.height > 18,
+                              abs(value.translation.height) > abs(value.translation.width)
+                        else { return }
+                        isAvailable = true
+                    }
+            )
+        }
+    }
+}
+
+private struct TuckedSearchModifier: ViewModifier {
+    @Binding var text: String
+    @Binding var isPresented: Bool
+    let isAvailable: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isAvailable || !text.isEmpty {
+            content.searchable(
+                text: $text,
+                isPresented: $isPresented,
+                placement: .navigationBarDrawer(displayMode: .automatic),
+                prompt: "Search"
+            )
+        } else {
+            content
+        }
     }
 }
 
@@ -269,11 +328,18 @@ struct EmailCard: View {
 
                 VStack {
                     Spacer(minLength: 0)
-                    Image(systemName: item.isConversation ? "chevron.right.circle" : "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color(.tertiaryLabel))
-                        .frame(width: 20, alignment: .trailing)
-                        .accessibilityHidden(true)
+                    ZStack {
+                        if item.isConversation {
+                            Circle()
+                                .stroke(Color(.tertiaryLabel), lineWidth: 1.25)
+                                .frame(width: 20, height: 20)
+                        }
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color(.tertiaryLabel))
+                    }
+                    .frame(width: 20, height: 20)
+                    .accessibilityHidden(true)
                     Spacer(minLength: 0)
                 }
             }
