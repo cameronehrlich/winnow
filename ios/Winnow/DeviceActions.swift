@@ -31,6 +31,23 @@ struct DeviceActionSource: Equatable {
         ]
         return components.url
     }
+
+    func visibleBacklink() -> URL? {
+        var components = URLComponents()
+        components.scheme = "winnow"
+        components.host = "email"
+        components.queryItems = [URLQueryItem(name: "id", value: emailItemID)]
+        return components.url
+    }
+}
+
+enum ReminderNotes {
+    static func withWinnowBacklink(_ notes: String, source: DeviceActionSource) -> String {
+        let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let backlink = source.visibleBacklink() else { return trimmedNotes }
+        let linkSection = "Open in Winnow:\n\(backlink.absoluteString)"
+        return trimmedNotes.isEmpty ? linkSection : "\(trimmedNotes)\n\n\(linkSection)"
+    }
 }
 
 private struct ReminderDraft {
@@ -254,7 +271,8 @@ private struct ReminderProposalView: View {
     }
 
     private func save() async {
-        guard let backlink = DeviceActionSource(proposal: proposal)?.backlink(proposalID: proposal.id) else { return }
+        guard let source = DeviceActionSource(proposal: proposal),
+              let backlink = source.backlink(proposalID: proposal.id) else { return }
         if locallySaved { complete(); return }
         guard let calendar = calendars.first(where: { $0.calendarIdentifier == selectedCalendarID })
                 ?? DeviceActionStore.shared.eventStore.defaultCalendarForNewReminders()
@@ -274,7 +292,7 @@ private struct ReminderProposalView: View {
             let reminder = EKReminder(eventStore: DeviceActionStore.shared.eventStore)
             reminder.calendar = calendar
             reminder.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-            reminder.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            reminder.notes = ReminderNotes.withWinnowBacklink(notes, source: source)
             reminder.url = backlink
             if hasDueDate {
                 var components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: dueAt)

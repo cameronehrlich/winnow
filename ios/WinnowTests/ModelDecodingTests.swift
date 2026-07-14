@@ -23,6 +23,11 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(Dictionary(uniqueKeysWithValues: components.queryItems?.compactMap { item in
             item.value.map { (item.name, $0) }
         } ?? []), ["id": "email id/1", "mailbox": "archived", "proposal": "proposal-1"])
+
+        XCTAssertEqual(
+            ReminderNotes.withWinnowBacklink("Receipt forwarded by Riley.", source: source),
+            "Receipt forwarded by Riley.\n\nOpen in Winnow:\nwinnow://email?id=email%20id/1"
+        )
     }
 
     func testDeviceActionDatesAcceptStandardAndFractionalISO8601() {
