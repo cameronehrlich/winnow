@@ -25,6 +25,7 @@ import {
 import {
   AssistantError,
   cancelProposal,
+  completeAssistantClientProposal,
   confirmAssistantProposal,
   createConversation,
   getConversation,
@@ -478,6 +479,19 @@ async function handleAuthed(req, res, url, dependencies = {}) {
       if (key !== 'confirmationDigest') throw new HttpError(400, `invalid_${key}`);
     }
     sendJson(res, 200, await confirmAssistantProposal(assistantConfirmMatch.id, body.confirmationDigest));
+    return;
+  }
+
+  const assistantClientCompleteMatch = route(url.pathname, '/v1/assistant/proposals/:id/complete-client');
+  if (req.method === 'POST' && assistantClientCompleteMatch) {
+    const body = await readJsonObject(req);
+    for (const key of Object.keys(body)) {
+      if (key !== 'confirmationDigest') throw new HttpError(400, `invalid_${key}`);
+    }
+    sendJson(res, 200, completeAssistantClientProposal(
+      assistantClientCompleteMatch.id,
+      body.confirmationDigest,
+    ));
     return;
   }
 

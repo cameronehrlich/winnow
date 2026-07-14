@@ -2,6 +2,35 @@ import XCTest
 @testable import Winnow
 
 final class ModelDecodingTests: XCTestCase {
+    func testDeviceProposalBuildsAStableSourceBacklink() throws {
+        let json = #"""
+        {
+          "id":"proposal-1","tool":"device.create_reminder","risk":"persistent",
+          "summary":"Create reminder","confirmationDigest":"digest","status":"pending",
+          "arguments":{
+            "title":"Submit receipt",
+            "source":{"emailItemId":"email id/1","mailboxState":"archived","subject":"Receipt"}
+          }
+        }
+        """#.data(using: .utf8)!
+        let proposal = try JSONDecoder().decode(AssistantProposal.self, from: json)
+        let source = try XCTUnwrap(DeviceActionSource(proposal: proposal))
+        let components = try XCTUnwrap(URLComponents(url: try XCTUnwrap(source.backlink(proposalID: proposal.id)), resolvingAgainstBaseURL: false))
+
+        XCTAssertTrue(proposal.isDeviceAction)
+        XCTAssertEqual(components.scheme, "winnow")
+        XCTAssertEqual(components.host, "email")
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: components.queryItems?.compactMap { item in
+            item.value.map { (item.name, $0) }
+        } ?? []), ["id": "email id/1", "mailbox": "archived", "proposal": "proposal-1"])
+    }
+
+    func testDeviceActionDatesAcceptStandardAndFractionalISO8601() {
+        XCTAssertNotNil(DeviceActionDate.parse("2026-07-14T09:30:00-07:00"))
+        XCTAssertNotNil(DeviceActionDate.parse("2026-07-14T16:30:00.123Z"))
+        XCTAssertNil(DeviceActionDate.parse("tomorrow morning"))
+    }
+
     @MainActor
     func testNewItemDividerCutoffStaysFrozenUntilTheNextForegroundSession() {
         let defaults = UserDefaults.standard
@@ -607,6 +636,28 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(updated.effect, "archive")
     }
 
+    func testClientActionCompletionUsesDigestBoundEndpoint() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            session: URLSession(configuration: configuration)
+        )
+        MailRuleURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/v1/assistant/proposals/proposal-1/complete-client")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            let body = try XCTUnwrap(MailRuleURLProtocol.bodyData(from: request))
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
+            XCTAssertEqual(payload, ["confirmationDigest": "digest-1"])
+            return (200, #"{"conversation":{"id":"conversation-1","scope":"email"},"messages":[]}"#)
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+
+        let envelope = try await client.completeAssistantClientProposal(id: "proposal-1", confirmationDigest: "digest-1")
+        XCTAssertEqual(envelope.conversation.id, "conversation-1")
+    }
+
     func testAssistantSSEParserHandlesByteBoundariesCRLFMultilineAndUnknownEvents() throws {
         let complete = #"{"conversation":{"id":"conversation-1","scope":"mailbox"},"messages":[{"id":"answer-1","role":"assistant","text":"Done"}]}"#
         let wire = [
@@ -967,6 +1018,10 @@ private final class AssistantServiceStub: AssistantService {
     }
 
     func confirmAssistantProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope {
+        envelope(messages: [])
+    }
+
+    func completeAssistantClientProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope {
         envelope(messages: [])
     }
 

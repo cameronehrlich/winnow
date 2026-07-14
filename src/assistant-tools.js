@@ -4,6 +4,7 @@ import { GogAdapter } from './adapters/gog.js';
 import { getAccounts } from './config.js';
 import { followUnsubscribeLink } from './slack-actions.js';
 import { recordUnsubscribe } from './state.js';
+import { resolveTrackedContacts } from './contact-resolver.js';
 import {
   getEmailItem,
   getUserRuleRecord,
@@ -31,11 +32,15 @@ export class AssistantToolError extends Error {
 
 export const ASSISTANT_TOOL_DEFINITIONS = Object.freeze([
   { name: 'mail.search', risk: 'read', description: 'Search configured Gmail accounts.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { account: { type: 'string' }, query: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 25 } } } },
+  { name: 'contacts.resolve', risk: 'read', description: 'Resolve a person name to recent correspondent email candidates without guessing.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 10 } } } },
   { name: 'mail.get_thread', risk: 'read', description: 'Read one Gmail thread.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'threadId'], properties: { account: { type: 'string' }, threadId: { type: 'string' } } } },
   ...['mail.archive', 'mail.mark_read', 'mail.mark_unread'].map(name => ({ name, risk: 'reversible', description: `${name.split('.')[1].replace('_', ' ')} one Gmail thread.`, inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'threadId'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' } } } })),
   { name: 'unsubscribe.request', risk: 'persistent', description: 'Discover and propose an unsubscribe method.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' } } } },
   { name: 'mail.send_reply', risk: 'outbound', description: 'Propose sending an exact reply draft.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId', 'draft'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' }, draft: { type: 'object', additionalProperties: false, required: ['body'], properties: { body: { type: 'string' }, to: { type: 'array', items: { type: 'string' } }, cc: { type: 'array', items: { type: 'string' } }, bcc: { type: 'array', items: { type: 'string' } }, subject: { type: 'string' } } } } } },
   { name: 'mail.send_forward', risk: 'outbound', description: 'Propose forwarding a message with exact recipients.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId', 'draft'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' }, draft: { type: 'object', additionalProperties: false, required: ['to'], properties: { to: { type: 'array', items: { type: 'string' } }, cc: { type: 'array', items: { type: 'string' } }, bcc: { type: 'array', items: { type: 'string' } }, note: { type: 'string' }, skipAttachments: { type: 'boolean' } } } } } },
+  { name: 'device.create_reminder', risk: 'persistent', description: 'Propose an editable Apple Reminders item. The iOS client performs the save.', inputSchema: { type: 'object', additionalProperties: false, required: ['title'], properties: { title: { type: 'string' }, notes: { type: 'string' }, dueAt: { type: 'string' } } } },
+  { name: 'device.create_calendar_event', risk: 'persistent', description: 'Propose an editable Apple Calendar event. Exact start and end times are required and the iOS client performs the save.', inputSchema: { type: 'object', additionalProperties: false, required: ['title', 'startAt', 'endAt'], properties: { title: { type: 'string' }, startAt: { type: 'string' }, endAt: { type: 'string' }, isAllDay: { type: 'boolean' }, location: { type: 'string' }, notes: { type: 'string' } } } },
+  { name: 'device.pick_contact', risk: 'persistent', description: 'Ask the user to select an exact email address from Apple Contacts when correspondence history is ambiguous or empty.', inputSchema: { type: 'object', additionalProperties: false, required: ['name', 'action'], properties: { name: { type: 'string' }, action: { enum: ['forward'] } } } },
   { name: 'rules.list', risk: 'read', description: 'List editable user rules and effective read-only baseline defaults.', inputSchema: { type: 'object', additionalProperties: false, required: ['account'], properties: { account: { type: 'string' } } } },
   { name: 'rules.preview', risk: 'read', description: 'Validate and preview a structured exact or semantic rule.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'type', 'effect'], properties: { account: { type: 'string' }, type: { enum: ['exact', 'semantic'] }, effect: { enum: ['archive', 'keep'] }, match: { type: 'string' }, matcherKind: { enum: ['sender', 'domain', 'list_id'] }, matcherValue: { type: 'string' }, description: { type: 'string' }, baselineRuleId: { type: 'string' } } } },
   { name: 'rules.upsert', risk: 'persistent', description: 'Propose creating or deterministically replacing a structured user rule.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'type', 'effect'], properties: { id: { type: 'string' }, account: { type: 'string' }, type: { enum: ['exact', 'semantic'] }, effect: { enum: ['archive', 'keep'] }, match: { type: 'string' }, matcherKind: { enum: ['sender', 'domain', 'list_id'] }, matcherValue: { type: 'string' }, description: { type: 'string' }, baselineRuleId: { type: 'string' }, sourceEmailItemId: { type: 'string' } } } },
@@ -105,6 +110,20 @@ function normalizeDraft(value, kind) {
   };
 }
 
+function optionalString(value, name, max) {
+  if (value === undefined || value === null || value === '') return '';
+  return string(value, name, { max });
+}
+
+function isoDate(value, name, { required = true } = {}) {
+  const result = string(value, name, { required, max: 100 });
+  if (!result) return '';
+  if (!Number.isFinite(Date.parse(result))) {
+    throw new AssistantToolError('invalid_tool_arguments', `${name} must be an ISO 8601 date`);
+  }
+  return result;
+}
+
 function configuredAccount(account) {
   const allowed = getAccounts().map(item => item.email);
   if (!allowed.includes(account)) {
@@ -137,6 +156,14 @@ export function validateAssistantToolCall(name, rawArguments) {
       limit,
     };
   }
+  if (name === 'contacts.resolve') {
+    exactKeys(args, ['query', 'limit']);
+    const limit = args.limit === undefined ? 5 : Number(args.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10) {
+      throw new AssistantToolError('invalid_tool_arguments', 'limit must be between 1 and 10');
+    }
+    return { query: string(args.query, 'query', { max: 200 }), limit };
+  }
   if (name === 'mail.get_thread') {
     const ref = normalizeRef(args, ['account', 'threadId']);
     if (!ref.threadId) throw new AssistantToolError('invalid_tool_arguments', 'threadId is required');
@@ -159,6 +186,40 @@ export function validateAssistantToolCall(name, rawArguments) {
       ...ref,
       draft: normalizeDraft(args.draft, name === 'mail.send_reply' ? 'reply' : 'forward'),
     };
+  }
+  if (name === 'device.create_reminder') {
+    exactKeys(args, ['title', 'notes', 'dueAt']);
+    return {
+      title: string(args.title, 'title', { max: 500 }),
+      notes: optionalString(args.notes, 'notes', 4000),
+      dueAt: isoDate(args.dueAt, 'dueAt', { required: false }),
+    };
+  }
+  if (name === 'device.create_calendar_event') {
+    exactKeys(args, ['title', 'startAt', 'endAt', 'isAllDay', 'location', 'notes']);
+    const startAt = isoDate(args.startAt, 'startAt');
+    const endAt = isoDate(args.endAt, 'endAt');
+    if (Date.parse(endAt) <= Date.parse(startAt)) {
+      throw new AssistantToolError('invalid_tool_arguments', 'endAt must be after startAt');
+    }
+    if (args.isAllDay !== undefined && typeof args.isAllDay !== 'boolean') {
+      throw new AssistantToolError('invalid_tool_arguments', 'isAllDay must be a boolean');
+    }
+    return {
+      title: string(args.title, 'title', { max: 500 }),
+      startAt,
+      endAt,
+      isAllDay: args.isAllDay === true,
+      location: optionalString(args.location, 'location', 1000),
+      notes: optionalString(args.notes, 'notes', 4000),
+    };
+  }
+  if (name === 'device.pick_contact') {
+    exactKeys(args, ['name', 'action']);
+    if (args.action !== 'forward') {
+      throw new AssistantToolError('invalid_tool_arguments', 'device.pick_contact only supports forward');
+    }
+    return { name: string(args.name, 'name', { max: 200 }), action: 'forward' };
   }
   if (name === 'rules.list') {
     exactKeys(args, ['account']);
@@ -236,6 +297,9 @@ function actionExplicitlyRequested(tool, text) {
   if (tool === 'unsubscribe.request' && denied(['unsubscribe', 'opt[ -]?out'])) return false;
   if (tool === 'mail.send_reply' && denied(['reply', 'respond', 'send'])) return false;
   if (tool === 'mail.send_forward' && denied(['forward', 'send'])) return false;
+  if (tool === 'device.create_reminder' && denied(['remind', 'reminder'])) return false;
+  if (tool === 'device.create_calendar_event' && denied(['calendar', 'schedule', 'event'])) return false;
+  if (tool === 'device.pick_contact' && denied(['forward', 'send'])) return false;
   if (['rules.create', 'rules.upsert'].includes(tool) && denied(['archive', 'keep', 'create', 'update'])) return false;
   if (tool === 'rules.disable' && denied(['disable', 'remove'])) return false;
   if (tool === 'rules.reset' && denied(['reset', 'remove', 'restore'])) return false;
@@ -249,6 +313,11 @@ function actionExplicitlyRequested(tool, text) {
   if (tool === 'mail.send_forward') {
     return /\bforward\b/.test(request) && !(/\bdraft\b/.test(request) && !/\bsend\b/.test(request));
   }
+  if (tool === 'device.create_reminder') return /\b(remind|reminder)\b/.test(request);
+  if (tool === 'device.create_calendar_event') {
+    return /\b(calendar|schedule|event)\b/.test(request) && /\b(add|create|put|schedule)\b/.test(request);
+  }
+  if (tool === 'device.pick_contact') return /\bforward\b/.test(request);
   if (['rules.create', 'rules.upsert'].includes(tool)) return /\b(future|always|from now on|rule)\b/.test(request) && /\b(archive|keep|update|change|override)\b/.test(request);
   if (tool === 'rules.disable') return /\b(disable|stop|remove|turn off)\b/.test(request) && /\brule\b/.test(request);
   if (tool === 'rules.reset') return /\b(reset|restore|remove)\b/.test(request) && /\brule\b/.test(request);
@@ -309,6 +378,9 @@ function proposalSummary(name, args, { replacementRule = null } = {}) {
   if (name === 'mail.send_forward') {
     return `Forward this email to ${args.draft.to.join(', ')} ${args.draft.skipAttachments ? 'without' : 'including'} attachments`;
   }
+  if (name === 'device.create_reminder') return `Create the reminder “${args.title}”`;
+  if (name === 'device.create_calendar_event') return `Add “${args.title}” to Calendar`;
+  if (name === 'device.pick_contact') return `Choose the email address for ${args.name}`;
   if (name === 'rules.create' || name === 'rules.upsert') {
     const base = args.type === 'exact'
       ? `${args.effect === 'archive' ? 'Archive' : 'Keep'} future messages matching ${args.matcherKind} ${args.matcherValue}`
@@ -384,6 +456,13 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
       evidence: messages.map(({ account, message }) => evidenceFromMessage(message, account)),
     };
   }
+  if (name === 'contacts.resolve') {
+    return {
+      kind: 'result', risk: definition.risk,
+      result: { query: args.query, candidates: resolveTrackedContacts(args.query, { limit: args.limit }) },
+      evidence: [],
+    };
+  }
   if (name === 'mail.get_thread') {
     const thread = await dependencies.getThread(args.account, args.threadId);
     const messages = (thread?.messages || []).slice(-20);
@@ -401,6 +480,22 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
   }
   if (name === 'mail.mark_unread') {
     return { kind: 'result', risk: definition.risk, result: await dependencies.markUnread(args), evidence: [] };
+  }
+  if (name.startsWith('device.')) {
+    if (conversation.scope !== 'email') {
+      throw new AssistantToolError('email_scope_required', 'Open an email before creating this device action', 400);
+    }
+    const item = getEmailItem(conversation.emailItemId);
+    if (!item) throw new AssistantToolError('email_not_found', 'The contextual email no longer exists', 404);
+    args = {
+      ...args,
+      source: {
+        emailItemId: item.id,
+        account: item.account,
+        mailboxState: item.mailboxState,
+        subject: item.subject,
+      },
+    };
   }
   if (name === 'rules.list') {
     return {

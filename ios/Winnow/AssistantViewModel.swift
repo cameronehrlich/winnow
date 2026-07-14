@@ -202,6 +202,29 @@ final class AssistantViewModel: ObservableObject {
     }
 
     @discardableResult
+    func completeClientAction(_ proposal: AssistantProposal) async -> Bool {
+        guard proposal.isPending, proposal.isDeviceAction, activeProposalID == nil else { return false }
+        activeProposalID = proposal.id
+        errorMessage = nil
+        let currentGeneration = generation
+        defer { if currentGeneration == generation { activeProposalID = nil } }
+
+        do {
+            let envelope = try await service.completeAssistantClientProposal(
+                id: proposal.id,
+                confirmationDigest: proposal.confirmationDigest
+            )
+            guard currentGeneration == generation else { return false }
+            apply(envelope)
+            return true
+        } catch {
+            guard currentGeneration == generation else { return false }
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
     func cancel(_ proposal: AssistantProposal) async -> Bool {
         guard proposal.isPending, activeProposalID == nil else { return false }
         activeProposalID = proposal.id

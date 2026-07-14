@@ -30,6 +30,7 @@
 		A00000000000000000000015 /* AssistantView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000017 /* AssistantView.swift */; };
 		A00000000000000000000016 /* MailRuleModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000018 /* MailRuleModels.swift */; };
 		A00000000000000000000017 /* MailRulesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000019 /* MailRulesView.swift */; };
+		A00000000000000000000018 /* DeviceActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000001A /* DeviceActions.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -75,6 +76,7 @@
 		B00000000000000000000017 /* AssistantView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantView.swift; sourceTree = "<group>"; };
 		B00000000000000000000018 /* MailRuleModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailRuleModels.swift; sourceTree = "<group>"; };
 		B00000000000000000000019 /* MailRulesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailRulesView.swift; sourceTree = "<group>"; };
+		B0000000000000000000001A /* DeviceActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceActions.swift; sourceTree = "<group>"; };
 		B10000000000000000000001 /* Winnow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Winnow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000002 /* WinnowTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WinnowTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000003 /* WinnowWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WinnowWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -139,6 +141,7 @@
 				B00000000000000000000017 /* AssistantView.swift */,
 				B00000000000000000000018 /* MailRuleModels.swift */,
 				B00000000000000000000019 /* MailRulesView.swift */,
+				B0000000000000000000001A /* DeviceActions.swift */,
 			);
 			path = Winnow;
 			sourceTree = "<group>";
@@ -329,6 +332,7 @@
 				A00000000000000000000015 /* AssistantView.swift in Sources */,
 				A00000000000000000000016 /* MailRuleModels.swift in Sources */,
 				A00000000000000000000017 /* MailRulesView.swift in Sources */,
+				A00000000000000000000018 /* DeviceActions.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

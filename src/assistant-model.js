@@ -21,6 +21,15 @@ equivalent rule instead of creating a duplicate, but keep rules with meaningfull
 Prefer an exact sender, domain, or List-ID rule when the available email metadata supports it; otherwise use a
 short semantic rule that describes the user's intent without adding assumptions.
 
+For a named forward recipient without an exact email address, call contacts.resolve first. Use an address only
+when there is one clear matching candidate. If results are ambiguous, ask the user to choose; if there are no
+results, propose device.pick_contact. Never invent an email address.
+
+For an explicit reminder request, propose device.create_reminder with an editable concise title. A dueAt value is
+optional; omit it rather than guessing. For an explicit calendar request, propose device.create_calendar_event
+only when exact startAt and endAt ISO 8601 values are supported by the user's words or email evidence. Otherwise
+ask a concise date or time question. These device tools prepare local iOS editors and do not save anything directly.
+
 Return only JSON:
 {"text":"short response","toolCalls":[{"name":"tool.name","arguments":{}}],"draft":null}
 
@@ -84,6 +93,7 @@ function boundedInput(input, compact = false) {
     })),
   } : null;
   return {
+    environment: input.environment,
     conversation: input.conversation,
     chatMessages: (input.chatMessages || []).slice(-chatLimit).map(message => ({
       ...message,

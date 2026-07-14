@@ -39,6 +39,11 @@ const MAX_TOOL_ROUNDS = 3;
 const ASSISTANT_RUN_LEASE_MS = 2 * 60 * 1000;
 const ASSISTANT_RUN_HEARTBEAT_MS = 30 * 1000;
 const DEFAULT_ASSISTANT_MODEL_TIMEOUT_MS = 75 * 1000;
+const CLIENT_ASSISTANT_TOOLS = new Set([
+  'device.create_reminder',
+  'device.create_calendar_event',
+  'device.pick_contact',
+]);
 let assistantModelTimeoutMs = DEFAULT_ASSISTANT_MODEL_TIMEOUT_MS;
 
 export const ASSISTANT_PROGRESS_STAGES = Object.freeze({
@@ -406,6 +411,10 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
       await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.model));
       response = await boundedModelResponse(model, {
+        environment: {
+          currentTime: new Date().toISOString(),
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        },
         conversation: {
           scope: conversation.scope,
           account: conversation.account,
@@ -554,6 +563,10 @@ export async function confirmAssistantProposal(id, confirmationDigest) {
   if (typeof confirmationDigest !== 'string' || !confirmationDigest) {
     throw new AssistantError(400, 'confirmation_digest_required');
   }
+  const existing = getAssistantProposal(id);
+  if (existing && CLIENT_ASSISTANT_TOOLS.has(existing.tool)) {
+    throw new AssistantError(400, 'proposal_requires_ios_completion');
+  }
   const claimed = claimAssistantProposal(id, confirmationDigest);
   if (!claimed.proposal) throw new AssistantError(404, 'proposal_not_found');
   if (!claimed.claimed) {
@@ -584,6 +597,36 @@ export async function confirmAssistantProposal(id, confirmationDigest) {
     });
   }
   return getAssistantConversationEnvelope(conversation.id);
+}
+
+export function completeAssistantClientProposal(id, confirmationDigest) {
+  if (typeof confirmationDigest !== 'string' || !confirmationDigest) {
+    throw new AssistantError(400, 'confirmation_digest_required');
+  }
+  const existing = getAssistantProposal(id);
+  if (!existing) throw new AssistantError(404, 'proposal_not_found');
+  if (!CLIENT_ASSISTANT_TOOLS.has(existing.tool)) {
+    throw new AssistantError(400, 'proposal_not_client_action');
+  }
+  const claimed = claimAssistantProposal(id, confirmationDigest);
+  if (!claimed.claimed) {
+    if (claimed.reason === 'completed') {
+      return getAssistantConversationEnvelope(existing.conversationId);
+    }
+    const status = claimed.reason === 'digest_mismatch' ? 403 : 409;
+    throw new AssistantError(status, `proposal_${claimed.reason}`);
+  }
+
+  finishAssistantProposal(id, { status: 'completed', result: { ok: true, completedBy: 'ios' } });
+  const text = existing.tool === 'device.create_reminder'
+    ? 'Added to Reminders.'
+    : existing.tool === 'device.create_calendar_event'
+      ? 'Added to Calendar.'
+      : 'Contact selected.';
+  addAssistantMessage({
+    id: randomUUID(), conversationId: existing.conversationId, role: 'assistant', text,
+  });
+  return getAssistantConversationEnvelope(existing.conversationId);
 }
 
 export function cancelProposal(id) {

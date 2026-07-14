@@ -897,6 +897,68 @@ describe('assistant API', () => {
     assert.match(forwardProposal.summary, /including attachments/i);
   });
 
+  it('keeps iOS reminder proposals pending until the client reports a successful save', async () => {
+    responses.push({
+      text: 'Review this reminder.',
+      toolCalls: [{
+        name: 'device.create_reminder',
+        arguments: { title: 'Submit receipt for FSA reimbursement', notes: 'Receipt forwarded by Riley.' },
+      }],
+    });
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const proposed = await (await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Remind me to submit this receipt for FSA reimbursement', idempotencyKey: 'reminder-proposal',
+    })).json();
+    const proposal = proposed.messages.at(-1).proposal;
+
+    assert.equal(proposal.tool, 'device.create_reminder');
+    assert.equal(proposal.status, 'pending');
+    assert.equal(proposal.arguments.source.emailItemId, item.id);
+
+    const wrongExecutionPath = await post(`/v1/assistant/proposals/${proposal.id}/confirm`, {
+      confirmationDigest: proposal.confirmationDigest,
+    });
+    assert.equal(wrongExecutionPath.status, 400);
+    assert.equal((await wrongExecutionPath.json()).error, 'proposal_requires_ios_completion');
+
+    const wrongDigest = await post(`/v1/assistant/proposals/${proposal.id}/complete-client`, {
+      confirmationDigest: 'wrong',
+    });
+    assert.equal(wrongDigest.status, 403);
+
+    const completed = await post(`/v1/assistant/proposals/${proposal.id}/complete-client`, {
+      confirmationDigest: proposal.confirmationDigest,
+    });
+    assert.equal(completed.status, 200);
+    const envelope = await completed.json();
+    assert.equal(envelope.messages.find(message => message.proposal)?.proposal.status, 'completed');
+    assert.equal(envelope.messages.at(-1).text, 'Added to Reminders.');
+
+    const replay = await post(`/v1/assistant/proposals/${proposal.id}/complete-client`, {
+      confirmationDigest: proposal.confirmationDigest,
+    });
+    assert.equal(replay.status, 200);
+    assert.equal((await replay.json()).messages.length, envelope.messages.length);
+  });
+
+  it('returns tracked contact candidates before asking iOS to pick a contact', async () => {
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'riley', threadId: 'riley',
+      from: 'Riley Ehrlich <riley@example.com>', subject: 'Receipt', archive: false,
+    });
+    responses.push(
+      { text: '', toolCalls: [{ name: 'contacts.resolve', arguments: { query: 'Riley' } }] },
+      { text: 'I found Riley.', toolCalls: [], draft: null },
+    );
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Forward this to Riley', idempotencyKey: 'resolve-riley',
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).messages.at(-1).text, 'I found Riley.');
+    assert.equal(calls.model, 2);
+  });
+
   it('executes the current reversible action before proposing a future-mail rule', async () => {
     responses.push({
       text: 'Archive this now and confirm the future rule.',

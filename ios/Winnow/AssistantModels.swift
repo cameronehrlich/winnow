@@ -374,6 +374,25 @@ enum AssistantValue: Decodable {
         case .null: "None"
         }
     }
+
+    var stringValue: String? {
+        guard case let .string(value) = self else { return nil }
+        return value
+    }
+
+    var boolValue: Bool? {
+        guard case let .bool(value) = self else { return nil }
+        return value
+    }
+
+    var objectValue: [String: AssistantValue]? {
+        guard case let .object(value) = self else { return nil }
+        return value
+    }
+}
+
+extension AssistantProposal {
+    var isDeviceAction: Bool { tool.hasPrefix("device.") }
 }
 
 private extension String {

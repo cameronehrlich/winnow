@@ -77,6 +77,7 @@ protocol AssistantService {
 
     func assistantConversation(id: String) async throws -> AssistantConversationEnvelope
     func confirmAssistantProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope
+    func completeAssistantClientProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope
     func cancelAssistantProposal(id: String) async throws -> AssistantConversationEnvelope
 }
 
@@ -324,6 +325,17 @@ struct APIClient: AssistantService {
             method: "POST",
             body: body,
             timeoutInterval: 60
+        )
+    }
+
+    func completeAssistantClientProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope {
+        let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        let body = try JSONSerialization.data(withJSONObject: ["confirmationDigest": confirmationDigest])
+        return try await request(
+            path: "/v1/assistant/proposals/\(encodedID)/complete-client",
+            method: "POST",
+            body: body,
+            timeoutInterval: 30
         )
     }
 

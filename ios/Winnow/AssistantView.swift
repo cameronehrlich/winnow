@@ -324,14 +324,24 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         .background { AppBackdrop() }
         .task { await viewModel.startIfNeeded() }
         .sheet(item: $reviewedProposal) { proposal in
-            ProposalConfirmationView(
-                proposal: proposal,
-                scopeTitle: scopeDescription,
-                isWorking: viewModel.activeProposalID == proposal.id,
-                confirm: { confirm(proposal) },
-                cancel: { cancel(proposal) }
-            )
-            .presentationDetents([.medium, .large])
+            if proposal.isDeviceAction {
+                DeviceProposalReviewView(
+                    proposal: proposal,
+                    isWorking: viewModel.activeProposalID == proposal.id,
+                    complete: { completeClientAction(proposal) },
+                    cancel: { cancel(proposal) },
+                    selectedContact: { name, email in selectContact(name: name, email: email, for: proposal) }
+                )
+            } else {
+                ProposalConfirmationView(
+                    proposal: proposal,
+                    scopeTitle: scopeDescription,
+                    isWorking: viewModel.activeProposalID == proposal.id,
+                    confirm: { confirm(proposal) },
+                    cancel: { cancel(proposal) }
+                )
+                .presentationDetents([.medium, .large])
+            }
         }
     }
 
@@ -612,6 +622,30 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         Task {
             let succeeded = await viewModel.cancel(proposal)
             if succeeded { reviewedProposal = nil }
+        }
+    }
+
+    private func completeClientAction(_ proposal: AssistantProposal) {
+        inlineThreadActivated = true
+        Task {
+            let succeeded = await viewModel.completeClientAction(proposal)
+            if succeeded {
+                reviewedProposal = nil
+                await onMailboxChanged()
+            }
+        }
+    }
+
+    private func selectContact(name: String, email: String, for proposal: AssistantProposal) {
+        inlineThreadActivated = true
+        Task {
+            guard await viewModel.completeClientAction(proposal) else { return }
+            reviewedProposal = nil
+            let cleanName = name.replacingOccurrences(of: "[\\r\\n<>]", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanEmail.isEmpty else { return }
+            _ = await viewModel.send("Forward this email to \(cleanName) <\(cleanEmail)>.")
         }
     }
 

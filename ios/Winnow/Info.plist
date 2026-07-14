@@ -22,6 +22,10 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Winnow adds calendar events that you review from your emails.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Winnow adds reminders that you review from your emails.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
