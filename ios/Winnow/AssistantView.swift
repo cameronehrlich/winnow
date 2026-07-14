@@ -315,14 +315,8 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                 }
                 .onChange(of: composerRequest) { _, request in
                     guard let request else { return }
-                    inlineThreadActivated = true
-                    composerText = request.text
-                    composerFocused = true
                     composerRequest = nil
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(180))
-                        scrollToBottom(proxy)
-                    }
+                    send(request.text)
                 }
             }
 
@@ -460,8 +454,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         SuggestionCloudLayout(spacing: 7) {
             ForEach(suggestions, id: \.self) { suggestion in
                 Button(suggestion) {
-                    composerText = suggestion
-                    composerFocused = true
+                    send(suggestion)
                 }
                 .font(.caption.weight(.semibold))
                 .buttonStyle(.bordered)
@@ -520,7 +513,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                 .lineLimit(1...5)
                 .focused($composerFocused)
                 .submitLabel(.send)
-                .onSubmit(send)
+                .onSubmit { send() }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 11)
                 .modifier(AssistantComposerFieldStyle())
@@ -543,7 +536,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
     }
 
     private var sendButton: some View {
-        Button(action: send) {
+        Button(action: { send() }) {
             Image(systemName: "arrow.up")
                 .font(.headline.bold())
                 .foregroundStyle(.white)
@@ -583,8 +576,8 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         .winnowCard(padding: 14)
     }
 
-    private func send() {
-        let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func send(_ requestedText: String? = nil) {
+        let text = (requestedText ?? composerText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !viewModel.isWorking else { return }
         inlineThreadActivated = true
         composerText = ""

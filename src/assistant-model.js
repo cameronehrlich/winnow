@@ -45,9 +45,19 @@ function parseModelJson(text) {
     return JSON.parse(cleaned);
   } catch {
     const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('assistant_model_invalid_json');
-    return JSON.parse(match[0]);
+    if (!match) throw codedModelError('assistant_model_invalid_json');
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      throw codedModelError('assistant_model_invalid_json');
+    }
   }
+}
+
+function codedModelError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
 }
 
 function normalizeResponse(value) {
@@ -115,7 +125,7 @@ export function serializeAssistantModelInput(input) {
     serialized = JSON.stringify(boundedInput(input, true));
   }
   if (serialized.length > MAX_CONTEXT_CHARS) {
-    throw new Error('assistant_context_too_large');
+    throw codedModelError('assistant_context_too_large');
   }
   return serialized;
 }

@@ -267,7 +267,7 @@ describe('assistant API', () => {
     assert.equal((await invalid.json()).error, 'invalid_text');
   });
 
-  it('completes a persisted safe failure envelope for ordinary model failures', async () => {
+  it('completes a persisted failure envelope for ordinary model failures', async () => {
     const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
     const { events } = await postStream(created.conversation.id, {
       text: 'Trigger safe failure', idempotencyKey: 'stream-model-failure',
@@ -275,7 +275,7 @@ describe('assistant API', () => {
     assert.equal(events[0].event, 'accepted');
     assert.equal(events.some(event => event.event === 'error'), false);
     assert.equal(events.at(-1).event, 'complete');
-    assert.match(events.at(-1).data.messages.at(-1).text, /couldn.t complete that safely/i);
+    assert.match(events.at(-1).data.messages.at(-1).text, /something went wrong/i);
     const inspector = new DatabaseSync(databasePath, { readOnly: true });
     const run = inspector.prepare('SELECT status, error_code FROM assistant_runs WHERE id = ?')
       .get(events[0].data.runId);
@@ -316,6 +316,57 @@ describe('assistant API', () => {
     assert.equal(attempts, 2);
     assert.equal(envelope.messages.at(-1).proposal.tool, 'device.create_reminder');
     assert.equal(envelope.messages.at(-1).proposal.status, 'pending');
+  });
+
+  it('retries one incomplete model response before returning an answer', async () => {
+    let attempts = 0;
+    setAssistantModelFactoryForTests(() => ({
+      async respond() {
+        attempts += 1;
+        if (attempts === 1) {
+          const error = new Error('assistant_model_invalid_json');
+          error.code = 'assistant_model_invalid_json';
+          throw error;
+        }
+        return { text: 'The key takeaway is available.', toolCalls: [], draft: null };
+      },
+    }));
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Key takeaway?', idempotencyKey: 'invalid-response-retry',
+    });
+
+    assert.equal(response.status, 200);
+    const envelope = await response.json();
+    assert.equal(attempts, 2);
+    assert.equal(envelope.messages.at(-1).text, 'The key takeaway is available.');
+  });
+
+  it('reports repeated incomplete model responses precisely', async () => {
+    let attempts = 0;
+    setAssistantModelFactoryForTests(() => ({
+      async respond() {
+        attempts += 1;
+        const error = new Error('assistant_model_invalid_json');
+        error.code = 'assistant_model_invalid_json';
+        throw error;
+      },
+    }));
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Key takeaway?', idempotencyKey: 'repeated-invalid-response',
+    });
+
+    assert.equal(response.status, 200);
+    const envelope = await response.json();
+    assert.equal(attempts, 2);
+    assert.match(envelope.messages.at(-1).text, /incomplete model response/i);
+    const inspector = new DatabaseSync(databasePath, { readOnly: true });
+    const run = inspector.prepare('SELECT status, error_code FROM assistant_runs WHERE idempotency_key = ?')
+      .get('repeated-invalid-response');
+    inspector.close();
+    assert.equal(run.status, 'failed');
+    assert.equal(run.error_code, 'assistant_model_invalid_response');
   });
 
   it('reports a repeated transient provider failure as availability rather than safety', async () => {
@@ -360,7 +411,7 @@ describe('assistant API', () => {
       text: 'Archive this email', idempotencyKey: 'provider-timeout',
     });
     assert.equal(events.at(-1).event, 'complete');
-    assert.match(events.at(-1).data.messages.at(-1).text, /couldn.t complete that safely/i);
+    assert.match(events.at(-1).data.messages.at(-1).text, /took too long/i);
 
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(calls.archive, 0);

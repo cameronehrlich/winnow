@@ -63,13 +63,13 @@ export const ASSISTANT_PROGRESS_LABELS = Object.freeze({
   [ASSISTANT_PROGRESS_STAGES.replay]: 'Returning the completed request',
   [ASSISTANT_PROGRESS_STAGES.resume]: 'Resuming an interrupted request',
   [ASSISTANT_PROGRESS_STAGES.waiting]: 'Waiting for the existing request',
-  [ASSISTANT_PROGRESS_STAGES.context]: 'Loading conversation context',
-  [ASSISTANT_PROGRESS_STAGES.model]: 'Generating a safe response',
-  [ASSISTANT_PROGRESS_STAGES.modelComplete]: 'Response planning is complete',
-  [ASSISTANT_PROGRESS_STAGES.tool]: 'Checking a requested mailbox step',
-  [ASSISTANT_PROGRESS_STAGES.toolComplete]: 'Mailbox step is complete',
-  [ASSISTANT_PROGRESS_STAGES.confirmation]: 'Preparing a confirmation',
-  [ASSISTANT_PROGRESS_STAGES.finalizing]: 'Preparing the response',
+  [ASSISTANT_PROGRESS_STAGES.context]: 'Reading the relevant context',
+  [ASSISTANT_PROGRESS_STAGES.model]: 'Thinking it through',
+  [ASSISTANT_PROGRESS_STAGES.modelComplete]: 'The answer is taking shape',
+  [ASSISTANT_PROGRESS_STAGES.tool]: 'Checking your mailbox',
+  [ASSISTANT_PROGRESS_STAGES.toolComplete]: 'Mailbox check complete',
+  [ASSISTANT_PROGRESS_STAGES.confirmation]: 'Getting your confirmation ready',
+  [ASSISTANT_PROGRESS_STAGES.finalizing]: 'Finishing up',
 });
 
 export class AssistantError extends Error {
@@ -240,7 +240,33 @@ function errorText(err) {
   if (err instanceof AssistantError && err.code === 'assistant_model_unavailable') {
     return 'Winnow’s model is temporarily unavailable. Please try again in a moment.';
   }
-  return 'I couldn’t complete that safely. Please try again.';
+  if (err instanceof AssistantError && err.code === 'assistant_model_timeout') {
+    return 'Winnow took too long to answer. Please try again.';
+  }
+  if (err instanceof AssistantError && err.code === 'assistant_model_invalid_response') {
+    return 'Winnow received an incomplete model response. Please try again.';
+  }
+  return 'Something went wrong while Winnow was answering. Please try again.';
+}
+
+function assistantFailureCode(err) {
+  if (typeof err?.code === 'string' && err.code) return err.code;
+  const status = Number(err?.status || err?.statusCode || err?.response?.status || 0);
+  if (status >= 400 && status <= 599) return `assistant_model_http_${status}`;
+  if (/GoogleGenerativeAI/i.test(String(err?.name || ''))) return 'assistant_model_provider_error';
+  return 'assistant_failed';
+}
+
+function logAssistantFailure(run, err, errorCode) {
+  if (err instanceof AssistantToolError) return;
+  if (process.env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT) return;
+  const status = Number(err?.status || err?.statusCode || err?.response?.status || 0) || null;
+  console.error('[assistant] run failed', {
+    runId: run.id,
+    errorCode,
+    errorName: String(err?.name || 'Error').slice(0, 120),
+    providerStatus: status,
+  });
 }
 
 async function emitAssistantProgress(onProgress, event) {
@@ -322,13 +348,20 @@ async function boundedModelResponse(model, input) {
   try {
     return await request();
   } catch (err) {
-    // Gemini occasionally returns a short-lived 429/5xx response. Retry one
-    // provider failure, but never retry our deadline or deterministic parsing,
-    // validation, authentication, and configuration errors.
-    if (!isTransientModelProviderError(err)) throw err;
+    // Gemini occasionally returns a short-lived 429/5xx response or an
+    // incomplete structured candidate. Retry either once, but never retry our
+    // deadline, validation, authentication, or configuration errors.
+    if (!isTransientModelProviderError(err) && !isInvalidModelResponse(err)) throw err;
     try {
       return await request();
     } catch (retryErr) {
+      if (isInvalidModelResponse(retryErr)) {
+        throw new AssistantError(
+          502,
+          'assistant_model_invalid_response',
+          'The assistant model returned an incomplete response',
+        );
+      }
       if (!isTransientModelProviderError(retryErr)) throw retryErr;
       throw new AssistantError(
         503,
@@ -337,6 +370,12 @@ async function boundedModelResponse(model, input) {
       );
     }
   }
+}
+
+function isInvalidModelResponse(err) {
+  return err?.code === 'assistant_model_invalid_json'
+    || String(err?.message || '') === 'assistant_model_invalid_json'
+    || /GoogleGenerativeAIResponseError/i.test(String(err?.name || ''));
 }
 
 function isTransientModelProviderError(err) {
@@ -577,11 +616,13 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
   } catch (err) {
     if (err instanceof AssistantError && err.code === 'assistant_run_lease_lost') throw err;
     requireAssistantRunLease(run);
+    const errorCode = assistantFailureCode(err);
+    logAssistantFailure(run, err, errorCode);
     finishAssistantRunWithMessage({
       runId: run.id,
       leaseToken: run.leaseToken,
       status: 'failed',
-      errorCode: err.code || 'assistant_failed',
+      errorCode,
       message: {
         id: randomUUID(), conversationId, role: 'assistant', text: errorText(err), evidence,
       },
