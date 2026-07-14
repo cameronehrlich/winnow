@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct EmailDetailView: View {
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var model: AppModel
     let emailID: String
     @State private var confirmUnsubscribe = false
@@ -202,7 +203,7 @@ struct EmailDetailView: View {
 
             AdaptiveActionPair {
                 Button {
-                    Task { _ = await model.perform(item.isArchived ? .moveToInbox : .archive, on: item) }
+                    performPrimaryMailboxAction(on: item)
                 } label: {
                     DetailActionLabel(
                         title: item.isArchived ? "Move to Inbox" : "Archive",
@@ -249,6 +250,14 @@ struct EmailDetailView: View {
         .font(.subheadline.weight(.semibold))
         .winnowCard(padding: 14)
         .disabled(model.performingEmailIDs.contains(item.id))
+    }
+
+    private func performPrimaryMailboxAction(on item: EmailItem) {
+        let action: EmailAction = item.isArchived ? .moveToInbox : .archive
+        if action == .archive {
+            dismiss()
+        }
+        Task { _ = await model.perform(action, on: item) }
     }
 
     private func fullEmailButton(_ item: EmailItem) -> some View {
