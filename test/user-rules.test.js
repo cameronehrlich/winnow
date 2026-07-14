@@ -509,7 +509,7 @@ rules:
         account: item.account, type: 'exact', effect: 'archive',
         matcherKind: 'sender', matcherValue: 'systemmessage@paycomonline.com',
       },
-      conversation, latestUserText: 'Always archive every email from this sender', dependencies: {},
+      conversation, latestUserText: 'Always archive and make it specific to this sender address', dependencies: {},
     });
     assert.equal(senderWide.arguments.subjectMatchMode, undefined);
   });
@@ -530,6 +530,19 @@ rules:
       },
       conversation, latestUserText: 'Always archive', dependencies: {},
     }), error => error.code === 'rule_scope_clarification_required');
+
+    const explicitExact = await prepareAssistantTool({
+      name: 'rules.upsert',
+      rawArguments: {
+        account: item.account, type: 'exact', effect: 'archive',
+        matcherKind: 'sender', matcherValue: 'digest@example.com',
+      },
+      conversation,
+      latestUserText: 'Always archive only this particular email subject',
+      dependencies: {},
+    });
+    assert.equal(explicitExact.arguments.subjectMatchMode, 'exact');
+    assert.equal(explicitExact.arguments.subjectMatchValue, 'digest for july 14, 2026');
   });
 
   it('supersedes an older pending rule proposal only after storing its replacement', () => {
@@ -611,6 +624,25 @@ rules:
     assert.equal(preview.matchCount, 1);
     assert.equal(preview.matches[0].messageId, 'compound-match');
     assert.equal(preview.nonMatches.length, 2);
+
+    const cleared = upsertUserRule({
+      id: saved.id,
+      account: saved.account,
+      type: saved.type,
+      effect: saved.effect,
+      matcherKind: saved.matcherKind,
+      matcherValue: saved.matcherValue,
+      subjectMatchMode: null,
+      subjectMatchValue: null,
+      description: saved.description,
+      expectedRule: { ruleId: saved.id, updatedAt: saved.updatedAt },
+    });
+    assert.equal(cleared.subjectMatchMode, undefined);
+    assert.equal(cleared.subjectMatchValue, undefined);
+    const clearedRecord = getUserRuleRecord(saved.id);
+    assert.equal(clearedRecord.subjectMatchMode, null);
+    assert.equal(clearedRecord.subjectMatchValue, null);
+    assert.equal(clearedRecord.conflictKey, 'exact:sender:systemmessage@paycomonline.com');
   });
 
   it('additively migrates older user_rules tables for subject constraints', () => {

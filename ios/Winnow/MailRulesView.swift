@@ -334,8 +334,9 @@ struct MailRuleEditorView: View {
         let matcherIsPresent = rule.belongsWithDefaults || (draft.type == "semantic"
             ? draft.match?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             : draft.matcherValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+        let subjectValue = draft.subjectMatchValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let subjectIsValid = draft.type != "exact" || draft.subjectMatchMode == nil
-            || draft.subjectMatchValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            || (!subjectValue.isEmpty && (draft.subjectMatchMode != "prefix" || subjectValue.count >= 8))
         let accountIsScoped = !rule.isBaseline
             || draft.account?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         return matcherIsPresent && subjectIsValid && accountIsScoped && !isPreviewing && !isSaving
@@ -451,6 +452,12 @@ struct MailRuleEditorView: View {
                                 get: { draft.subjectMatchValue ?? "" },
                                 set: { draft.subjectMatchValue = $0 }
                             ))
+                            if draft.subjectMatchMode == "prefix",
+                               (draft.subjectMatchValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines).count < 8 {
+                                Text("Use at least 8 characters for a subject prefix.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -572,6 +579,7 @@ struct MailRuleReviewView: View {
                 Section("Proposed Behavior") {
                     LabeledContent("Action", value: draft.effect == "archive" ? "Archive" : "Keep in Inbox")
                     LabeledContent("Account", value: draft.account ?? "Choose an account")
+                    LabeledContent("Match", value: draft.matcherTitle)
                     if let evaluatedCount = preview.evaluatedCount {
                         LabeledContent("Examples evaluated", value: evaluatedCount.formatted())
                     } else if let matchCount = preview.matchCount {

@@ -371,9 +371,11 @@ function contextualSubjectConstraint(args, conversation, latestUserText) {
   if (conversation.scope !== 'email' || args.type !== 'exact' || args.subjectMatchMode) return args;
   const request = String(latestUserText || '').toLowerCase();
   if (!/\b(?:always|future|from now on|specific|particular|subject)\b/.test(request)) return args;
-  const explicitlySubjectScoped = /\b(?:subject|specific|particular)\b/.test(request);
-  if (!explicitlySubjectScoped
-      && (/\b(?:all|every|any|everything)\b|\b(?:sender|address|domain)\b|\bfrom\s+(?:this|that|the)\b/.test(request))) {
+  const mentionsSubject = /\b(?:subject|title)\b/.test(request);
+  const mentionsSender = /\b(?:sender|address|domain)\b|\bfrom\s+(?:this|that|the)\b/.test(request);
+  const explicitlySubjectScoped = mentionsSubject
+    || (/\b(?:specific|particular)\b/.test(request) && !mentionsSender);
+  if (!mentionsSubject && (mentionsSender || /\b(?:all|every|any|everything)\b/.test(request))) {
     return args;
   }
   const item = getEmailItem(conversation.emailItemId);
@@ -381,7 +383,8 @@ function contextualSubjectConstraint(args, conversation, latestUserText) {
   const normalizedSubject = normalizeRuleSubject(rawSubject);
   const looksDynamic = /\d/.test(normalizedSubject)
     || /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i.test(normalizedSubject);
-  if (!normalizedSubject || normalizedSubject === '(no subject)' || normalizedSubject.length > 200 || looksDynamic) {
+  if (!normalizedSubject || normalizedSubject === '(no subject)' || normalizedSubject.length > 200
+      || (!explicitlySubjectScoped && looksDynamic)) {
     throw new AssistantToolError(
       'rule_scope_clarification_required',
       'This subject looks empty or dynamic; ask whether the rule should use a stable subject prefix or the whole sender',

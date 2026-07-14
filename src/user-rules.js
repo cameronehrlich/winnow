@@ -168,13 +168,21 @@ export function normalizeUserRule(input, { source = 'api', existing = null } = {
     : requiredText(rawSourceEmailItemId, 'sourceEmailItemId', 500);
 
   if (inferredType === 'exact') {
+    const hasSubjectMode = Object.hasOwn(input, 'subjectMatchMode');
+    const hasSubjectValue = Object.hasOwn(input, 'subjectMatchValue');
+    const clearsSubjectConstraint = (hasSubjectMode && input.subjectMatchMode === null)
+      || (hasSubjectValue && input.subjectMatchValue === null);
     const exact = validateAssistantRule({
       account,
       effect,
       matcherKind: input.matcherKind ?? existing?.matcherKind,
       matcherValue: input.matcherValue ?? existing?.matcherValue,
-      subjectMatchMode: input.subjectMatchMode ?? existing?.subjectMatchMode,
-      subjectMatchValue: input.subjectMatchValue ?? existing?.subjectMatchValue,
+      subjectMatchMode: clearsSubjectConstraint
+        ? null
+        : (hasSubjectMode ? input.subjectMatchMode : existing?.subjectMatchMode),
+      subjectMatchValue: clearsSubjectConstraint
+        ? null
+        : (hasSubjectValue ? input.subjectMatchValue : existing?.subjectMatchValue),
       enabled,
     });
     return {

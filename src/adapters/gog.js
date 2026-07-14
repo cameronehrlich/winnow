@@ -107,6 +107,7 @@ function decodeBase64Url(value, maxLength = MAX_BODY_LENGTH) {
 
 function bodyFromPayload(payload, depth = 0) {
   if (!payload || typeof payload !== 'object' || depth > 20) return '';
+  if (isAttachmentMimePart(payload)) return '';
   const mimeType = String(payload.mimeType || '').toLowerCase();
   const direct = decodeBase64Url(payload.body?.data);
   if (direct && (mimeType.startsWith('text/') || !mimeType)) return direct;
@@ -121,8 +122,15 @@ function bodyFromPayload(payload, depth = 0) {
   return '';
 }
 
+function isAttachmentMimePart(payload) {
+  if (String(payload?.filename || '').trim()) return true;
+  const disposition = String(headersFrom(payload)['content-disposition'] || '').trim().toLowerCase();
+  return disposition === 'attachment' || disposition.startsWith('attachment;');
+}
+
 function mimeBodyFromPayload(payload, targetMimeType, maxLength, depth = 0) {
   if (!payload || typeof payload !== 'object' || depth > 20) return '';
+  if (isAttachmentMimePart(payload)) return '';
   const mimeType = String(payload.mimeType || '').toLowerCase();
   if (mimeType === targetMimeType) {
     const direct = decodeBase64Url(payload.body?.data, maxLength);

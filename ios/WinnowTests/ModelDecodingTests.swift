@@ -592,6 +592,8 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(payload["matcherValue"] as? String, "billing@example.com")
         XCTAssertEqual(payload["id"] as? String, "rule-1")
         XCTAssertNil(payload["match"])
+        XCTAssertTrue(payload["subjectMatchMode"] is NSNull)
+        XCTAssertTrue(payload["subjectMatchValue"] is NSNull)
     }
 
     func testCompoundSubjectRuleDecodesDisplaysAndRoundTrips() throws {
@@ -602,11 +604,22 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(rule.subjectMatchValue, "New Check Available")
         XCTAssertTrue(rule.matcherTitle.contains("Subject is “New Check Available”"))
 
+        let compoundDraft = MailRuleDraft(rule: rule)
+        XCTAssertTrue(compoundDraft.matcherTitle.contains("Subject is “New Check Available”"))
         let payload = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: JSONEncoder().encode(MailRuleDraft(rule: rule))) as? [String: Any]
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(compoundDraft)) as? [String: Any]
         )
         XCTAssertEqual(payload["subjectMatchMode"] as? String, "exact")
         XCTAssertEqual(payload["subjectMatchValue"] as? String, "New Check Available")
+
+        var clearedDraft = MailRuleDraft(rule: rule)
+        clearedDraft.subjectMatchMode = nil
+        clearedDraft.subjectMatchValue = nil
+        let clearedPayload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(clearedDraft)) as? [String: Any]
+        )
+        XCTAssertTrue(clearedPayload["subjectMatchMode"] is NSNull)
+        XCTAssertTrue(clearedPayload["subjectMatchValue"] is NSNull)
     }
 
     func testRuleAPIUsesUnifiedRoutesAndCandidateShapes() async throws {

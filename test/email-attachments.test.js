@@ -28,6 +28,15 @@ describe('assistant attachment planning', () => {
     );
   });
 
+  it('normalizes safe image aliases and MIME parameters before planning', () => {
+    assert.equal(assertReadableAttachment(attachment('jpg', 'image/jpg')).mimeType, 'image/jpeg');
+    assert.equal(
+      assertReadableAttachment(attachment('parameterized', 'image/jpeg; name=photo.jpg')).mimeType,
+      'image/jpeg',
+    );
+    assert.equal(assertReadableAttachment(attachment('png', 'image/x-png')).mimeType, 'image/png');
+  });
+
   it('selects four related JPEGs in one bounded batch with the requested image first', () => {
     const images = [1, 2, 3, 4].map(index => attachment(index));
     const plan = planReadableAttachmentBatch(images[2], images);

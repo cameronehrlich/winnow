@@ -125,6 +125,27 @@ describe('GogAdapter assistant primitives', () => {
     assert.equal(message.htmlBody, '<html><body><strong>Formatted body</strong></body></html>');
   });
 
+  it('does not mistake an attached HTML file for the email body', () => {
+    const attached = Buffer.from('<p>Attached document</p>').toString('base64url');
+    const actual = Buffer.from('<p>Actual email body</p>').toString('base64url');
+    const message = normalizeGogMessage({
+      id: 'message1',
+      payload: {
+        mimeType: 'multipart/mixed',
+        parts: [
+          { filename: 'document.html', mimeType: 'text/html', body: { data: attached } },
+          {
+            mimeType: 'multipart/alternative',
+            parts: [{ mimeType: 'text/html', body: { data: actual } }],
+          },
+        ],
+      },
+    }, { includeHtml: true });
+
+    assert.equal(message.body, '<p>Actual email body</p>');
+    assert.equal(message.htmlBody, '<p>Actual email body</p>');
+  });
+
   it('does not extract HTML during ordinary message normalization', () => {
     const html = Buffer.from('<p>Private formatted body</p>').toString('base64url');
     const message = normalizeGogMessage({

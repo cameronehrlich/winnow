@@ -12,8 +12,22 @@ export const SUPPORTED_ATTACHMENT_TYPES = new Set([
   'image/heif',
 ]);
 
+const ATTACHMENT_MIME_ALIASES = new Map([
+  ['image/jpg', 'image/jpeg'],
+  ['image/pjpeg', 'image/jpeg'],
+  ['image/x-png', 'image/png'],
+]);
+
 function boundedString(value, maxLength) {
   return String(value || '').trim().slice(0, maxLength);
+}
+
+function normalizeAttachmentMimeType(value) {
+  const mimeType = boundedString(value || 'application/octet-stream', 200)
+    .split(';', 1)[0]
+    .trim()
+    .toLowerCase();
+  return ATTACHMENT_MIME_ALIASES.get(mimeType) || mimeType;
 }
 
 export function normalizeAttachmentMetadata(value, fallbackMessageId = '') {
@@ -27,8 +41,7 @@ export function normalizeAttachmentMetadata(value, fallbackMessageId = '') {
     messageId,
     attachmentId,
     filename: boundedString(value?.filename || value?.name || 'Attachment', 500),
-    mimeType: boundedString(value?.mimeType || value?.contentType || 'application/octet-stream', 200)
-      .toLowerCase(),
+    mimeType: normalizeAttachmentMimeType(value?.mimeType || value?.contentType),
     sizeBytes,
   };
 }

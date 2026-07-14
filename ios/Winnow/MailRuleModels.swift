@@ -115,6 +115,15 @@ struct MailRuleDraft: Encodable, Equatable {
     var expectedConflict: MailRuleVersionBinding?
     var expectedRule: MailRuleVersionBinding?
 
+    var matcherTitle: String {
+        if type == "semantic" { return match?.nilIfBlank ?? "Semantic match" }
+        let kind = (matcherKind ?? "sender").replacingOccurrences(of: "_", with: " ").capitalized
+        let primary = "\(kind): \(matcherValue?.nilIfBlank ?? "Not specified")"
+        guard let subject = subjectMatchValue?.nilIfBlank else { return primary }
+        let relation = subjectMatchMode == "prefix" ? "starts with" : "is"
+        return "\(primary) · Subject \(relation) “\(subject)”"
+    }
+
     init(rule: MailRule) {
         id = rule.editable && !rule.isBaseline ? rule.id : nil
         account = rule.account
@@ -185,8 +194,8 @@ struct MailRuleDraft: Encodable, Equatable {
         if type == "exact" {
             try values.encode(matcherKind ?? "sender", forKey: .matcherKind)
             try values.encodeIfPresent(matcherValue, forKey: .matcherValue)
-            try values.encodeIfPresent(subjectMatchMode, forKey: .subjectMatchMode)
-            try values.encodeIfPresent(subjectMatchValue, forKey: .subjectMatchValue)
+            try values.encode(subjectMatchMode, forKey: .subjectMatchMode)
+            try values.encode(subjectMatchValue, forKey: .subjectMatchValue)
         } else {
             try values.encodeIfPresent(match, forKey: .match)
         }
