@@ -126,14 +126,14 @@ struct StatsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("TODAY")
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(WinnowDesign.indigo)
+                        .foregroundStyle(WinnowDesign.accent)
                     Text(model.summary.date)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Image(systemName: "calendar")
-                    .foregroundStyle(WinnowDesign.indigo)
+                    .foregroundStyle(WinnowDesign.accent)
             }
 
             HStack(spacing: 0) {
@@ -202,7 +202,7 @@ private struct ActivityRow: View {
     private var presentation: (label: String, icon: String, color: Color) {
         switch event.actionType {
         case "email.auto_archived": ("Archived automatically", "archivebox.fill", WinnowDesign.amber)
-        case "email.manual_archived": ("Archived", "archivebox.fill", WinnowDesign.indigo)
+        case "email.manual_archived": ("Archived", "archivebox.fill", WinnowDesign.accent)
         case "email.restored_to_inbox": ("Moved to Inbox", "arrow.uturn.backward", WinnowDesign.brightIndigo)
         case "email.unsubscribed": ("Unsubscribed", "person.crop.circle.badge.minus", WinnowDesign.rose)
         case "email.unsubscribe_attempted": ("Unsubscribe needs a manual step", "envelope.badge", WinnowDesign.amber)

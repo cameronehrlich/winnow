@@ -39,6 +39,21 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(content.messagesForDisplay.map(\.id), ["m1", "m3", "m2"])
     }
 
+    func testFullEmailBodyDetectsSafeLinksAndPhoneNumbers() {
+        let source = "Visit https://example.com, email help@example.com, or call +1 (415) 555-0123."
+        let rendered = EmailBodyLinks.render(source)
+        let links = Set(rendered.runs.compactMap { $0.link?.absoluteString })
+
+        XCTAssertEqual(String(rendered.characters), source)
+        XCTAssertTrue(links.contains("https://example.com"))
+        XCTAssertTrue(links.contains("mailto:help@example.com"))
+        XCTAssertTrue(links.contains("tel:+14155550123"))
+        XCTAssertTrue(links.allSatisfy {
+            guard let scheme = URL(string: $0)?.scheme else { return false }
+            return ["http", "https", "mailto", "tel"].contains(scheme)
+        })
+    }
+
     func testEmailDecodesTypedHandlingDecisionAndRuleAttribution() throws {
         let json = #"""
         {

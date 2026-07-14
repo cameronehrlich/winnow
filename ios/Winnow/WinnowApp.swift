@@ -9,7 +9,7 @@ struct WinnowApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(model)
-                .tint(WinnowDesign.indigo)
+                .tint(WinnowDesign.accent)
         }
     }
 }

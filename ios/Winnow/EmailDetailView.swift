@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct EmailDetailView: View {
@@ -35,7 +36,15 @@ struct EmailDetailView: View {
                         actionsCard(item)
 
                         if !item.summary.isEmpty {
-                            InsightBlock(title: "Summary", symbol: "text.alignleft", text: item.summary, color: WinnowDesign.indigo)
+                            InsightBlock(
+                                title: "Summary",
+                                symbol: "text.alignleft",
+                                text: item.summary,
+                                color: WinnowDesign.accent,
+                                actionTitle: item.canLoadFullContent ? "View Full Email" : nil,
+                                actionSymbol: "doc.text.magnifyingglass",
+                                action: item.canLoadFullContent ? { showingFullEmail = true } : nil
+                            )
                         }
 
                         if let decision = item.handlingDecision {
@@ -54,7 +63,13 @@ struct EmailDetailView: View {
                         }
 
                         if !item.snippet.isEmpty, item.snippet != item.summary {
-                            InsightBlock(title: "Message preview", symbol: "quote.opening", text: item.snippet, color: .secondary)
+                            InsightBlock(
+                                title: "Message preview",
+                                symbol: "quote.opening",
+                                text: item.snippet,
+                                color: .secondary,
+                                detectLinks: true
+                            )
                         }
 
                         if item.unsubscribeState == "succeeded" {
@@ -211,7 +226,7 @@ struct EmailDetailView: View {
                     )
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(WinnowDesign.indigo)
+                .tint(WinnowDesign.accent)
             } trailing: {
                 Button {
                     Task { _ = await model.perform(item.isUnread ? .markRead : .markUnread, on: item) }
@@ -222,19 +237,20 @@ struct EmailDetailView: View {
                     )
                 }
                 .buttonStyle(.bordered)
-                .tint(WinnowDesign.indigo)
+                .tint(WinnowDesign.accent)
             }
 
-            if item.canLoadFullContent, item.canUnsubscribe {
-                AdaptiveActionPair {
-                    fullEmailButton(item)
-                } trailing: {
-                    unsubscribeButton
-                }
-            } else if item.canLoadFullContent {
-                fullEmailButton(item)
-            } else if item.canUnsubscribe {
+            if item.canUnsubscribe {
                 unsubscribeButton
+            }
+
+            if item.canLoadFullContent, item.summary.isEmpty {
+                Button { showingFullEmail = true } label: {
+                    DetailActionLabel(title: "View Full Email", symbol: "doc.text.magnifyingglass")
+                }
+                .buttonStyle(.bordered)
+                .tint(WinnowDesign.accent)
+                .accessibilityHint("Loads the complete message securely from Gmail.")
             }
 
             if item.handlingDecision == nil {
@@ -244,7 +260,7 @@ struct EmailDetailView: View {
                     DetailActionLabel(title: "Create Rule from This Email", symbol: "checklist")
                 }
                 .buttonStyle(.bordered)
-                .tint(WinnowDesign.indigo)
+                .tint(WinnowDesign.accent)
             }
         }
         .font(.subheadline.weight(.semibold))
@@ -258,15 +274,6 @@ struct EmailDetailView: View {
             dismiss()
         }
         Task { _ = await model.perform(action, on: item) }
-    }
-
-    private func fullEmailButton(_ item: EmailItem) -> some View {
-        Button { showingFullEmail = true } label: {
-            DetailActionLabel(title: "View Full Email", symbol: "doc.text.magnifyingglass")
-        }
-        .buttonStyle(.bordered)
-        .tint(WinnowDesign.indigo)
-        .accessibilityHint("Loads this conversation securely from the \(item.account) Gmail account.")
     }
 
     private var unsubscribeButton: some View {
@@ -373,10 +380,10 @@ private struct HandlingDecisionCard: View {
                     systemImage: decision.effect == .archive ? "archivebox.fill" : "tray.fill"
                 )
                     .font(.headline)
-                    .foregroundStyle(decision.effect == .archive ? WinnowDesign.indigo : WinnowDesign.mint)
+                    .foregroundStyle(decision.effect == .archive ? WinnowDesign.accent : WinnowDesign.mint)
                 Spacer()
                 if let confidence = decision.confidence {
-                    CapsuleLabel("\(confidence)%", color: WinnowDesign.indigo)
+                    CapsuleLabel("\(confidence)%", color: WinnowDesign.accent)
                 }
             }
 
@@ -405,15 +412,16 @@ private struct HandlingDecisionCard: View {
             if canUndo {
                 AdaptiveActionPair {
                     Button(action: undo) {
-                        Label("Undo for This Email", systemImage: "arrow.uturn.backward")
+                        DetailActionLabel(title: "Undo This Email", symbol: "arrow.uturn.backward")
                     }
                     .buttonStyle(.bordered)
+                    .tint(WinnowDesign.accent)
                 } trailing: {
                     Button(action: adjust) {
-                        Label("Adjust Future", systemImage: "slider.horizontal.3")
+                        DetailActionLabel(title: "Adjust Future", symbol: "slider.horizontal.3")
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(WinnowDesign.indigo)
+                    .tint(WinnowDesign.accent)
                 }
             } else {
                 Button(action: adjust) {
@@ -421,7 +429,7 @@ private struct HandlingDecisionCard: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(WinnowDesign.indigo)
+                .tint(WinnowDesign.accent)
             }
 
             Button(action: createRule) {
@@ -429,7 +437,7 @@ private struct HandlingDecisionCard: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .tint(WinnowDesign.indigo)
+            .tint(WinnowDesign.accent)
         }
         .winnowCard(padding: 14)
         .disabled(isBusy)
@@ -686,17 +694,102 @@ private struct InsightBlock: View {
     let symbol: String
     let text: String
     let color: Color
+    let actionTitle: String?
+    let actionSymbol: String?
+    let action: (() -> Void)?
+    let detectLinks: Bool
+
+    init(
+        title: String,
+        symbol: String,
+        text: String,
+        color: Color,
+        actionTitle: String? = nil,
+        actionSymbol: String? = nil,
+        action: (() -> Void)? = nil,
+        detectLinks: Bool = false
+    ) {
+        self.title = title
+        self.symbol = symbol
+        self.text = text
+        self.color = color
+        self.actionTitle = actionTitle
+        self.actionSymbol = actionSymbol
+        self.action = action
+        self.detectLinks = detectLinks
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
             Label(title.uppercased(), systemImage: symbol)
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(color)
-            Text(text)
+            Group {
+                if detectLinks {
+                    Text(EmailBodyLinks.render(text))
+                } else {
+                    Text(text)
+                }
+            }
                 .font(.body)
+                .tint(WinnowDesign.accent)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if let actionTitle, let action {
+                Button(action: action) {
+                    if let actionSymbol {
+                        Label(actionTitle, systemImage: actionSymbol)
+                    } else {
+                        Text(actionTitle)
+                    }
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(WinnowDesign.accent)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .buttonStyle(.plain)
+                .accessibilityHint("Loads the complete message securely from Gmail.")
+            }
         }
         .winnowCard()
+    }
+}
+
+enum EmailBodyLinks {
+    private static let detector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType.link.rawValue
+            | NSTextCheckingResult.CheckingType.phoneNumber.rawValue
+    )
+    private static let allowedSchemes = Set(["http", "https", "mailto", "tel"])
+
+    static func render(_ source: String) -> AttributedString {
+        var rendered = AttributedString(source)
+        guard let detector else { return rendered }
+
+        let fullRange = NSRange(source.startIndex..<source.endIndex, in: source)
+        for match in detector.matches(in: source, range: fullRange) {
+            guard let url = safeURL(for: match),
+                  let sourceRange = Range(match.range, in: source),
+                  let lowerBound = AttributedString.Index(sourceRange.lowerBound, within: rendered),
+                  let upperBound = AttributedString.Index(sourceRange.upperBound, within: rendered) else {
+                continue
+            }
+            rendered[lowerBound..<upperBound].link = url
+        }
+        return rendered
+    }
+
+    private static func safeURL(for match: NSTextCheckingResult) -> URL? {
+        let url: URL?
+        if match.resultType == .phoneNumber, let phoneNumber = match.phoneNumber {
+            let normalized = phoneNumber.filter { $0.isNumber || $0 == "+" }
+            url = normalized.isEmpty ? nil : URL(string: "tel:\(normalized)")
+        } else {
+            url = match.url
+        }
+
+        guard let url,
+              let scheme = url.scheme?.lowercased(),
+              allowedSchemes.contains(scheme) else { return nil }
+        return url
     }
 }
 
@@ -756,7 +849,7 @@ private struct FullEmailView: View {
                         } actions: {
                             Button("Try Again") { Task { await load() } }
                                 .buttonStyle(.borderedProminent)
-                                .tint(WinnowDesign.indigo)
+                                .tint(WinnowDesign.accent)
                         }
                     }
                 }
@@ -783,7 +876,7 @@ private struct FullEmailView: View {
             if content.messages.count > 1 {
                 Text("\(content.messages.count) messages")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(WinnowDesign.indigo)
+                    .foregroundStyle(WinnowDesign.accent)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -839,7 +932,7 @@ private struct FullEmailMessageCard: View {
                 } label: {
                     header
                 }
-                .tint(WinnowDesign.indigo)
+                .tint(WinnowDesign.accent)
             }
         }
         .winnowCard()
@@ -848,8 +941,9 @@ private struct FullEmailMessageCard: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(message.from.isEmpty ? "Unknown sender" : message.from)
+                Text(EmailBodyLinks.render(message.from.isEmpty ? "Unknown sender" : message.from))
                     .font(.headline)
+                    .tint(WinnowDesign.accent)
                     .lineLimit(2)
                 if !message.date.isEmpty {
                     Text(message.date)
@@ -862,7 +956,7 @@ private struct FullEmailMessageCard: View {
             if isSelectedMessage {
                 Text("Selected")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(WinnowDesign.indigo)
+                    .foregroundStyle(WinnowDesign.accent)
             } else if count > 1 {
                 Text("\(position + 1) of \(count)")
                     .font(.caption2.weight(.semibold))
@@ -883,8 +977,9 @@ private struct FullEmailMessageCard: View {
                     .italic()
                     .foregroundStyle(.secondary)
             } else {
-                Text(message.body)
+                Text(EmailBodyLinks.render(message.body))
                     .font(.body)
+                    .tint(WinnowDesign.accent)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -894,7 +989,9 @@ private struct FullEmailMessageCard: View {
     private func metadataLine(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 5) {
             Text("\(label):").foregroundStyle(.tertiary)
-            Text(value).foregroundStyle(.secondary)
+            Text(EmailBodyLinks.render(value))
+                .foregroundStyle(.secondary)
+                .tint(WinnowDesign.accent)
         }
         .font(.caption)
     }

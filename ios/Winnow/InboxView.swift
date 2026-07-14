@@ -109,7 +109,7 @@ struct InboxView: View {
                             } label: {
                                 Label(mailbox.primaryAction.label, systemImage: mailbox.primaryAction.systemImage)
                             }
-                            .tint(mailbox == .inbox ? WinnowDesign.amber : WinnowDesign.indigo)
+                            .tint(mailbox == .inbox ? WinnowDesign.amber : WinnowDesign.accent)
                         }
                     }
                 }
