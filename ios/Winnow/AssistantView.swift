@@ -181,6 +181,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
 
 private struct AssistantConversationLayout<LeadingContent: View>: View {
     @ObservedObject var viewModel: AssistantViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var composerText = ""
     @State private var reviewedProposal: AssistantProposal?
     @State private var inlineThreadActivated = false
@@ -234,19 +235,14 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                                     reviseDraft: prepareDraftRevision
                                 )
                                 .id(message.id)
+                                .transition(messageTransition)
                             }
                         }
 
                         if viewModel.isSending {
-                            HStack(spacing: 9) {
-                                ProgressView().controlSize(.small)
-                                Text("Winnow is working…")
-                            }
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 4)
-                            .id("assistant-working")
+                            workingState
+                                .id("assistant-working")
+                                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
                         }
 
                         if let error = viewModel.errorMessage {
@@ -259,6 +255,8 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                     }
                     .padding(16)
                     .padding(.bottom, 8)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: viewModel.canonicalResponseRevision)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: viewModel.isSending)
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: viewModel.messages.count) { _, _ in
@@ -267,16 +265,16 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                     // thread before its response arrives, so new messages still
                     // scroll immediately even when the initial history was empty.
                     if presentation == .inlineEmail, !inlineThreadActivated { return }
-                    withAnimation { proxy.scrollTo("assistant-bottom", anchor: .bottom) }
+                    scrollToBottom(proxy)
                 }
                 .onChange(of: viewModel.isSending) { _, sending in
-                    if sending { withAnimation { proxy.scrollTo("assistant-bottom", anchor: .bottom) } }
+                    if sending { scrollToBottom(proxy) }
                 }
                 .onChange(of: composerFocused) { _, focused in
                     guard focused else { return }
                     Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(180))
-                        withAnimation { proxy.scrollTo("assistant-bottom", anchor: .bottom) }
+                        scrollToBottom(proxy)
                     }
                 }
                 .onChange(of: composerRequest) { _, request in
@@ -287,7 +285,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                     composerRequest = nil
                     Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(180))
-                        withAnimation { proxy.scrollTo("assistant-bottom", anchor: .bottom) }
+                        scrollToBottom(proxy)
                     }
                 }
             }
@@ -348,6 +346,48 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, presentation == .inlineEmail ? 24 : 50)
+    }
+
+    private var workingState: some View {
+        HStack(spacing: 9) {
+            if reduceMotion {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(WinnowDesign.indigo)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            Text(viewModel.progress?.label ?? "Winnow is working…")
+                .contentTransition(.opacity)
+                .animation(
+                    reduceMotion ? nil : .easeInOut(duration: 0.16),
+                    value: viewModel.progress?.stage
+                )
+        }
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color.primary.opacity(0.045), in: Capsule())
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(viewModel.progress?.label ?? "Winnow is working")
+    }
+
+    private var messageTransition: AnyTransition {
+        reduceMotion
+            ? .opacity
+            : .asymmetric(
+                insertion: .opacity.combined(with: .move(edge: .bottom)),
+                removal: .opacity
+            )
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        if reduceMotion {
+            proxy.scrollTo("assistant-bottom", anchor: .bottom)
+        } else {
+            withAnimation { proxy.scrollTo("assistant-bottom", anchor: .bottom) }
+        }
     }
 
     @ViewBuilder
@@ -462,7 +502,17 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                 if viewModel.conversation == nil {
                     Button("Try again") { Task { await viewModel.startIfNeeded() } }
                 }
-                Button("Dismiss") { viewModel.errorMessage = nil }
+                if viewModel.hasIndeterminateMessageAttempt {
+                    Button("Retry response") {
+                        Task {
+                            let succeeded = await viewModel.retryIndeterminateMessage()
+                            if succeeded { await onMailboxChanged() }
+                        }
+                    }
+                }
+                if !viewModel.hasIndeterminateMessageAttempt {
+                    Button("Dismiss") { viewModel.errorMessage = nil }
+                }
             }
             .font(.caption.weight(.semibold))
         }
@@ -479,7 +529,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         Task {
             let succeeded = await viewModel.send(text)
             if succeeded { await onMailboxChanged() }
-            else if viewModel.messages.last?.role != "user" { composerText = text }
+            else if viewModel.shouldRestoreFailedComposerText || viewModel.conversation == nil { composerText = text }
         }
     }
 

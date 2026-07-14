@@ -28,6 +28,7 @@ enum APIClientError: LocalizedError {
     case invalidResponse
     case transport(String)
     case decoding(String)
+    case assistantStream(message: String, retryable: Bool)
 
     var errorDescription: String? {
         switch self {
@@ -45,6 +46,8 @@ enum APIClientError: LocalizedError {
             "Couldn’t reach Winnow. \(message)"
         case let .decoding(message):
             "Winnow’s response couldn’t be read. \(message)"
+        case let .assistantStream(message, _):
+            message
         }
     }
 }
@@ -59,7 +62,25 @@ private struct MailRulePreviewRequest: Encodable {
     let limit: Int
 }
 
-struct APIClient {
+protocol AssistantService {
+    func createAssistantConversation(
+        scope: AssistantScope,
+        account: String?,
+        emailItemID: String?
+    ) async throws -> AssistantConversationEnvelope
+
+    func sendAssistantMessageStream(
+        conversationID: String,
+        text: String,
+        idempotencyKey: String
+    ) -> AsyncThrowingStream<AssistantStreamEvent, Error>
+
+    func assistantConversation(id: String) async throws -> AssistantConversationEnvelope
+    func confirmAssistantProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope
+    func cancelAssistantProposal(id: String) async throws -> AssistantConversationEnvelope
+}
+
+struct APIClient: AssistantService {
     let configuration: ServerConfiguration
     var session: URLSession = .shared
 
@@ -211,6 +232,81 @@ struct APIClient {
         )
     }
 
+    func sendAssistantMessageStream(
+        conversationID: String,
+        text: String,
+        idempotencyKey: String = UUID().uuidString
+    ) -> AsyncThrowingStream<AssistantStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    guard let baseURL = configuration.normalizedBaseURL else {
+                        throw APIClientError.invalidServerURL
+                    }
+                    let encodedID = conversationID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? conversationID
+                    guard let url = URLComponents(
+                        url: baseURL.appendingPathComponent("/v1/assistant/conversations/\(encodedID)/messages/stream"),
+                        resolvingAgainstBaseURL: false
+                    )?.url else {
+                        throw APIClientError.invalidServerURL
+                    }
+
+                    let body = try JSONSerialization.data(withJSONObject: [
+                        "text": text,
+                        "idempotencyKey": idempotencyKey,
+                    ])
+                    var request = URLRequest(url: url, timeoutInterval: 90)
+                    request.httpMethod = "POST"
+                    request.setValue("Bearer \(configuration.token)", forHTTPHeaderField: "Authorization")
+                    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.httpBody = body
+
+                    let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+                    do {
+                        (bytes, response) = try await session.bytes(for: request)
+                    } catch {
+                        throw APIClientError.transport(error.localizedDescription)
+                    }
+                    guard let http = response as? HTTPURLResponse else {
+                        throw APIClientError.invalidResponse
+                    }
+                    guard (200..<300).contains(http.statusCode) else {
+                        var errorData = Data()
+                        for try await byte in bytes { errorData.append(byte) }
+                        let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: errorData)
+                        let message = envelope?.message
+                            ?? envelope?.error
+                            ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+                        if http.statusCode == 401 { throw APIClientError.unauthorized }
+                        throw APIClientError.server(status: http.statusCode, message: message)
+                    }
+
+                    var parser = AssistantServerSentEventParser()
+                    for try await byte in bytes {
+                        try Task.checkCancellation()
+                        for frame in try parser.append(byte: byte) {
+                            if let event = try decodeAssistantStreamEvent(frame) {
+                                continuation.yield(event)
+                            }
+                        }
+                    }
+                    for frame in try parser.finish() {
+                        if let event = try decodeAssistantStreamEvent(frame) {
+                            continuation.yield(event)
+                        }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     func confirmAssistantProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope {
         let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
         let body = try JSONSerialization.data(withJSONObject: ["confirmationDigest": confirmationDigest])
@@ -315,6 +411,32 @@ struct APIClient {
             return try JSONDecoder().decode(Response.self, from: data)
         } catch {
             throw APIClientError.decoding(error.localizedDescription)
+        }
+    }
+
+    func decodeAssistantStreamEvent(_ frame: AssistantServerSentEvent) throws -> AssistantStreamEvent? {
+        let decoder = JSONDecoder()
+        do {
+            switch frame.name {
+            case "accepted":
+                return .accepted(try decoder.decode(AssistantStreamAccepted.self, from: frame.data))
+            case "progress":
+                return .progress(try decoder.decode(AssistantStreamProgress.self, from: frame.data))
+            case "complete":
+                return .complete(try decoder.decode(AssistantConversationEnvelope.self, from: frame.data))
+            case "error":
+                let failure = try decoder.decode(AssistantStreamFailure.self, from: frame.data)
+                throw APIClientError.assistantStream(
+                    message: failure.message,
+                    retryable: failure.retryable ?? false
+                )
+            default:
+                return nil
+            }
+        } catch let error as APIClientError {
+            throw error
+        } catch {
+            throw APIClientError.decoding("Malformed \(frame.name) stream event: \(error.localizedDescription)")
         }
     }
 }

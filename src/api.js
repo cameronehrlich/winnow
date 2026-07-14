@@ -28,6 +28,7 @@ import {
   createConversation,
   getConversation,
   submitAssistantMessage,
+  validateAssistantMessageRequest,
 } from './assistant.js';
 import {
   claimHandlingUndo,
@@ -70,6 +71,72 @@ function sendJson(res, status, body) {
 function sendNoContent(res) {
   res.writeHead(202);
   res.end();
+}
+
+function createSseWriter(req, res) {
+  let connected = true;
+  let heartbeat;
+  const disconnect = () => {
+    connected = false;
+    clearInterval(heartbeat);
+  };
+  req.once('aborted', disconnect);
+  res.once('close', disconnect);
+  res.once('error', disconnect);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-store, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.flushHeaders?.();
+  heartbeat = setInterval(() => {
+    if (!connected || res.destroyed || res.writableEnded) {
+      disconnect();
+      return;
+    }
+    try {
+      res.write(': heartbeat\n\n');
+    } catch {
+      disconnect();
+    }
+  }, 15_000);
+  heartbeat.unref?.();
+  return {
+    send(event, data) {
+      if (!connected || res.destroyed || res.writableEnded) return false;
+      try {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        return true;
+      } catch {
+        disconnect();
+        return false;
+      }
+    },
+    end() {
+      clearInterval(heartbeat);
+      if (!connected || res.destroyed || res.writableEnded) return;
+      res.end();
+    },
+  };
+}
+
+function assistantStreamError(err) {
+  if (err instanceof AssistantError || err instanceof HttpError) {
+    return {
+      error: err.code,
+      message: err.message,
+      ...((err.status >= 500 || ['assistant_run_in_progress', 'assistant_run_lease_lost'].includes(err.code))
+        ? { retryable: true }
+        : {}),
+    };
+  }
+  return {
+    error: 'assistant_failed',
+    message: 'The assistant request could not be completed safely',
+    retryable: true,
+  };
 }
 
 async function readJson(req) {
@@ -159,6 +226,11 @@ function assertBodyKeys(body, allowed) {
   for (const key of Object.keys(body)) {
     if (!allowed.includes(key)) throw new HttpError(400, `invalid_${key}`);
   }
+}
+
+function validateAssistantMessageBody(body) {
+  assertBodyKeys(body, ['text', 'idempotencyKey']);
+  return body;
 }
 
 function ruleRequest(callback) {
@@ -373,12 +445,27 @@ async function handleAuthed(req, res, url, dependencies = {}) {
     return;
   }
 
+  const assistantMessageStreamMatch = route(url.pathname, '/v1/assistant/conversations/:id/messages/stream');
+  if (req.method === 'POST' && assistantMessageStreamMatch) {
+    const body = validateAssistantMessageBody(await readJsonObject(req));
+    validateAssistantMessageRequest(assistantMessageStreamMatch.id, body);
+    const stream = createSseWriter(req, res);
+    try {
+      const envelope = await submitAssistantMessage(assistantMessageStreamMatch.id, body, {
+        onProgress: event => stream.send(event.type, event.data),
+      });
+      stream.send('complete', envelope);
+    } catch (err) {
+      stream.send('error', assistantStreamError(err));
+    } finally {
+      stream.end();
+    }
+    return;
+  }
+
   const assistantMessageMatch = route(url.pathname, '/v1/assistant/conversations/:id/messages');
   if (req.method === 'POST' && assistantMessageMatch) {
-    const body = await readJsonObject(req);
-    for (const key of Object.keys(body)) {
-      if (!['text', 'idempotencyKey'].includes(key)) throw new HttpError(400, `invalid_${key}`);
-    }
+    const body = validateAssistantMessageBody(await readJsonObject(req));
     sendJson(res, 200, await submitAssistantMessage(assistantMessageMatch.id, body));
     return;
   }

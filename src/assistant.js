@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createAssistantModel } from './assistant-model.js';
 import {
   ASSISTANT_TOOL_DEFINITIONS,
@@ -12,25 +12,60 @@ import {
 import { getAccounts } from './config.js';
 import {
   addAssistantMessage,
+  assistantRunHasTerminalOutput,
   cancelAssistantProposal,
+  claimStaleAssistantRun,
   claimAssistantProposal,
   completeAssistantRun,
   createAssistantConversation as insertAssistantConversation,
-  createAssistantProposal,
-  createAssistantRun,
+  createAssistantRunWithUserMessage,
   finishAssistantProposal,
+  finishAssistantRunWithMessage,
+  finishAssistantRunWithProposal,
   getAssistantConversation,
   getAssistantConversationEnvelope,
+  getAssistantMessage,
   getOrCreateAssistantEmailConversation,
   getAssistantProposal,
   getAssistantRunByIdempotencyKey,
   getEmailItem,
   listAssistantMessages,
   recordAssistantToolCall,
+  touchAssistantRunLease,
 } from './store.js';
 
 const PROPOSAL_TTL_MS = 15 * 60 * 1000;
 const MAX_TOOL_ROUNDS = 3;
+const ASSISTANT_RUN_LEASE_MS = 2 * 60 * 1000;
+const ASSISTANT_RUN_HEARTBEAT_MS = 30 * 1000;
+const DEFAULT_ASSISTANT_MODEL_TIMEOUT_MS = 75 * 1000;
+let assistantModelTimeoutMs = DEFAULT_ASSISTANT_MODEL_TIMEOUT_MS;
+
+export const ASSISTANT_PROGRESS_STAGES = Object.freeze({
+  replay: 'replay',
+  resume: 'resume',
+  waiting: 'waiting',
+  context: 'context',
+  model: 'model',
+  modelComplete: 'model_complete',
+  tool: 'tool',
+  toolComplete: 'tool_complete',
+  confirmation: 'confirmation',
+  finalizing: 'finalizing',
+});
+
+export const ASSISTANT_PROGRESS_LABELS = Object.freeze({
+  [ASSISTANT_PROGRESS_STAGES.replay]: 'Returning the completed request',
+  [ASSISTANT_PROGRESS_STAGES.resume]: 'Resuming an interrupted request',
+  [ASSISTANT_PROGRESS_STAGES.waiting]: 'Waiting for the existing request',
+  [ASSISTANT_PROGRESS_STAGES.context]: 'Loading conversation context',
+  [ASSISTANT_PROGRESS_STAGES.model]: 'Generating a safe response',
+  [ASSISTANT_PROGRESS_STAGES.modelComplete]: 'Response planning is complete',
+  [ASSISTANT_PROGRESS_STAGES.tool]: 'Checking a requested mailbox step',
+  [ASSISTANT_PROGRESS_STAGES.toolComplete]: 'Mailbox step is complete',
+  [ASSISTANT_PROGRESS_STAGES.confirmation]: 'Preparing a confirmation',
+  [ASSISTANT_PROGRESS_STAGES.finalizing]: 'Preparing the response',
+});
 
 export class AssistantError extends Error {
   constructor(status, code, message = code) {
@@ -48,6 +83,14 @@ export function setAssistantDependenciesFactoryForTests(factory) {
 
 export function resetAssistantDependenciesFactoryForTests() {
   dependenciesFactory = createDefaultAssistantDependencies;
+}
+
+export function setAssistantModelTimeoutForTests(timeoutMs) {
+  assistantModelTimeoutMs = timeoutMs;
+}
+
+export function resetAssistantModelTimeoutForTests() {
+  assistantModelTimeoutMs = DEFAULT_ASSISTANT_MODEL_TIMEOUT_MS;
 }
 
 function configuredAccounts() {
@@ -192,7 +235,108 @@ function errorText(err) {
   return 'I couldn’t complete that safely. Please try again.';
 }
 
-export async function submitAssistantMessage(conversationId, { text, idempotencyKey = '' }) {
+async function emitAssistantProgress(onProgress, event) {
+  if (typeof onProgress !== 'function') return;
+  try {
+    await onProgress(event);
+  } catch {
+    // Streaming is an optional observation channel. A disconnected or failed
+    // client must never interrupt the durable, idempotent assistant run.
+  }
+}
+
+function acceptedEvent(run) {
+  return {
+    type: 'accepted',
+    data: { runId: run.id, userMessageId: run.userMessageId },
+  };
+}
+
+function progressEvent(stage) {
+  const label = ASSISTANT_PROGRESS_LABELS[stage];
+  if (!label) throw new Error('invalid_assistant_progress_stage');
+  return { type: 'progress', data: { stage, label } };
+}
+
+function assistantRequestFingerprint(text) {
+  return createHash('sha256').update(text.trim()).digest('base64url');
+}
+
+function assertIdempotentRequestMatches(run, requestFingerprint) {
+  const storedFingerprint = run.requestFingerprint
+    || assistantRequestFingerprint(getAssistantMessage(run.userMessageId)?.text || '');
+  if (storedFingerprint !== requestFingerprint) {
+    throw new AssistantError(
+      409,
+      'idempotency_key_reused',
+      'This idempotency key was already used for a different assistant message',
+    );
+  }
+}
+
+function requireAssistantRunLease(run) {
+  if (!touchAssistantRunLease(run.id, run.leaseToken)) {
+    throw new AssistantError(
+      409,
+      'assistant_run_lease_lost',
+      'This assistant request was resumed by another worker',
+    );
+  }
+}
+
+function startAssistantRunHeartbeat(run) {
+  const timer = setInterval(() => {
+    if (!touchAssistantRunLease(run.id, run.leaseToken)) clearInterval(timer);
+  }, ASSISTANT_RUN_HEARTBEAT_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+async function boundedModelResponse(model, input) {
+  let timeout;
+  const providerResponse = Promise.resolve().then(() => model.respond(input));
+  const deadline = new Promise((resolve, reject) => {
+    timeout = setTimeout(() => reject(new AssistantError(
+      504,
+      'assistant_model_timeout',
+      'The assistant model did not respond in time',
+    )), assistantModelTimeoutMs);
+    timeout.unref?.();
+  });
+  try {
+    return await Promise.race([providerResponse, deadline]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function resolveExistingAssistantRun(run, requestFingerprint, leaseToken, onProgress) {
+  assertIdempotentRequestMatches(run, requestFingerprint);
+  let resolved = run;
+  let resumed = false;
+  if (run.status === 'running') {
+    const recovery = claimStaleAssistantRun(run.id, leaseToken, { leaseMs: ASSISTANT_RUN_LEASE_MS });
+    resolved = recovery.run || run;
+    resumed = recovery.claimed;
+  }
+  await emitAssistantProgress(onProgress, acceptedEvent(resolved));
+  if (resumed && assistantRunHasTerminalOutput(resolved.id)) {
+    completeAssistantRun(resolved.id, { leaseToken: resolved.leaseToken });
+    await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.replay));
+    return null;
+  }
+  if (resumed) {
+    await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.resume));
+    return resolved;
+  }
+  await emitAssistantProgress(onProgress, progressEvent(
+    resolved.status === 'running' ? ASSISTANT_PROGRESS_STAGES.waiting : ASSISTANT_PROGRESS_STAGES.replay,
+  ));
+  await waitForExistingRun(resolved);
+  return null;
+}
+
+export function validateAssistantMessageRequest(conversationId, { text, idempotencyKey = '' }) {
   const conversation = getAssistantConversation(conversationId);
   if (!conversation) throw new AssistantError(404, 'conversation_not_found');
   if (typeof text !== 'string' || !text.trim() || text.length > 4000) {
@@ -201,37 +345,67 @@ export async function submitAssistantMessage(conversationId, { text, idempotency
   if (idempotencyKey && (typeof idempotencyKey !== 'string' || idempotencyKey.length > 200)) {
     throw new AssistantError(400, 'invalid_idempotency_key');
   }
+  return { conversation, normalizedText: text.trim(), idempotencyKey };
+}
+
+export async function submitAssistantMessage(
+  conversationId,
+  request,
+  { onProgress } = {},
+) {
+  const { conversation, normalizedText, idempotencyKey } = validateAssistantMessageRequest(
+    conversationId,
+    request,
+  );
+  const requestFingerprint = assistantRequestFingerprint(normalizedText);
+  const leaseToken = randomUUID();
   const existingRun = idempotencyKey && getAssistantRunByIdempotencyKey(conversationId, idempotencyKey);
   if (existingRun) {
-    await waitForExistingRun(existingRun);
-    return getAssistantConversationEnvelope(conversationId);
+    const resumed = await resolveExistingAssistantRun(
+      existingRun,
+      requestFingerprint,
+      leaseToken,
+      onProgress,
+    );
+    if (!resumed) return getAssistantConversationEnvelope(conversationId);
+    return executeAssistantRun(resumed, conversation, normalizedText, onProgress);
   }
 
   const userMessageId = randomUUID();
   const requestedRunId = randomUUID();
-  const run = createAssistantRun({
+  const run = createAssistantRunWithUserMessage({
     id: requestedRunId,
     conversationId,
     userMessageId,
     idempotencyKey,
+    requestFingerprint,
+    leaseToken,
+    text: normalizedText,
   });
   if (run.id !== requestedRunId) {
-    await waitForExistingRun(run);
-    return getAssistantConversationEnvelope(conversationId);
+    const resumed = await resolveExistingAssistantRun(run, requestFingerprint, leaseToken, onProgress);
+    if (!resumed) return getAssistantConversationEnvelope(conversationId);
+    return executeAssistantRun(resumed, conversation, normalizedText, onProgress);
   }
-  addAssistantMessage({
-    id: userMessageId, conversationId, role: 'user', text: text.trim(),
-  });
+  await emitAssistantProgress(onProgress, acceptedEvent(run));
+  return executeAssistantRun(run, conversation, normalizedText, onProgress);
+}
 
+async function executeAssistantRun(run, conversation, text, onProgress) {
+  const conversationId = conversation.id;
   const toolResults = [];
   const evidence = [];
+  const stopHeartbeat = startAssistantRunHeartbeat(run);
   try {
+    requireAssistantRunLease(run);
     const dependencies = dependenciesFactory();
     const model = createAssistantModel();
+    await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.context));
     const context = await contextualEmail(conversation, dependencies);
     let response = null;
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-      response = await model.respond({
+      await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.model));
+      response = await boundedModelResponse(model, {
         conversation: {
           scope: conversation.scope,
           account: conversation.account,
@@ -242,14 +416,21 @@ export async function submitAssistantMessage(conversationId, { text, idempotency
         toolResults,
         availableTools: ASSISTANT_TOOL_DEFINITIONS,
       });
+      requireAssistantRunLease(run);
+      await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.modelComplete));
       const calls = Array.isArray(response?.toolCalls) ? response.toolCalls.slice(0, 3) : [];
       if (!calls.length) {
-        addAssistantMessage({
-          id: randomUUID(), conversationId, role: 'assistant',
-          text: response?.text || 'I could not determine a safe answer.',
-          evidence, draft: normalizeDraft(response?.draft),
+        requireAssistantRunLease(run);
+        finishAssistantRunWithMessage({
+          runId: run.id,
+          leaseToken: run.leaseToken,
+          message: {
+            id: randomUUID(), conversationId, role: 'assistant',
+            text: response?.text || 'I could not determine a safe answer.',
+            evidence, draft: normalizeDraft(response?.draft),
+          },
         });
-        completeAssistantRun(run.id);
+        await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.finalizing));
         return getAssistantConversationEnvelope(conversationId);
       }
 
@@ -265,6 +446,8 @@ export async function submitAssistantMessage(conversationId, { text, idempotency
       for (const call of orderedCalls) {
         const callId = randomUUID();
         try {
+          requireAssistantRunLease(run);
+          await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.tool));
           const prepared = await prepareAssistantTool({
             name: call.name,
             rawArguments: call.arguments,
@@ -272,6 +455,7 @@ export async function submitAssistantMessage(conversationId, { text, idempotency
             latestUserText: text,
             dependencies,
           });
+          requireAssistantRunLease(run);
           evidence.push(...(prepared.evidence || []));
           if (prepared.kind === 'proposal') {
             const identity = createProposalIdentity();
@@ -282,27 +466,33 @@ export async function submitAssistantMessage(conversationId, { text, idempotency
               arguments: prepared.arguments,
             };
             const confirmationDigest = assistantProposalDigest(proposalInput);
-            const proposal = createAssistantProposal({
-              id: identity.id,
-              conversationId,
+            const finished = finishAssistantRunWithProposal({
               runId: run.id,
-              tool: call.name,
-              risk: prepared.risk,
-              summary: prepared.summary,
-              arguments: prepared.arguments,
-              confirmationDigest,
-              expiresAt: new Date(Date.now() + PROPOSAL_TTL_MS).toISOString(),
-              idempotencyKey: identity.idempotencyKey,
+              leaseToken: run.leaseToken,
+              proposal: {
+                id: identity.id,
+                conversationId,
+                runId: run.id,
+                tool: call.name,
+                risk: prepared.risk,
+                summary: prepared.summary,
+                arguments: prepared.arguments,
+                confirmationDigest,
+                expiresAt: new Date(Date.now() + PROPOSAL_TTL_MS).toISOString(),
+                idempotencyKey: identity.idempotencyKey,
+              },
+              toolCall: {
+                id: callId, runId: run.id, proposalId: identity.id,
+                tool: call.name, risk: prepared.risk, arguments: prepared.arguments, status: 'proposed',
+              },
+              message: {
+                id: randomUUID(), conversationId, role: 'assistant',
+                text: response?.text || prepared.summary,
+                evidence, draft: normalizeDraft(response?.draft), proposalId: identity.id,
+              },
             });
-            recordAssistantToolCall({
-              id: callId, runId: run.id, proposalId: proposal.id,
-              tool: call.name, risk: prepared.risk, arguments: prepared.arguments, status: 'proposed',
-            });
-            addAssistantMessage({
-              id: randomUUID(), conversationId, role: 'assistant',
-              text: response?.text || prepared.summary,
-              evidence, draft: normalizeDraft(response?.draft), proposalId: proposal.id,
-            });
+            if (!finished) throw new AssistantError(409, 'assistant_run_lease_lost');
+            await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.confirmation));
             proposed = true;
             break;
           }
@@ -311,7 +501,9 @@ export async function submitAssistantMessage(conversationId, { text, idempotency
             arguments: call.arguments, result: safeToolAudit(prepared), status: 'completed',
           });
           toolResults.push({ tool: call.name, result: prepared.result, trust: 'untrusted_tool_data' });
+          await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.toolComplete));
         } catch (err) {
+          if (err instanceof AssistantError && err.code === 'assistant_run_lease_lost') throw err;
           recordAssistantToolCall({
             id: callId, runId: run.id, tool: call.name,
             risk: ASSISTANT_TOOL_DEFINITIONS.find(definition => definition.name === call.name)?.risk || 'read',
@@ -321,23 +513,40 @@ export async function submitAssistantMessage(conversationId, { text, idempotency
         }
       }
       if (proposed) {
-        completeAssistantRun(run.id);
+        await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.finalizing));
         return getAssistantConversationEnvelope(conversationId);
       }
     }
 
-    addAssistantMessage({
-      id: randomUUID(), conversationId, role: 'assistant', evidence,
-      text: 'I reached the safe tool limit before I could finish. Please narrow the request and try again.',
+    requireAssistantRunLease(run);
+    finishAssistantRunWithMessage({
+      runId: run.id,
+      leaseToken: run.leaseToken,
+      status: 'failed',
+      errorCode: 'tool_limit_reached',
+      message: {
+        id: randomUUID(), conversationId, role: 'assistant', evidence,
+        text: 'I reached the safe tool limit before I could finish. Please narrow the request and try again.',
+      },
     });
-    completeAssistantRun(run.id, { status: 'failed', errorCode: 'tool_limit_reached' });
+    await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.finalizing));
     return getAssistantConversationEnvelope(conversationId);
   } catch (err) {
-    addAssistantMessage({
-      id: randomUUID(), conversationId, role: 'assistant', text: errorText(err), evidence,
+    if (err instanceof AssistantError && err.code === 'assistant_run_lease_lost') throw err;
+    requireAssistantRunLease(run);
+    finishAssistantRunWithMessage({
+      runId: run.id,
+      leaseToken: run.leaseToken,
+      status: 'failed',
+      errorCode: err.code || 'assistant_failed',
+      message: {
+        id: randomUUID(), conversationId, role: 'assistant', text: errorText(err), evidence,
+      },
     });
-    completeAssistantRun(run.id, { status: 'failed', errorCode: err.code || 'assistant_failed' });
+    await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.finalizing));
     return getAssistantConversationEnvelope(conversationId);
+  } finally {
+    stopHeartbeat();
   }
 }
 

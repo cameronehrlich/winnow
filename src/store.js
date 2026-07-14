@@ -276,6 +276,7 @@ function migrate() {
       evidence_json TEXT NOT NULL DEFAULT '[]',
       draft_json TEXT,
       proposal_id TEXT,
+      run_id TEXT,
       created_at TEXT NOT NULL,
       FOREIGN KEY(conversation_id) REFERENCES assistant_conversations(id) ON DELETE CASCADE
     );
@@ -289,6 +290,9 @@ function migrate() {
       user_message_id TEXT NOT NULL,
       status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed')),
       idempotency_key TEXT,
+      request_fingerprint TEXT,
+      lease_token TEXT,
+      lease_updated_at TEXT,
       error_code TEXT,
       created_at TEXT NOT NULL,
       completed_at TEXT,
@@ -437,6 +441,16 @@ function migrate() {
     if (!pushColumns.some(column => column.name === name)) {
       database.exec(`ALTER TABLE push_devices ADD COLUMN ${name} ${definition}`);
     }
+  }
+  const assistantRunColumns = database.prepare('PRAGMA table_info(assistant_runs)').all();
+  for (const column of ['request_fingerprint', 'lease_token', 'lease_updated_at']) {
+    if (!assistantRunColumns.some(existing => existing.name === column)) {
+      database.exec(`ALTER TABLE assistant_runs ADD COLUMN ${column} TEXT`);
+    }
+  }
+  const assistantMessageColumns = database.prepare('PRAGMA table_info(assistant_messages)').all();
+  if (!assistantMessageColumns.some(column => column.name === 'run_id')) {
+    database.exec('ALTER TABLE assistant_messages ADD COLUMN run_id TEXT');
   }
 }
 
@@ -1308,6 +1322,8 @@ function rowToAssistantConversation(row) {
   };
 }
 
+export const MAX_ASSISTANT_ENVELOPE_BYTES = 8 * 1024 * 1024;
+
 function sanitizeAssistantEvidence(evidence = []) {
   if (!Array.isArray(evidence)) return [];
   const clip = (value, max) => String(value || '').slice(0, max);
@@ -1346,6 +1362,7 @@ function rowToAssistantMessage(row) {
   const message = {
     id: row.id,
     conversationId: row.conversation_id,
+    ...(row.run_id ? { runId: row.run_id } : {}),
     role: row.role,
     text: row.text,
     createdAt: row.created_at,
@@ -1465,14 +1482,14 @@ export function getAssistantConversation(id) {
 
 export function addAssistantMessage({
   id, conversationId, role, text = '', evidence = [], draft = null,
-  proposalId = '', createdAt = nowIso(),
+  proposalId = '', runId = '', createdAt = nowIso(),
 }) {
   const database = getDb();
   database.prepare(`
     INSERT INTO assistant_messages (
-      id, conversation_id, role, text, evidence_json, draft_json, proposal_id, created_at
+      id, conversation_id, role, text, evidence_json, draft_json, proposal_id, run_id, created_at
     ) VALUES (
-      @id, @conversationId, @role, @text, @evidenceJson, @draftJson, @proposalId, @createdAt
+      @id, @conversationId, @role, @text, @evidenceJson, @draftJson, @proposalId, @runId, @createdAt
     )
   `).run({
     id,
@@ -1482,6 +1499,7 @@ export function addAssistantMessage({
     evidenceJson: JSON.stringify(sanitizeAssistantEvidence(evidence)),
     draftJson: draft ? JSON.stringify(draft) : null,
     proposalId: proposalId || null,
+    runId: runId || null,
     createdAt,
   });
   database.prepare('UPDATE assistant_conversations SET updated_at = ? WHERE id = ?')
@@ -1517,7 +1535,39 @@ export function listAssistantMessages(conversationId, limit = 200) {
 export function getAssistantConversationEnvelope(id) {
   const conversation = getAssistantConversation(id);
   if (!conversation) return null;
-  return { conversation, messages: listAssistantMessages(id) };
+  const messages = listAssistantMessages(id);
+  const envelope = { conversation, messages };
+  const encodedBytes = value => Buffer.byteLength(JSON.stringify(value));
+  if (encodedBytes(envelope) <= MAX_ASSISTANT_ENVELOPE_BYTES) return envelope;
+
+  // Preserve the largest newest suffix that fits the shared sync/stream wire
+  // budget. Normal writes are already field-bounded; the minimal fallback is
+  // for pathological data imported from an older database.
+  let low = 0;
+  let high = messages.length - 1;
+  let firstIncluded = messages.length - 1;
+  while (low <= high) {
+    const candidate = Math.floor((low + high) / 2);
+    if (encodedBytes({ conversation, messages: messages.slice(candidate) }) <= MAX_ASSISTANT_ENVELOPE_BYTES) {
+      firstIncluded = candidate;
+      high = candidate - 1;
+    } else {
+      low = candidate + 1;
+    }
+  }
+  const bounded = { conversation, messages: messages.slice(firstIncluded) };
+  if (encodedBytes(bounded) <= MAX_ASSISTANT_ENVELOPE_BYTES) return bounded;
+
+  const newest = messages.at(-1);
+  const minimalNewest = newest ? {
+    id: newest.id,
+    conversationId: newest.conversationId,
+    ...(newest.runId ? { runId: newest.runId } : {}),
+    role: newest.role,
+    text: String(newest.text || '').slice(0, 12000),
+    createdAt: newest.createdAt,
+  } : null;
+  return { conversation, messages: minimalNewest ? [minimalNewest] : [] };
 }
 
 export function createAssistantRun({ id, conversationId, userMessageId, idempotencyKey = '' }) {
@@ -1536,6 +1586,67 @@ export function createAssistantRun({ id, conversationId, userMessageId, idempote
   }
 }
 
+export function createAssistantRunWithUserMessage({
+  id,
+  conversationId,
+  userMessageId,
+  idempotencyKey = '',
+  requestFingerprint,
+  leaseToken,
+  text,
+}) {
+  const timestamp = nowIso();
+  const database = getDb();
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    if (idempotencyKey) {
+      const existing = getAssistantRunByIdempotencyKey(conversationId, idempotencyKey);
+      if (existing) {
+        database.exec('ROLLBACK');
+        return existing;
+      }
+    }
+    database.prepare(`
+      INSERT INTO assistant_runs (
+        id, conversation_id, user_message_id, status, idempotency_key,
+        request_fingerprint, lease_token, lease_updated_at, created_at
+      ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      conversationId,
+      userMessageId,
+      idempotencyKey || null,
+      requestFingerprint,
+      leaseToken,
+      timestamp,
+      timestamp,
+    );
+    addAssistantMessage({
+      id: userMessageId,
+      conversationId,
+      role: 'user',
+      text,
+      runId: id,
+      createdAt: timestamp,
+    });
+    database.exec('COMMIT');
+    return {
+      id,
+      conversationId,
+      userMessageId,
+      status: 'running',
+      idempotencyKey: idempotencyKey || null,
+      requestFingerprint,
+      leaseToken,
+      leaseUpdatedAt: timestamp,
+      createdAt: timestamp,
+    };
+  } catch (err) {
+    try { database.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+    throw err;
+  }
+}
+
 export function getAssistantRunByIdempotencyKey(conversationId, idempotencyKey) {
   const row = getDb().prepare(`
     SELECT * FROM assistant_runs WHERE conversation_id = ? AND idempotency_key = ?
@@ -1547,17 +1658,137 @@ export function getAssistantRunByIdempotencyKey(conversationId, idempotencyKey) 
     userMessageId: row.user_message_id,
     status: row.status,
     idempotencyKey: row.idempotency_key,
+    requestFingerprint: row.request_fingerprint || null,
+    leaseToken: row.lease_token || null,
+    leaseUpdatedAt: row.lease_updated_at || null,
     errorCode: row.error_code || null,
     createdAt: row.created_at,
     completedAt: row.completed_at || null,
   };
 }
 
-export function completeAssistantRun(id, { status = 'completed', errorCode = '' } = {}) {
+export function claimStaleAssistantRun(id, leaseToken, {
+  now = new Date(),
+  leaseMs = 2 * 60 * 1000,
+} = {}) {
+  const database = getDb();
+  const timestamp = now.toISOString();
+  const cutoff = new Date(now.getTime() - leaseMs).toISOString();
+  const result = database.prepare(`
+    UPDATE assistant_runs
+    SET lease_token = @leaseToken, lease_updated_at = @timestamp
+    WHERE id = @id
+      AND status = 'running'
+      AND COALESCE(lease_updated_at, created_at) <= @cutoff
+  `).run({ id, leaseToken, timestamp, cutoff });
+  const row = database.prepare('SELECT * FROM assistant_runs WHERE id = ?').get(id);
+  if (!row) return { claimed: false, run: null };
+  const run = {
+    id: row.id,
+    conversationId: row.conversation_id,
+    userMessageId: row.user_message_id,
+    status: row.status,
+    idempotencyKey: row.idempotency_key,
+    requestFingerprint: row.request_fingerprint || null,
+    leaseToken: row.lease_token || null,
+    leaseUpdatedAt: row.lease_updated_at || null,
+    errorCode: row.error_code || null,
+    createdAt: row.created_at,
+    completedAt: row.completed_at || null,
+  };
+  return { claimed: result.changes === 1, run };
+}
+
+export function touchAssistantRunLease(id, leaseToken, timestamp = nowIso()) {
+  return getDb().prepare(`
+    UPDATE assistant_runs
+    SET lease_updated_at = ?
+    WHERE id = ? AND status = 'running' AND lease_token = ?
+  `).run(timestamp, id, leaseToken).changes === 1;
+}
+
+export function assistantRunHasTerminalOutput(runId) {
+  return Boolean(getDb().prepare(`
+    SELECT 1
+    FROM assistant_messages
+    WHERE run_id = ? AND role = 'assistant'
+    LIMIT 1
+  `).get(runId));
+}
+
+export function finishAssistantRunWithMessage({
+  runId,
+  leaseToken,
+  status = 'completed',
+  errorCode = '',
+  message,
+}) {
+  const database = getDb();
   const completedAt = nowIso();
-  getDb().prepare(`
-    UPDATE assistant_runs SET status = ?, error_code = ?, completed_at = ? WHERE id = ?
-  `).run(status, errorCode || null, completedAt, id);
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const updated = database.prepare(`
+      UPDATE assistant_runs
+      SET status = ?, error_code = ?, completed_at = ?, lease_token = NULL
+      WHERE id = ? AND status = 'running' AND lease_token = ?
+    `).run(status, errorCode || null, completedAt, runId, leaseToken);
+    if (updated.changes !== 1) {
+      database.exec('ROLLBACK');
+      return false;
+    }
+    addAssistantMessage({ ...message, runId });
+    database.exec('COMMIT');
+    return true;
+  } catch (err) {
+    try { database.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+    throw err;
+  }
+}
+
+export function finishAssistantRunWithProposal({
+  runId,
+  leaseToken,
+  proposal,
+  toolCall,
+  message,
+}) {
+  const database = getDb();
+  const completedAt = nowIso();
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const updated = database.prepare(`
+      UPDATE assistant_runs
+      SET status = 'completed', error_code = NULL, completed_at = ?, lease_token = NULL
+      WHERE id = ? AND status = 'running' AND lease_token = ?
+    `).run(completedAt, runId, leaseToken);
+    if (updated.changes !== 1) {
+      database.exec('ROLLBACK');
+      return false;
+    }
+    createAssistantProposal({ ...proposal, runId });
+    recordAssistantToolCall({ ...toolCall, runId, proposalId: proposal.id });
+    addAssistantMessage({ ...message, runId, proposalId: proposal.id });
+    database.exec('COMMIT');
+    return true;
+  } catch (err) {
+    try { database.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+    throw err;
+  }
+}
+
+export function completeAssistantRun(id, {
+  status = 'completed',
+  errorCode = '',
+  leaseToken = '',
+} = {}) {
+  const completedAt = nowIso();
+  const leaseSql = leaseToken ? 'AND lease_token = ?' : '';
+  const params = [status, errorCode || null, completedAt, id, ...(leaseToken ? [leaseToken] : [])];
+  return getDb().prepare(`
+    UPDATE assistant_runs
+    SET status = ?, error_code = ?, completed_at = ?, lease_token = NULL
+    WHERE id = ? AND status = 'running' ${leaseSql}
+  `).run(...params).changes === 1;
 }
 
 export function createAssistantProposal({

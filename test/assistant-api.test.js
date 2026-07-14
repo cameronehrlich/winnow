@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -8,15 +9,25 @@ import { createApiServer } from '../src/api.js';
 import { reloadConfig } from '../src/config.js';
 import { resetAssistantModelFactoryForTests, setAssistantModelFactoryForTests } from '../src/assistant-model.js';
 import {
+  ASSISTANT_PROGRESS_LABELS,
+  ASSISTANT_PROGRESS_STAGES,
   resetAssistantDependenciesFactoryForTests,
+  resetAssistantModelTimeoutForTests,
   setAssistantDependenciesFactoryForTests,
+  setAssistantModelTimeoutForTests,
+  submitAssistantMessage,
 } from '../src/assistant.js';
 import {
+  MAX_ASSISTANT_ENVELOPE_BYTES,
   addAssistantMessage,
+  assistantRunHasTerminalOutput,
   closeStoreForTests,
   configureDatabaseForTests,
   createAssistantConversation as insertAssistantConversation,
+  createAssistantProposal,
+  createAssistantRunWithUserMessage,
   createAssistantRule,
+  finishAssistantRunWithProposal,
   listAssistantRules,
   upsertEmailItemFromResult,
 } from '../src/store.js';
@@ -44,6 +55,26 @@ async function createConversation(body) {
   const response = await post('/v1/assistant/conversations', body);
   assert.equal(response.status, 201);
   return response.json();
+}
+
+function parseSse(text) {
+  return text.trim().split(/\n\n+/).filter(Boolean).map(block => {
+    const lines = block.split('\n');
+    const event = lines.find(line => line.startsWith('event: '))?.slice(7) || '';
+    const data = lines.filter(line => line.startsWith('data: ')).map(line => line.slice(6)).join('\n');
+    return { event, data: JSON.parse(data) };
+  });
+}
+
+async function postStream(conversationId, body, headers = authHeaders) {
+  const response = await fetch(
+    `${baseUrl}/v1/assistant/conversations/${conversationId}/messages/stream`,
+    { method: 'POST', headers, body: JSON.stringify(body) },
+  );
+  const rawText = response.headers.get('content-type')?.startsWith('text/event-stream')
+    ? await response.text()
+    : '';
+  return { response, events: rawText ? parseSse(rawText) : [], rawText };
 }
 
 beforeEach(async () => {
@@ -135,6 +166,7 @@ afterEach(async () => {
   if (server) await new Promise(resolve => server.close(resolve));
   resetAssistantModelFactoryForTests();
   resetAssistantDependenciesFactoryForTests();
+  resetAssistantModelTimeoutForTests();
   closeStoreForTests();
   rmSync(tempDir, { recursive: true, force: true });
   delete process.env.WINNOW_SKIP_LEGACY_IMPORT;
@@ -143,6 +175,378 @@ afterEach(async () => {
 });
 
 describe('assistant API', () => {
+  it('streams only allowlisted lifecycle events and completes with the normal envelope', async () => {
+    responses.push(
+      { text: '', toolCalls: [{ name: 'mail.search', arguments: { query: 'EIN', limit: 10 } }] },
+      { text: 'I found the confirmation.', toolCalls: [], draft: null },
+    );
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const { response, events } = await postStream(created.conversation.id, {
+      text: 'Find RAW USER REQUEST', idempotencyKey: 'stream-success',
+    });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /^text\/event-stream/);
+    assert.equal(events[0].event, 'accepted');
+    assert.deepEqual(Object.keys(events[0].data).sort(), ['runId', 'userMessageId']);
+    assert.equal(events.at(-1).event, 'complete');
+    assert.deepEqual(events.at(-1).data.messages.map(message => message.role), ['user', 'assistant']);
+    assert.equal(events.at(-1).data.messages.at(-1).text, 'I found the confirmation.');
+    assert.deepEqual(
+      events.at(-1).data.messages.map(message => message.runId),
+      [events[0].data.runId, events[0].data.runId],
+    );
+
+    const progress = events.filter(event => event.event === 'progress');
+    assert.deepEqual(progress.map(event => event.data.stage), [
+      ASSISTANT_PROGRESS_STAGES.context,
+      ASSISTANT_PROGRESS_STAGES.model,
+      ASSISTANT_PROGRESS_STAGES.modelComplete,
+      ASSISTANT_PROGRESS_STAGES.tool,
+      ASSISTANT_PROGRESS_STAGES.toolComplete,
+      ASSISTANT_PROGRESS_STAGES.model,
+      ASSISTANT_PROGRESS_STAGES.modelComplete,
+      ASSISTANT_PROGRESS_STAGES.finalizing,
+    ]);
+    for (const event of progress) {
+      assert.deepEqual(Object.keys(event.data).sort(), ['label', 'stage']);
+      assert.equal(event.data.label, ASSISTANT_PROGRESS_LABELS[event.data.stage]);
+    }
+    assert.doesNotMatch(
+      JSON.stringify(events.filter(event => event.event !== 'complete')),
+      /RAW USER REQUEST|SHOULD NOT COME FROM SEARCH|EIN|arguments|token|secret/i,
+    );
+  });
+
+  it('emits accepted only after the run and user message commit, and ignores callback failures', async () => {
+    responses.push({ text: 'Committed answer.', toolCalls: [], draft: null });
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    let observedCommittedAcceptance = false;
+    const envelope = await submitAssistantMessage(created.conversation.id, {
+      text: 'Check commit ordering', idempotencyKey: 'atomic-acceptance',
+    }, {
+      onProgress(event) {
+        if (event.type === 'accepted') {
+          const inspector = new DatabaseSync(databasePath, { readOnly: true });
+          const run = inspector.prepare('SELECT user_message_id FROM assistant_runs WHERE id = ?')
+            .get(event.data.runId);
+          const message = inspector.prepare('SELECT text FROM assistant_messages WHERE id = ?')
+            .get(event.data.userMessageId);
+          inspector.close();
+          assert.equal(run.user_message_id, event.data.userMessageId);
+          assert.equal(message.text, 'Check commit ordering');
+          observedCommittedAcceptance = true;
+        }
+        throw new Error('simulated disconnected progress observer');
+      },
+    });
+    assert.equal(observedCommittedAcceptance, true);
+    assert.equal(envelope.messages.at(-1).text, 'Committed answer.');
+    assert.equal(calls.model, 1);
+  });
+
+  it('returns ordinary JSON for unauthorized and invalid streaming requests', async () => {
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const unauthorized = await fetch(
+      `${baseUrl}/v1/assistant/conversations/${created.conversation.id}/messages/stream`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'No auth' }),
+      },
+    );
+    assert.equal(unauthorized.status, 401);
+    assert.match(unauthorized.headers.get('content-type'), /^application\/json/);
+    assert.equal((await unauthorized.json()).error, 'unauthorized');
+
+    const invalid = await post(
+      `/v1/assistant/conversations/${created.conversation.id}/messages/stream`,
+      { text: '' },
+    );
+    assert.equal(invalid.status, 400);
+    assert.match(invalid.headers.get('content-type'), /^application\/json/);
+    assert.equal((await invalid.json()).error, 'invalid_text');
+  });
+
+  it('completes a persisted safe failure envelope for ordinary model failures', async () => {
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const { events } = await postStream(created.conversation.id, {
+      text: 'Trigger safe failure', idempotencyKey: 'stream-model-failure',
+    });
+    assert.equal(events[0].event, 'accepted');
+    assert.equal(events.some(event => event.event === 'error'), false);
+    assert.equal(events.at(-1).event, 'complete');
+    assert.match(events.at(-1).data.messages.at(-1).text, /couldn.t complete that safely/i);
+    const inspector = new DatabaseSync(databasePath, { readOnly: true });
+    const run = inspector.prepare('SELECT status, error_code FROM assistant_runs WHERE id = ?')
+      .get(events[0].data.runId);
+    inspector.close();
+    assert.equal(run.status, 'failed');
+    assert.equal(run.error_code, 'assistant_failed');
+  });
+
+  it('times out a provider response before lease recovery and fences its late tool calls', async () => {
+    setAssistantModelTimeoutForTests(20);
+    setAssistantModelFactoryForTests(() => ({
+      respond: () => new Promise(resolve => setTimeout(() => resolve({
+        text: 'Late archive result.',
+        toolCalls: [{
+          name: 'mail.archive',
+          arguments: { account: 'me@example.com', messageId: 'm1', threadId: 't1' },
+        }],
+      }), 80)),
+    }));
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const { events } = await postStream(created.conversation.id, {
+      text: 'Archive this email', idempotencyKey: 'provider-timeout',
+    });
+    assert.equal(events.at(-1).event, 'complete');
+    assert.match(events.at(-1).data.messages.at(-1).text, /couldn.t complete that safely/i);
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(calls.archive, 0);
+    const inspector = new DatabaseSync(databasePath, { readOnly: true });
+    const run = inspector.prepare('SELECT status, error_code FROM assistant_runs').get();
+    assert.equal(run.status, 'failed');
+    assert.equal(run.error_code, 'assistant_model_timeout');
+    assert.equal(inspector.prepare('SELECT COUNT(*) AS count FROM assistant_tool_calls').get().count, 0);
+    assert.equal(inspector.prepare('SELECT COUNT(*) AS count FROM assistant_proposals').get().count, 0);
+    assert.equal(inspector.prepare("SELECT COUNT(*) AS count FROM assistant_messages WHERE role = 'assistant'").get().count, 1);
+    inspector.close();
+  });
+
+  it('replays matching idempotent streams and rejects mismatched text', async () => {
+    responses.push({ text: 'One streamed answer.', toolCalls: [], draft: null });
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const request = { text: 'Answer once', idempotencyKey: 'stream-idempotency' };
+    const first = await postStream(created.conversation.id, request);
+    const replay = await postStream(created.conversation.id, request);
+    assert.equal(calls.model, 1);
+    assert.equal(replay.events[0].event, 'accepted');
+    assert.equal(replay.events[0].data.runId, first.events[0].data.runId);
+    assert.equal(replay.events[1].data.stage, ASSISTANT_PROGRESS_STAGES.replay);
+    assert.equal(replay.events.at(-1).event, 'complete');
+
+    const mismatch = await postStream(created.conversation.id, {
+      text: 'Different text', idempotencyKey: 'stream-idempotency',
+    });
+    assert.deepEqual(mismatch.events.map(event => event.event), ['error']);
+    assert.equal(mismatch.events[0].data.error, 'idempotency_key_reused');
+    assert.equal(mismatch.events[0].data.retryable, undefined);
+    assert.equal(calls.model, 1);
+  });
+
+  it('runs concurrent matching streams once and completes both', async () => {
+    responses.push({ text: 'One concurrent stream.', toolCalls: [], draft: null, delay: 40 });
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const request = { text: 'Answer concurrently', idempotencyKey: 'stream-concurrent' };
+    const [first, second] = await Promise.all([
+      postStream(created.conversation.id, request),
+      postStream(created.conversation.id, request),
+    ]);
+    assert.equal(calls.model, 1);
+    assert.equal(first.events[0].data.runId, second.events[0].data.runId);
+    assert.equal(first.events.at(-1).event, 'complete');
+    assert.equal(second.events.at(-1).event, 'complete');
+    assert.equal([first, second].some(result => result.events.some(event => (
+      event.event === 'progress' && event.data.stage === ASSISTANT_PROGRESS_STAGES.waiting
+    ))), true);
+  });
+
+  it('resumes a stale run after restart without duplicating the user message', async () => {
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const text = 'Resume after restart';
+    createAssistantRunWithUserMessage({
+      id: 'stale-run',
+      conversationId: created.conversation.id,
+      userMessageId: 'stale-user-message',
+      idempotencyKey: 'stale-stream',
+      requestFingerprint: createHash('sha256').update(text).digest('base64url'),
+      leaseToken: 'dead-worker',
+      text,
+    });
+    const stale = new DatabaseSync(databasePath);
+    stale.prepare('UPDATE assistant_runs SET lease_updated_at = ? WHERE id = ?')
+      .run('2020-01-01T00:00:00.000Z', 'stale-run');
+    stale.close();
+    closeStoreForTests();
+    configureDatabaseForTests(databasePath);
+    responses.push({ text: 'Recovered answer.', toolCalls: [], draft: null });
+
+    const { events } = await postStream(created.conversation.id, {
+      text, idempotencyKey: 'stale-stream',
+    });
+    assert.equal(events[0].data.runId, 'stale-run');
+    assert.equal(events[1].data.stage, ASSISTANT_PROGRESS_STAGES.resume);
+    assert.equal(events.at(-1).data.messages.at(-1).text, 'Recovered answer.');
+    assert.deepEqual(events.at(-1).data.messages.map(message => message.role), ['user', 'assistant']);
+    assert.equal(calls.model, 1);
+  });
+
+  it('fences a stale run that already persisted terminal output before status completion', async () => {
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const text = 'Do not duplicate terminal output';
+    createAssistantRunWithUserMessage({
+      id: 'crash-after-message-run',
+      conversationId: created.conversation.id,
+      userMessageId: 'crash-after-message-user',
+      idempotencyKey: 'crash-after-message',
+      requestFingerprint: createHash('sha256').update(text).digest('base64url'),
+      leaseToken: 'dead-worker',
+      text,
+    });
+    addAssistantMessage({
+      id: 'already-persisted-answer',
+      conversationId: created.conversation.id,
+      role: 'assistant',
+      text: 'Already persisted answer.',
+      runId: 'crash-after-message-run',
+    });
+    const stale = new DatabaseSync(databasePath);
+    stale.prepare('UPDATE assistant_runs SET lease_updated_at = ? WHERE id = ?')
+      .run('2020-01-01T00:00:00.000Z', 'crash-after-message-run');
+    stale.close();
+    closeStoreForTests();
+    configureDatabaseForTests(databasePath);
+
+    const { events } = await postStream(created.conversation.id, {
+      text, idempotencyKey: 'crash-after-message',
+    });
+    assert.equal(calls.model, 0);
+    assert.equal(events[1].data.stage, ASSISTANT_PROGRESS_STAGES.replay);
+    assert.deepEqual(events.at(-1).data.messages.map(message => message.text), [
+      text,
+      'Already persisted answer.',
+    ]);
+    const inspector = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(inspector.prepare('SELECT status FROM assistant_runs WHERE id = ?')
+      .get('crash-after-message-run').status, 'completed');
+    inspector.close();
+  });
+
+  it('does not mistake an orphan proposal for terminal output during stale recovery', async () => {
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const text = 'Recover past an orphan proposal';
+    createAssistantRunWithUserMessage({
+      id: 'orphan-proposal-run', conversationId: created.conversation.id,
+      userMessageId: 'orphan-proposal-user', idempotencyKey: 'orphan-proposal-key',
+      requestFingerprint: createHash('sha256').update(text).digest('base64url'),
+      leaseToken: 'dead-worker', text,
+    });
+    createAssistantProposal({
+      id: 'orphan-proposal', conversationId: created.conversation.id, runId: 'orphan-proposal-run',
+      tool: 'mail.unsubscribe', risk: 'persistent', summary: 'Orphaned proposal', arguments: {},
+      confirmationDigest: 'orphan-digest', expiresAt: '2030-01-01T00:00:00.000Z',
+      idempotencyKey: 'orphan-proposal-idempotency',
+    });
+    assert.equal(assistantRunHasTerminalOutput('orphan-proposal-run'), false);
+    const stale = new DatabaseSync(databasePath);
+    stale.prepare('UPDATE assistant_runs SET lease_updated_at = ? WHERE id = ?')
+      .run('2020-01-01T00:00:00.000Z', 'orphan-proposal-run');
+    stale.close();
+    responses.push({ text: 'Recovered beyond the orphan.', toolCalls: [], draft: null });
+
+    const { events } = await postStream(created.conversation.id, {
+      text, idempotencyKey: 'orphan-proposal-key',
+    });
+    assert.equal(calls.model, 1);
+    assert.equal(events[1].data.stage, ASSISTANT_PROGRESS_STAGES.resume);
+    assert.equal(events.at(-1).data.messages.at(-1).text, 'Recovered beyond the orphan.');
+  });
+
+  it('rolls back proposal, audit, and run completion when its linked message cannot persist', async () => {
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    createAssistantRunWithUserMessage({
+      id: 'atomic-proposal-run', conversationId: created.conversation.id,
+      userMessageId: 'atomic-duplicate-message', idempotencyKey: 'atomic-proposal-key',
+      requestFingerprint: createHash('sha256').update('Atomic proposal').digest('base64url'),
+      leaseToken: 'atomic-lease', text: 'Atomic proposal',
+    });
+    assert.throws(() => finishAssistantRunWithProposal({
+      runId: 'atomic-proposal-run', leaseToken: 'atomic-lease',
+      proposal: {
+        id: 'atomic-proposal', conversationId: created.conversation.id,
+        tool: 'mail.unsubscribe', risk: 'persistent', summary: 'Atomic proposal', arguments: {},
+        confirmationDigest: 'atomic-digest', expiresAt: '2030-01-01T00:00:00.000Z',
+        idempotencyKey: 'atomic-proposal-idempotency',
+      },
+      toolCall: {
+        id: 'atomic-tool-call', tool: 'mail.unsubscribe', risk: 'persistent',
+        arguments: {}, status: 'proposed',
+      },
+      message: {
+        id: 'atomic-duplicate-message', conversationId: created.conversation.id,
+        role: 'assistant', text: 'This insert must collide.',
+      },
+    }), /UNIQUE constraint failed/);
+    const inspector = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(inspector.prepare('SELECT status FROM assistant_runs WHERE id = ?')
+      .get('atomic-proposal-run').status, 'running');
+    assert.equal(inspector.prepare('SELECT COUNT(*) AS count FROM assistant_proposals').get().count, 0);
+    assert.equal(inspector.prepare('SELECT COUNT(*) AS count FROM assistant_tool_calls').get().count, 0);
+    inspector.close();
+  });
+
+  it('keeps canonical sync and stream envelopes below the shared byte budget', async () => {
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const legacy = new DatabaseSync(databasePath);
+    const insert = legacy.prepare(`
+      INSERT INTO assistant_messages (
+        id, conversation_id, role, text, evidence_json, created_at
+      ) VALUES (?, ?, 'system', ?, '[]', ?)
+    `);
+    const oversizedText = 'x'.repeat(100_000);
+    for (let index = 0; index < 85; index += 1) {
+      insert.run(`legacy-large-${index}`, created.conversation.id, oversizedText, new Date(index).toISOString());
+    }
+    legacy.close();
+    responses.push({ text: 'Newest bounded answer.', toolCalls: [], draft: null });
+
+    const streamed = await postStream(created.conversation.id, {
+      text: 'Return a bounded envelope', idempotencyKey: 'bounded-envelope',
+    });
+    const completed = streamed.events.at(-1).data;
+    assert.equal(streamed.events.at(-1).event, 'complete');
+    assert.ok(Buffer.byteLength(JSON.stringify(completed)) <= MAX_ASSISTANT_ENVELOPE_BYTES);
+    assert.equal(completed.messages.at(-1).text, 'Newest bounded answer.');
+    assert.equal(completed.messages.at(-1).runId, streamed.events[0].data.runId);
+
+    const syncResponse = await fetch(
+      `${baseUrl}/v1/assistant/conversations/${created.conversation.id}`,
+      { headers: authHeaders },
+    );
+    const syncEnvelope = await syncResponse.json();
+    assert.deepEqual(syncEnvelope, completed);
+    assert.ok(Buffer.byteLength(JSON.stringify(syncEnvelope)) <= MAX_ASSISTANT_ENVELOPE_BYTES);
+  });
+
+  it('continues the durable run after the streaming client disconnects', async () => {
+    responses.push({ text: 'Completed after disconnect.', toolCalls: [], draft: null, delay: 50 });
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const controller = new AbortController();
+    const response = await fetch(
+      `${baseUrl}/v1/assistant/conversations/${created.conversation.id}/messages/stream`,
+      {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ text: 'Keep working', idempotencyKey: 'disconnect-stream' }),
+        signal: controller.signal,
+      },
+    );
+    const reader = response.body.getReader();
+    const firstChunk = new TextDecoder().decode((await reader.read()).value);
+    assert.match(firstChunk, /event: accepted/);
+    controller.abort();
+    await new Promise(resolve => setTimeout(resolve, 120));
+
+    const persisted = await fetch(
+      `${baseUrl}/v1/assistant/conversations/${created.conversation.id}`,
+      { headers: authHeaders },
+    );
+    const envelope = await persisted.json();
+    assert.equal(envelope.messages.at(-1).text, 'Completed after disconnect.');
+    assert.equal(calls.model, 1);
+  });
+
   it('creates contextual conversations and never persists raw incoming bodies', async () => {
     responses.push({ text: 'The order shipped today.', toolCalls: [], draft: null });
     const created = await createConversation({ scope: 'email', emailItemId: item.id });
