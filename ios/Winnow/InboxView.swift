@@ -211,16 +211,16 @@ struct EmailCard: View {
     var body: some View {
         Button(action: openAction) {
             ZStack(alignment: .trailing) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 9) {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .top, spacing: 8) {
                         ZStack(alignment: .bottomTrailing) {
                             SenderAvatar(
                                 initials: item.senderInitials,
                                 seed: item.fromEmail.isEmpty ? item.senderDisplayName : item.fromEmail,
-                                size: 36
+                                size: 32
                             )
-                            AccountAvatarBadge(account: account, size: 17)
-                                .offset(x: 4, y: 4)
+                            AccountAvatarBadge(account: account, size: 15)
+                                .offset(x: 3, y: 3)
                         }
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 5) {
@@ -237,6 +237,16 @@ struct EmailCard: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
+                        Spacer(minLength: 6)
+                        if isPerforming {
+                            ProgressView().controlSize(.small)
+                        } else if let date = item.displayDate {
+                            Text(date.relativeWinnowTime)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                        }
                     }
 
                     if let subject = item.displaySubject {
@@ -250,41 +260,26 @@ struct EmailCard: View {
                         Text(item.summary.isEmpty ? item.snippet : item.summary)
                             .font(.footnote)
                             .foregroundStyle(item.isUnread ? .secondary : .tertiary)
-                            .lineLimit(2)
+                            .lineLimit(3)
                     }
 
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, 78)
-
-                VStack(alignment: .trailing, spacing: 0) {
-                    if isPerforming {
-                        ProgressView().controlSize(.small)
-                    } else if let date = item.displayDate {
-                        Text(date.relativeWinnowTime)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .frame(width: 70, alignment: .trailing)
-                .frame(maxHeight: .infinity, alignment: .top)
+                .padding(.trailing, 30)
 
                 VStack {
                     Spacer(minLength: 0)
                     Image(systemName: item.isConversation ? "chevron.right.circle" : "chevron.right")
                         .font(.system(size: item.isConversation ? 20 : 13, weight: .semibold))
                         .foregroundStyle(item.isConversation ? WinnowDesign.accent : Color(.tertiaryLabel))
-                        .frame(width: 70, alignment: .trailing)
+                        .frame(width: 20, alignment: .trailing)
                         .accessibilityHidden(true)
                     Spacer(minLength: 0)
                 }
             }
             .padding(.leading, 12)
             .padding(.trailing, 15)
-            .padding(.vertical, 11)
+            .padding(.vertical, 9)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
