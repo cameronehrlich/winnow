@@ -282,32 +282,40 @@ final class ModelDecodingTests: XCTestCase {
         {
           "candidate":{"id":"candidate","account":"me@example.com","type":"semantic","effect":"archive","match":"Routine receipts","description":"Receipts","enabled":true,"scope":"user","source":"api","editable":true},
           "mode":"semantic","evaluatedCount":18,"sampledAtMost":100,
-          "matches":[{"emailItemId":"email-1","account":"me@example.com","messageId":"m1","threadId":"t1","from":"Store","subject":"Receipt","snippet":"Paid","confidence":91,"reason":"Completed purchase receipt"}],
+          "matches":[{"emailItemId":"email-1","account":"me@example.com","messageId":"m1","threadId":"t1","from":"Store","subject":"Receipt","snippet":"Paid","confidence":91.5,"reason":"Completed purchase receipt"}],
           "nonMatches":[{"emailItemId":"email-2","account":"me@example.com","messageId":"m2","threadId":"t2","from":"Store","subject":"Payment failed","confidence":88,"reason":"Requires action"}],
           "sampledAt":"2026-07-13T12:00:00.000Z","model":"classifier-v1",
-          "conflict":{"rule":{"id":"existing","account":"me@example.com","type":"semantic","effect":"keep","match":"Routine receipts","description":"Keep receipts","enabled":true,"scope":"user","source":"assistant","editable":true,"updatedAt":"2026-07-13T11:59:00.000Z"}}
+          "conflict":{"rule":{"id":"existing","account":"me@example.com","type":"semantic","effect":"keep","match":"Routine receipts","description":"Keep receipts","enabled":true,"scope":"user","source":"assistant","editable":true,"updatedAt":"2026-07-13T11:59:00.000Z"}},
+          "expectedRule":{"ruleId":"candidate","updatedAt":"2026-07-13T11:58:00.000Z"}
         }
         """#.data(using: .utf8)!
 
         let preview = try JSONDecoder().decode(MailRulePreviewResponse.self, from: json)
         XCTAssertEqual(preview.mode, "semantic")
         XCTAssertEqual(preview.evaluatedCount, 18)
-        XCTAssertEqual(preview.matches.first?.confidence, 91)
+        XCTAssertEqual(preview.matches.first?.confidence, 91.5)
+        XCTAssertEqual(preview.matches.first?.confidencePercentText, "91.5%")
+        XCTAssertEqual(preview.nonMatches.first?.confidencePercentText, "88%")
         XCTAssertEqual(preview.nonMatches.first?.emailItemId, "email-2")
         XCTAssertEqual(preview.conflict?.rule.id, "existing")
         XCTAssertEqual(preview.replacementBinding?.ruleId, "existing")
         XCTAssertEqual(preview.replacementBinding?.updatedAt, "2026-07-13T11:59:00.000Z")
+        XCTAssertEqual(preview.expectedRule?.ruleId, "candidate")
+        XCTAssertEqual(preview.expectedRule?.updatedAt, "2026-07-13T11:58:00.000Z")
 
         let candidate = MailRuleDraft(
             account: "me@example.com", type: "semantic", effect: "archive",
             match: "Routine receipts", description: "Receipts"
-        ).bindingExpectedConflict(from: preview)
+        ).bindingExpectedGuards(from: preview)
         let payload = try XCTUnwrap(
             JSONSerialization.jsonObject(with: JSONEncoder().encode(candidate)) as? [String: Any]
         )
         let expectedConflict = try XCTUnwrap(payload["expectedConflict"] as? [String: Any])
         XCTAssertEqual(expectedConflict["ruleId"] as? String, "existing")
         XCTAssertEqual(expectedConflict["updatedAt"] as? String, "2026-07-13T11:59:00.000Z")
+        let expectedRule = try XCTUnwrap(payload["expectedRule"] as? [String: Any])
+        XCTAssertEqual(expectedRule["ruleId"] as? String, "candidate")
+        XCTAssertEqual(expectedRule["updatedAt"] as? String, "2026-07-13T11:58:00.000Z")
     }
 
     func testExactRuleDraftEncodesDefaultFieldAndOmitsSemanticMatch() throws {
@@ -369,13 +377,17 @@ final class ModelDecodingTests: XCTestCase {
                 }
                 XCTAssertEqual(body?["baselineRuleId"] as? String, "default-news")
                 XCTAssertEqual(body?["account"] as? String, "me@example.com")
+                XCTAssertNil(body?["id"])
                 XCTAssertNil(body?["match"])
                 let expectedConflict = body?["expectedConflict"] as? [String: Any]
                 XCTAssertEqual(expectedConflict?["ruleId"] as? String, "existing-default")
                 XCTAssertEqual(expectedConflict?["updatedAt"] as? String, "2026-07-13T11:00:00.000Z")
-                return (200, #"{"rule":{"id":"override-news","account":null,"type":"semantic","effect":"keep","description":"Routine newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news"}}"#)
+                return (200, #"{"rule":{"id":"override-news","account":null,"type":"semantic","effect":"keep","description":"Routine newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news","updatedAt":"2026-07-13T10:00:00.000Z"}}"#)
             case ("PATCH", "/v1/rules/override-news"):
                 XCTAssertEqual(body?["effect"] as? String, "keep")
+                let expectedRule = body?["expectedRule"] as? [String: Any]
+                XCTAssertEqual(expectedRule?["ruleId"] as? String, "override-news")
+                XCTAssertEqual(expectedRule?["updatedAt"] as? String, "2026-07-13T10:00:00.000Z")
                 return (200, #"{"rule":{"id":"override-news","type":"semantic","effect":"keep","description":"Routine newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news"}}"#)
             case ("POST", "/v1/rules/override-news/disable"), ("POST", "/v1/rules/override-news/reset"):
                 return (200, #"{"ok":true}"#)
@@ -392,7 +404,7 @@ final class ModelDecodingTests: XCTestCase {
         let preview = try await client.previewMailRule(draft)
         XCTAssertTrue(listedRules.isEmpty)
         XCTAssertEqual(preview.matchCount, 0)
-        draft.expectedConflict = MailRuleConflictBinding(
+        draft.expectedConflict = MailRuleVersionBinding(
             ruleId: "existing-default",
             updatedAt: "2026-07-13T11:00:00.000Z"
         )
@@ -403,13 +415,15 @@ final class ModelDecodingTests: XCTestCase {
             matcherKind: "sender", matcherValue: "billing@example.com",
             description: "Billing", sourceEmailItemId: "email-source"
         )
-        sourceDraft.expectedConflict = MailRuleConflictBinding(
+        sourceDraft.expectedConflict = MailRuleVersionBinding(
             ruleId: "existing-sender",
             updatedAt: "2026-07-13T12:00:00.000Z"
         )
         let created = try await client.createMailRule(sourceDraft)
         XCTAssertEqual(created.sourceEmailItemId, "email-source")
-        _ = try await client.updateMailRule(id: customized.id, candidate: MailRuleDraft(rule: customized))
+        var updateDraft = MailRuleDraft(rule: customized)
+        updateDraft.expectedRule = try XCTUnwrap(MailRuleVersionBinding(rule: customized))
+        _ = try await client.updateMailRule(id: customized.id, candidate: updateDraft)
         let disabled = try await client.disableMailRule(id: customized.id)
         let reset = try await client.resetMailRule(id: customized.id)
         XCTAssertTrue(disabled.ok)
@@ -417,6 +431,50 @@ final class ModelDecodingTests: XCTestCase {
         let undone = try await client.undoHandling(emailID: "email-source")
         XCTAssertEqual(undone.action, "undo-handling")
         XCTAssertEqual(undone.item?.mailboxState, "inbox")
+    }
+
+    func testExistingBaselineCustomizationPOSTRetainsRuleID() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            session: URLSession(configuration: configuration)
+        )
+        let json = #"{"id":"override-news","account":"me@example.com","type":"semantic","effect":"keep","match":"Routine newsletters","description":"Keep newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news","updatedAt":"2026-07-13T11:00:00.000Z"}"#.data(using: .utf8)!
+        let existing = try JSONDecoder().decode(MailRule.self, from: json)
+
+        MailRuleURLProtocol.handler = { request in
+            let body = try XCTUnwrap(MailRuleURLProtocol.bodyData(from: request))
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(request.httpMethod, "POST")
+            switch request.url?.path {
+            case "/v1/rules/preview":
+                let candidate = try XCTUnwrap(payload["candidate"] as? [String: Any])
+                XCTAssertEqual(candidate["id"] as? String, "override-news")
+                XCTAssertNil(candidate["expectedRule"])
+                return (200, #"{"candidate":{"id":"override-news","account":"me@example.com","type":"semantic","effect":"archive","match":"Routine newsletters","description":"Keep newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news"},"mode":"semantic","matches":[],"nonMatches":[],"expectedRule":{"ruleId":"override-news","updatedAt":"2026-07-13T11:00:00.000Z"}}"#)
+            case "/v1/rules":
+                XCTAssertEqual(payload["id"] as? String, "override-news")
+                XCTAssertEqual(payload["baselineRuleId"] as? String, "default-news")
+                XCTAssertEqual(payload["account"] as? String, "me@example.com")
+                let expectedRule = try XCTUnwrap(payload["expectedRule"] as? [String: Any])
+                XCTAssertEqual(expectedRule["ruleId"] as? String, "override-news")
+                XCTAssertEqual(expectedRule["updatedAt"] as? String, "2026-07-13T11:00:00.000Z")
+                return (200, #"{"rule":{"id":"override-news","account":"me@example.com","type":"semantic","effect":"archive","description":"Keep newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news","updatedAt":"2026-07-13T12:00:00.000Z"}}"#)
+            default:
+                XCTFail("Unexpected path: \(request.url?.path ?? "nil")")
+                return (404, #"{"error":"unexpected"}"#)
+            }
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+
+        var draft = MailRuleDraft(rule: existing)
+        draft.effect = "archive"
+        let preview = try await client.previewMailRule(draft)
+        XCTAssertEqual(preview.expectedRule?.ruleId, existing.id)
+        let updated = try await client.customizeBaselineRule(draft.bindingExpectedGuards(from: preview))
+        XCTAssertEqual(updated.id, existing.id)
+        XCTAssertEqual(updated.effect, "archive")
     }
 }
 

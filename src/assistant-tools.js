@@ -441,7 +441,17 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
     args = { ...args, sourceEmailItemId: conversation.emailItemId };
   }
   if (name === 'rules.create' || name === 'rules.upsert') {
+    const editedRule = args.id ? getUserRuleRecord(args.id) : null;
     replacementRule = getUserRuleConflict(args, { source: 'assistant' });
+    if (editedRule) {
+      args = {
+        ...args,
+        expectedRule: {
+          ruleId: editedRule.id,
+          updatedAt: editedRule.updatedAt,
+        },
+      };
+    }
     if (replacementRule) {
       args = {
         ...args,
@@ -502,7 +512,11 @@ export async function executeAssistantProposal(proposal, conversation, dependenc
       ruleId: proposal.arguments.ruleId,
     };
   } else if (proposal.tool === 'rules.create' || proposal.tool === 'rules.upsert') {
-    const { expectedConflict: _expectedConflict, ...ruleArguments } = proposal.arguments;
+    const {
+      expectedConflict: _expectedConflict,
+      expectedRule: _expectedRule,
+      ...ruleArguments
+    } = proposal.arguments;
     validationArguments = ruleArguments;
   }
   const args = enforceConversationScope(conversation, validateAssistantToolCall(

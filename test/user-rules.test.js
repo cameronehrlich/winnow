@@ -8,6 +8,10 @@ import { reloadConfig } from '../src/config.js';
 import { loadAllRules } from '../src/rules.js';
 import { ruleRevision } from '../src/rule-revisions.js';
 import {
+  evaluateSemanticRulePreview,
+  SemanticPreviewError,
+} from '../src/semantic-rule-preview.js';
+import {
   ASSISTANT_TOOL_DEFINITIONS,
   executeAssistantProposal,
   prepareAssistantTool,
@@ -142,6 +146,7 @@ describe('unified user rules', () => {
       id: existing.id, account: existing.account, type: existing.type, effect: existing.effect,
       matcherKind: existing.matcherKind, matcherValue: existing.matcherValue,
       description: 'Changed after preview',
+      expectedRule: { ruleId: existing.id, updatedAt: existing.updatedAt },
     });
     assert.throws(
       () => upsertUserRule({
@@ -153,6 +158,74 @@ describe('unified user rules', () => {
       }),
       error => error.code === 'rule_conflict_changed',
     );
+  });
+
+  it('revision-binds existing rule edits and preserves identity across matcher changes', async () => {
+    const existing = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'archive',
+      matcherKind: 'sender', matcherValue: 'old@example.com', description: 'Old sender',
+    });
+    const candidate = {
+      id: existing.id, account: existing.account, type: 'exact', effect: 'archive',
+      matcherKind: 'sender', matcherValue: 'new@example.com', description: 'New sender',
+    };
+    const preview = await previewUserRule(candidate);
+    assert.deepEqual(preview.expectedRule, {
+      ruleId: existing.id,
+      updatedAt: existing.updatedAt,
+    });
+    assert.throws(
+      () => upsertUserRule(candidate),
+      error => error.code === 'rule_revision_confirmation_required',
+    );
+    const saved = upsertUserRule({ ...candidate, expectedRule: preview.expectedRule });
+    assert.equal(saved.id, existing.id);
+    assert.equal(saved.matcherValue, 'new@example.com');
+    assert.equal(getUserRuleRecord(existing.id).matcherValue, 'new@example.com');
+
+    const typeCandidate = {
+      id: saved.id, account: saved.account, type: 'semantic', effect: 'keep',
+      match: 'Messages from the newly grouped sender', description: 'Semantic replacement',
+    };
+    const typePreview = await previewUserRule(typeCandidate);
+    const changedType = upsertUserRule({
+      ...typeCandidate,
+      expectedRule: typePreview.expectedRule,
+    });
+    assert.equal(changedType.id, existing.id);
+    assert.equal(changedType.type, 'semantic');
+    assert.equal(changedType.match, typeCandidate.match);
+    assert.equal(changedType.matcherKind, undefined);
+  });
+
+  it('atomically merges an existing rule into a separately confirmed conflict target', async () => {
+    const edited = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'archive',
+      matcherKind: 'sender', matcherValue: 'first@example.com', description: 'First',
+    });
+    const target = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'keep',
+      matcherKind: 'sender', matcherValue: 'second@example.com', description: 'Second',
+    });
+    const candidate = {
+      id: edited.id, account: edited.account, type: 'exact', effect: 'archive',
+      matcherKind: 'sender', matcherValue: 'second@example.com', description: 'Merged',
+    };
+    const preview = await previewUserRule(candidate);
+    assert.equal(preview.expectedRule.ruleId, edited.id);
+    assert.equal(preview.conflict.rule.id, target.id);
+    const saved = upsertUserRule({
+      ...candidate,
+      expectedRule: preview.expectedRule,
+      expectedConflict: {
+        ruleId: preview.conflict.rule.id,
+        updatedAt: preview.conflict.rule.updatedAt,
+      },
+    });
+    assert.equal(saved.id, edited.id);
+    assert.equal(saved.matcherValue, 'second@example.com');
+    assert.equal(getUserRuleRecord(target.id), null);
+    assert.equal(listEffectiveExactRules('me@example.com').length, 1);
   });
 
   it('returns exact rules in newest-first precedence order', () => {
@@ -219,6 +292,7 @@ describe('unified user rules', () => {
       () => upsertUserRule({
         id: override.id, account: override.account, type: override.type,
         effect: override.effect, baselineRuleId: override.baselineRuleId, enabled: false,
+        expectedRule: { ruleId: override.id, updatedAt: override.updatedAt },
       }),
       /baseline overrides cannot be disabled/i,
     );
@@ -324,6 +398,32 @@ rules:
     }, conversation, {});
     assert.equal(replaced.id, existing.id);
     assert.equal(replaced.effect, 'keep');
+
+    const current = getUserRuleRecord(replaced.id);
+    const editPrepared = await prepareAssistantTool({
+      name: 'rules.upsert',
+      rawArguments: {
+        id: current.id,
+        account: current.account,
+        type: 'exact',
+        effect: 'archive',
+        matcherKind: 'sender',
+        matcherValue: 'updated-alerts@example.com',
+        description: 'Updated alerts',
+      },
+      conversation,
+      latestUserText: 'Update this rule to archive future messages from the new sender',
+      dependencies: {},
+    });
+    assert.deepEqual(editPrepared.arguments.expectedRule, {
+      ruleId: current.id,
+      updatedAt: current.updatedAt,
+    });
+    const edited = await executeAssistantProposal({
+      tool: 'rules.upsert', arguments: editPrepared.arguments,
+    }, conversation, {});
+    assert.equal(edited.id, current.id);
+    assert.equal(edited.matcherValue, 'updated-alerts@example.com');
   });
 
   it('does not let YAML import overwrite newer persisted intent or repeat after completion', () => {
@@ -341,6 +441,7 @@ rules:
     const edited = upsertUserRule({
       id: existing.id, account: existing.account, type: existing.type,
       effect: 'keep', match: existing.match, description: 'Edited after migration',
+      expectedRule: { ruleId: existing.id, updatedAt: existing.updatedAt },
     });
     const repeated = importUserRules('me@example.com', { dryRun: false });
     assert.equal(repeated.alreadyImported, true);
@@ -445,6 +546,35 @@ rules:
     assert.match(preview.note, /no Gmail, event, or rule state was changed/i);
     assert.equal(listUserRuleRecords().length, rulesBefore);
     assert.equal(listEvents({ limit: 500 }).length, eventsBefore);
+  });
+
+  it('bounds semantic provider latency with a typed retryable error', async () => {
+    const request = {
+      candidate: { match: 'Routine receipts' },
+      messages: [{
+        id: 'message-timeout', from: 'Sender <sender@example.com>', subject: 'Receipt',
+        summary: 'Routine receipt', snippet: 'A receipt',
+      }],
+    };
+    await assert.rejects(
+      evaluateSemanticRulePreview({
+        ...request,
+        timeoutMs: 5,
+        generateContent: () => new Promise(() => {}),
+      }),
+      error => (
+        error instanceof SemanticPreviewError
+        && error.code === 'semantic_preview_unavailable'
+        && error.retryable === true
+      ),
+    );
+    await assert.rejects(
+      evaluateSemanticRulePreview({
+        ...request,
+        generateContent: async () => ({ response: { text: () => '{"results":[]}' } }),
+      }),
+      error => error instanceof SemanticPreviewError && error.retryable === true,
+    );
   });
 
   it('aggregates raw baseline attribution across accounts in the accountless rule list', () => {

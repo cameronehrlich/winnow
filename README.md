@@ -304,11 +304,13 @@ Exact-rule activity is deterministic, while semantic-rule activity is explicitly
 The editor can test a rule against bounded recent
 mail before saving: exact tests are deterministic samples, while semantic tests are read-only estimates based only on
 stored sender, subject, summary, and snippet data. Tests never scan or mutate Gmail, run hooks, post to Slack, or save
-the candidate rule. Replacing a conflicting rule requires a preview-bound confirmation; a changed conflict is rejected.
+the candidate rule. Editing binds the save to the previewed rule ID and revision, and replacing a separate conflicting
+rule also binds to that conflict's ID and revision; either changed binding is rejected.
 
 Email details expose the stored handling decision for newly processed mail. A user can reverse that decision for the
 single email while it is still current, adjust the attributed future-mail rule, or create a confirmed sender, domain,
-or semantic rule from the message. Undo never changes the future-mail rule.
+or semantic rule from the message. Undo never changes the future-mail rule. A short durable lease prevents duplicate
+undo work, while stale leases can be safely recovered after a daemon restart.
 
 ```bash
 # List rules

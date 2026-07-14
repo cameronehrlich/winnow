@@ -9,6 +9,7 @@ import { followUnsubscribeLink } from './slack-actions.js';
 import { handleMcpMessage } from './mcp.js';
 import { getRuntimeStatus, listAccountStatus } from './status.js';
 import { getPushCapabilities } from './push.js';
+import { SemanticPreviewError } from './semantic-rule-preview.js';
 import {
   disableUserRule,
   importUserRules,
@@ -47,10 +48,11 @@ const EMAIL_STATES = ['all', 'inbox', 'archived'];
 const EMAIL_ACTIONS = ['archive', 'move-to-inbox', 'mark-read', 'mark-unread', 'unsubscribe', 'undo-handling'];
 
 class HttpError extends Error {
-  constructor(status, code, message = code) {
+  constructor(status, code, message = code, details = {}) {
     super(message);
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -163,6 +165,9 @@ function ruleRequest(callback) {
   try {
     return callback();
   } catch (err) {
+    if (err instanceof SemanticPreviewError) {
+      throw new HttpError(503, err.code, err.message, { retryable: err.retryable });
+    }
     if (err instanceof RuleConflictError) {
       throw new HttpError(409, err.code, err.message);
     }
@@ -177,6 +182,9 @@ async function asyncRuleRequest(callback) {
   try {
     return await callback();
   } catch (err) {
+    if (err instanceof SemanticPreviewError) {
+      throw new HttpError(503, err.code, err.message, { retryable: err.retryable });
+    }
     if (err instanceof RuleConflictError) {
       throw new HttpError(409, err.code, err.message);
     }
@@ -226,6 +234,7 @@ function mobileEmailItem(item, entries) {
   const {
     handlingUndoDecisionId: _handlingUndoDecisionId,
     handlingUndoStatus: _handlingUndoStatus,
+    handlingUndoUpdatedAt: _handlingUndoUpdatedAt,
     ...publicItem
   } = item;
   return {
@@ -420,17 +429,17 @@ async function handleAuthed(req, res, url, dependencies = {}) {
       sendJson(res, 404, { error: 'email_not_found' });
       return;
     }
-    const undoAction = handlingUndoAction(item);
-    if (!undoAction) {
-      sendJson(res, 409, {
-        error: 'handling_not_undoable',
-        item: mobileEmailItem(item),
-      });
-      return;
-    }
     const decisionId = handlingDecisionKey(item);
     const claimToken = randomUUID();
     const claim = claimHandlingUndo(item.id, decisionId, claimToken);
+    if (claim.completed) {
+      sendJson(res, 200, {
+        ok: true,
+        action: 'undo-handling',
+        item: mobileEmailItem(claim.item || getEmailItem(item.id) || item),
+      });
+      return;
+    }
     if (!claim.claimed) {
       sendJson(res, 409, {
         error: 'handling_not_undoable',
@@ -438,6 +447,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
       });
       return;
     }
+    const undoAction = claim.action;
     const handler = undoAction === 'archive'
       ? (dependencies.archiveEmail || archiveEmail)
       : (dependencies.moveEmailToInbox || moveEmailToInbox);
@@ -745,7 +755,7 @@ export function createApiServer(dependencies = {}) {
       await handleAuthed(req, res, url, dependencies);
     } catch (err) {
       if (err instanceof HttpError || err instanceof AssistantError) {
-        sendJson(res, err.status, { error: err.code, message: err.message });
+        sendJson(res, err.status, { error: err.code, message: err.message, ...(err.details || {}) });
         return;
       }
       console.error(`[winnow/api] Unexpected request error: ${err.stack || err.message}`);

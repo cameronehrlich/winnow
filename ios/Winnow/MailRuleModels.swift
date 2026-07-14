@@ -90,7 +90,8 @@ struct MailRuleDraft: Encodable, Equatable {
     var enabled: Bool
     var baselineRuleId: String?
     var sourceEmailItemId: String?
-    var expectedConflict: MailRuleConflictBinding?
+    var expectedConflict: MailRuleVersionBinding?
+    var expectedRule: MailRuleVersionBinding?
 
     init(rule: MailRule) {
         id = rule.editable && !rule.isBaseline ? rule.id : nil
@@ -105,6 +106,7 @@ struct MailRuleDraft: Encodable, Equatable {
         baselineRuleId = rule.baselineRuleId ?? (rule.isBaseline ? rule.id : nil)
         sourceEmailItemId = rule.sourceEmailItemId
         expectedConflict = nil
+        expectedRule = nil
     }
 
     init(
@@ -131,11 +133,12 @@ struct MailRuleDraft: Encodable, Equatable {
         self.baselineRuleId = baselineRuleId
         self.sourceEmailItemId = sourceEmailItemId
         self.expectedConflict = nil
+        self.expectedRule = nil
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, account, type, effect, match, matcherKind, matcherValue
-        case description, enabled, baselineRuleId, sourceEmailItemId, expectedConflict
+        case description, enabled, baselineRuleId, sourceEmailItemId, expectedConflict, expectedRule
     }
 
     func encode(to encoder: Encoder) throws {
@@ -149,6 +152,7 @@ struct MailRuleDraft: Encodable, Equatable {
         try values.encodeIfPresent(baselineRuleId, forKey: .baselineRuleId)
         try values.encodeIfPresent(sourceEmailItemId, forKey: .sourceEmailItemId)
         try values.encodeIfPresent(expectedConflict, forKey: .expectedConflict)
+        try values.encodeIfPresent(expectedRule, forKey: .expectedRule)
         if type == "exact" {
             try values.encode(matcherKind ?? "sender", forKey: .matcherKind)
             try values.encodeIfPresent(matcherValue, forKey: .matcherValue)
@@ -157,9 +161,10 @@ struct MailRuleDraft: Encodable, Equatable {
         }
     }
 
-    func bindingExpectedConflict(from preview: MailRulePreviewResponse) -> MailRuleDraft {
+    func bindingExpectedGuards(from preview: MailRulePreviewResponse) -> MailRuleDraft {
         var bound = self
         bound.expectedConflict = preview.replacementBinding
+        bound.expectedRule = preview.expectedRule
         return bound
     }
 }
@@ -203,14 +208,15 @@ struct MailRulePreviewResponse: Decodable {
     let sampledAt: String?
     let model: String?
     let conflict: MailRuleConflict?
+    let expectedRule: MailRuleVersionBinding?
 
-    var replacementBinding: MailRuleConflictBinding? {
-        conflict.flatMap { MailRuleConflictBinding(rule: $0.rule) }
+    var replacementBinding: MailRuleVersionBinding? {
+        conflict.flatMap { MailRuleVersionBinding(rule: $0.rule) }
     }
 
     private enum CodingKeys: String, CodingKey {
         case candidate, mode, evaluatedCount, matchCount, count, sampledAtMost
-        case matches, evidence, nonMatches, nonmatches, note, sampledAt, model, conflict
+        case matches, evidence, nonMatches, nonmatches, note, sampledAt, model, conflict, expectedRule
     }
 
     init(from decoder: Decoder) throws {
@@ -231,10 +237,11 @@ struct MailRulePreviewResponse: Decodable {
         sampledAt = try values.decodeIfPresent(String.self, forKey: .sampledAt)
         model = try values.decodeIfPresent(String.self, forKey: .model)
         conflict = try values.decodeIfPresent(MailRuleConflict.self, forKey: .conflict)
+        expectedRule = try values.decodeIfPresent(MailRuleVersionBinding.self, forKey: .expectedRule)
     }
 }
 
-struct MailRuleConflictBinding: Codable, Equatable {
+struct MailRuleVersionBinding: Codable, Equatable {
     let ruleId: String
     let updatedAt: String
 
@@ -262,7 +269,7 @@ struct MailRulePreviewMatch: Decodable, Identifiable, Equatable {
     let subject: String
     let date: String?
     let snippet: String
-    let confidence: Int?
+    let confidence: Double?
     let reason: String?
 
     var id: String { emailItemId.nilIfBlank ?? "\(account)|\(messageId)|\(threadId)|\(subject)" }
@@ -271,6 +278,11 @@ struct MailRulePreviewMatch: Decodable, Identifiable, Equatable {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.date(from: date) ?? ISO8601DateFormatter().date(from: date)
+    }
+    var confidencePercentText: String? {
+        confidence.map {
+            $0.formatted(.number.precision(.fractionLength(0...1))) + "%"
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -289,7 +301,7 @@ struct MailRulePreviewMatch: Decodable, Identifiable, Equatable {
         subject = try values.decodeIfPresent(String.self, forKey: .subject) ?? "(no subject)"
         date = try values.decodeIfPresent(String.self, forKey: .date)
         snippet = try values.decodeIfPresent(String.self, forKey: .snippet) ?? ""
-        confidence = try values.decodeIfPresent(Int.self, forKey: .confidence)
+        confidence = try values.decodeIfPresent(Double.self, forKey: .confidence)
         reason = try values.decodeIfPresent(String.self, forKey: .reason)?.nilIfBlank
     }
 }

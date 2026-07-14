@@ -8,6 +8,7 @@ const BASES = new Set([
   'ephemeral',
 ]);
 const ATTRIBUTIONS = new Set(['deterministic', 'model_cited']);
+export const HANDLING_UNDO_LEASE_MS = 5 * 60 * 1000;
 
 function boundedText(value, max = 2000) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
@@ -61,14 +62,33 @@ export function handlingDecisionKey(item) {
   return decision.id || `${item?.id || ''}:${decision.handledAt}`;
 }
 
-export function handlingUndoAction(item) {
+export function handlingUndoDesiredAction(item) {
+  const decision = normalizeHandlingDecision(item?.handlingDecision);
+  if (!decision) return null;
+  return decision.effect === 'archive' ? 'move-to-inbox' : 'archive';
+}
+
+export function handlingUndoTargetReached(item, action = handlingUndoDesiredAction(item)) {
+  if (action === 'move-to-inbox') return item?.mailboxState === 'inbox';
+  if (action === 'archive') return item?.mailboxState === 'archived';
+  return false;
+}
+
+export function handlingUndoAction(item, {
+  nowMs = Date.now(),
+  leaseMs = HANDLING_UNDO_LEASE_MS,
+} = {}) {
   const decision = normalizeHandlingDecision(item?.handlingDecision);
   if (!decision) return null;
   const decisionKey = handlingDecisionKey(item);
-  if (
-    item.handlingUndoDecisionId === decisionKey
-    && ['executing', 'completed'].includes(item.handlingUndoStatus)
-  ) return null;
+  if (item.handlingUndoDecisionId === decisionKey) {
+    if (item.handlingUndoStatus === 'completed') return null;
+    if (item.handlingUndoStatus === 'executing') {
+      const claimedAt = Date.parse(item.handlingUndoUpdatedAt || '');
+      const leaseIsFresh = Number.isFinite(claimedAt) && nowMs - claimedAt < leaseMs;
+      if (leaseIsFresh) return null;
+    }
+  }
   if (
     decision.effect === 'archive'
     && item.triageState === 'auto_archived'

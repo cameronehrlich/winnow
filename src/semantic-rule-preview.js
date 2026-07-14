@@ -6,8 +6,17 @@ const MAX_FROM = 200;
 const MAX_SUBJECT = 300;
 const MAX_SUMMARY = 800;
 const MAX_SNIPPET = 800;
+const DEFAULT_TIMEOUT_MS = 20_000;
 
 let client;
+
+export class SemanticPreviewError extends Error {
+  constructor(message = 'Semantic rule preview is temporarily unavailable', { cause } = {}) {
+    super(message, { cause });
+    this.code = 'semantic_preview_unavailable';
+    this.retryable = true;
+  }
+}
 
 function getClient() {
   if (!client) {
@@ -55,7 +64,26 @@ function normalizeEvaluation(result, ids) {
   };
 }
 
-export async function evaluateSemanticRulePreview({ candidate, messages }) {
+async function withTimeout(promise, timeoutMs) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new SemanticPreviewError(
+      'Semantic rule preview timed out; try again',
+    )), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function evaluateSemanticRulePreview({
+  candidate,
+  messages,
+  timeoutMs = Number(process.env.WINNOW_SEMANTIC_PREVIEW_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+  generateContent = null,
+}) {
   const sample = messages.slice(0, MAX_MESSAGES);
   const modelName = getClassificationModelName(loadConfig());
   if (!sample.length) {
@@ -74,16 +102,23 @@ This is a read-only estimate. Do not propose or perform actions.
 Return only JSON: {"results":[{"emailItemId":"id","matches":true,"confidence":0-100,"reason":"brief factual reason"}]}.
 Return exactly one result for every supplied emailItemId.`;
   const prompt = `PROPOSED RULE:\n${candidate.match}\n\nEMAIL SAMPLE:\n${JSON.stringify(records)}`;
-  const model = getClient().getGenerativeModel({ model: modelName, systemInstruction });
-  const response = await model.generateContent(prompt);
-  const parsed = parseJson(response.response.text());
-  if (!Array.isArray(parsed.results) || parsed.results.length !== records.length) {
-    throw new Error('Semantic preview evaluator returned an incomplete result set');
+  try {
+    const request = generateContent
+      ? generateContent({ modelName, systemInstruction, prompt })
+      : getClient().getGenerativeModel({ model: modelName, systemInstruction }).generateContent(prompt);
+    const response = await withTimeout(Promise.resolve(request), Math.max(1, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
+    const parsed = parseJson(response.response.text());
+    if (!Array.isArray(parsed.results) || parsed.results.length !== records.length) {
+      throw new Error('Semantic preview evaluator returned an incomplete result set');
+    }
+    const ids = new Set(records.map(record => record.emailItemId));
+    const evaluations = parsed.results.map(result => normalizeEvaluation(result, ids));
+    if (new Set(evaluations.map(result => result.emailItemId)).size !== records.length) {
+      throw new Error('Semantic preview evaluator returned duplicate email results');
+    }
+    return { model: modelName, sampledAt: new Date().toISOString(), evaluations };
+  } catch (err) {
+    if (err instanceof SemanticPreviewError) throw err;
+    throw new SemanticPreviewError(undefined, { cause: err });
   }
-  const ids = new Set(records.map(record => record.emailItemId));
-  const evaluations = parsed.results.map(result => normalizeEvaluation(result, ids));
-  if (new Set(evaluations.map(result => result.emailItemId)).size !== records.length) {
-    throw new Error('Semantic preview evaluator returned duplicate email results');
-  }
-  return { model: modelName, sampledAt: new Date().toISOString(), evaluations };
 }

@@ -4,8 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import {
+  HANDLING_UNDO_LEASE_MS,
   handlingDecisionKey,
   handlingUndoAction,
+  handlingUndoDesiredAction,
+  handlingUndoTargetReached,
   normalizeHandlingDecision,
 } from './handling-decisions.js';
 
@@ -540,6 +543,7 @@ function rowToEmailItem(row) {
     handlingDecision: normalizeHandlingDecision(parseJson(row.handling_decision_json, null)),
     handlingUndoDecisionId: row.handling_undo_decision_id || '',
     handlingUndoStatus: row.handling_undo_status || '',
+    handlingUndoUpdatedAt: row.handling_undo_updated_at || '',
     createdAt: row.created_at,
     processedAt: row.processed_at,
     updatedAt: row.updated_at,
@@ -627,16 +631,55 @@ export function updateEmailItemState(id, { triageState, mailboxState, readState,
   return getEmailItem(id);
 }
 
-export function claimHandlingUndo(emailItemId, decisionId, claimToken) {
+export function claimHandlingUndo(emailItemId, decisionId, claimToken, {
+  now = new Date(),
+  leaseMs = HANDLING_UNDO_LEASE_MS,
+} = {}) {
   const database = getDb();
   database.exec('BEGIN IMMEDIATE');
   try {
     const item = rowToEmailItem(database.prepare('SELECT * FROM email_items WHERE id = ?').get(emailItemId));
-    if (!item || handlingDecisionKey(item) !== decisionId || !handlingUndoAction(item)) {
+    if (!item || handlingDecisionKey(item) !== decisionId) {
       database.exec('ROLLBACK');
       return { claimed: false, reason: 'not_undoable', item };
     }
-    const timestamp = nowIso();
+    const timestamp = now.toISOString();
+    const desiredAction = handlingUndoDesiredAction(item);
+    const sameDecision = item.handlingUndoDecisionId === decisionId;
+    const claimedAt = Date.parse(item.handlingUndoUpdatedAt || '');
+    const freshExecutingClaim = sameDecision
+      && item.handlingUndoStatus === 'executing'
+      && Number.isFinite(claimedAt)
+      && now.getTime() - claimedAt < leaseMs;
+    if (sameDecision && item.handlingUndoStatus === 'completed') {
+      database.exec('ROLLBACK');
+      return { claimed: false, reason: 'already_completed', item };
+    }
+    if (freshExecutingClaim) {
+      database.exec('ROLLBACK');
+      return { claimed: false, reason: 'already_claimed', item };
+    }
+    if (
+      sameDecision
+      && item.handlingUndoStatus === 'executing'
+      && handlingUndoTargetReached(item, desiredAction)
+    ) {
+      database.prepare(`
+        UPDATE email_items
+        SET handling_undo_status = 'completed', handling_undo_claim_token = NULL,
+            handling_undo_updated_at = @timestamp, updated_at = @timestamp
+        WHERE id = @emailItemId
+          AND handling_undo_decision_id = @decisionId
+          AND handling_undo_status = 'executing'
+      `).run({ emailItemId, decisionId, timestamp });
+      database.exec('COMMIT');
+      return { claimed: false, completed: true, reason: 'already_completed', item: getEmailItem(emailItemId) };
+    }
+    const action = handlingUndoAction(item, { nowMs: now.getTime(), leaseMs });
+    if (!action) {
+      database.exec('ROLLBACK');
+      return { claimed: false, reason: 'not_undoable', item };
+    }
     const result = database.prepare(`
       UPDATE email_items
       SET handling_undo_decision_id = @decisionId,
@@ -648,14 +691,24 @@ export function claimHandlingUndo(emailItemId, decisionId, claimToken) {
         AND (
           handling_undo_decision_id IS NULL
           OR handling_undo_decision_id != @decisionId
+          OR handling_undo_status != 'executing'
+          OR handling_undo_updated_at IS NULL
+          OR handling_undo_updated_at = ''
+          OR handling_undo_updated_at = @previousUpdatedAt
         )
-    `).run({ emailItemId, decisionId, claimToken, timestamp });
+    `).run({
+      emailItemId,
+      decisionId,
+      claimToken,
+      timestamp,
+      previousUpdatedAt: item.handlingUndoUpdatedAt,
+    });
     if (result.changes !== 1) {
       database.exec('ROLLBACK');
       return { claimed: false, reason: 'already_claimed', item: getEmailItem(emailItemId) };
     }
     database.exec('COMMIT');
-    return { claimed: true, item: getEmailItem(emailItemId) };
+    return { claimed: true, action, item: getEmailItem(emailItemId) };
   } catch (err) {
     try { database.exec('ROLLBACK'); } catch { /* transaction already closed */ }
     throw err;
@@ -1698,6 +1751,58 @@ export function upsertUserRuleRecord({
   return rowToUserRule(database.prepare(`
     SELECT * FROM user_rules WHERE account = ? AND conflict_key = ?
   `).get(account, conflictKey));
+}
+
+export function updateUserRuleRecordById({
+  id,
+  account,
+  type,
+  effect,
+  match = '',
+  matcherKind = null,
+  matcherValue = null,
+  description = '',
+  enabled = true,
+  source = 'api',
+  baselineRuleId = null,
+  sourceEmailItemId = null,
+  conflictKey,
+  updatedAt = nowIso(),
+}) {
+  const database = getDb();
+  const result = database.prepare(`
+    UPDATE user_rules
+    SET account = @account,
+        rule_type = @type,
+        effect = @effect,
+        match_text = @match,
+        matcher_kind = @matcherKind,
+        matcher_value = @matcherValue,
+        description = @description,
+        enabled = @enabled,
+        source = @source,
+        baseline_rule_id = @baselineRuleId,
+        source_email_item_id = @sourceEmailItemId,
+        conflict_key = @conflictKey,
+        updated_at = @updatedAt
+    WHERE id = @id
+  `).run({
+    id,
+    account,
+    type,
+    effect,
+    match: match || null,
+    matcherKind,
+    matcherValue,
+    description: String(description || '').slice(0, 1000),
+    enabled: enabled ? 1 : 0,
+    source,
+    baselineRuleId,
+    sourceEmailItemId,
+    conflictKey,
+    updatedAt,
+  });
+  return result.changes === 1 ? getUserRuleRecord(id) : null;
 }
 
 export function getUserRuleRecord(id) {

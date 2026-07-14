@@ -84,7 +84,6 @@ afterEach(() => {
   delete process.env.SLACK_APP_TOKEN;
   delete process.env.WORK_SLACK_BOT_TOKEN;
   delete process.env.WORK_SLACK_APP_TOKEN;
-  reloadConfig();
 });
 
 describe('Slack routing config', () => {

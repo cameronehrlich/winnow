@@ -127,11 +127,18 @@ struct APIClient {
             "type": "semantic",
             "effect": candidate.effect,
         ]
+        if let id = candidate.id { payload["id"] = id }
         if let baselineRuleId = candidate.baselineRuleId { payload["baselineRuleId"] = baselineRuleId }
         if let expectedConflict = candidate.expectedConflict {
             payload["expectedConflict"] = [
                 "ruleId": expectedConflict.ruleId,
                 "updatedAt": expectedConflict.updatedAt,
+            ]
+        }
+        if let expectedRule = candidate.expectedRule {
+            payload["expectedRule"] = [
+                "ruleId": expectedRule.ruleId,
+                "updatedAt": expectedRule.updatedAt,
             ]
         }
         if !candidate.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

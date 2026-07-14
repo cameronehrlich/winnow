@@ -440,7 +440,7 @@ struct MailRuleEditorView: View {
                         draft: draft,
                         preview: preview,
                         isSaving: isSaving,
-                        allowsSave: hasMeaningChange && canBindReplacement(preview),
+                        allowsSave: hasMeaningChange && canBindSave(preview),
                         title: hasMeaningChange ? "Review Rule Change" : "Rule Test",
                         saveTitle: preview.conflict == nil ? "Save Change" : "Replace Existing Rule",
                         cancel: { showingReview = false },
@@ -473,8 +473,8 @@ struct MailRuleEditorView: View {
     }
 
     private func saveChange() {
-        guard let preview else { return }
-        let candidate = draft.bindingExpectedConflict(from: preview)
+        guard let reviewedPreview = preview else { return }
+        let candidate = draft.bindingExpectedGuards(from: reviewedPreview)
         Task {
             isSaving = true
             let saved = await model.saveMailRule(candidate, replacing: rule)
@@ -482,12 +482,17 @@ struct MailRuleEditorView: View {
             if saved {
                 showingReview = false
                 dismiss()
+            } else {
+                showingReview = false
+                preview = nil
             }
         }
     }
 
-    private func canBindReplacement(_ preview: MailRulePreviewResponse) -> Bool {
-        preview.conflict == nil || preview.replacementBinding != nil
+    private func canBindSave(_ preview: MailRulePreviewResponse) -> Bool {
+        let replacementIsBound = preview.conflict == nil || preview.replacementBinding != nil
+        let currentRuleIsBound = draft.id == nil || preview.expectedRule != nil
+        return replacementIsBound && currentRuleIsBound
     }
 }
 
@@ -530,6 +535,14 @@ struct MailRuleReviewView: View {
                         }
                     } header: {
                         Text("Existing Rule")
+                    }
+                }
+
+                if draft.id != nil, preview.expectedRule == nil {
+                    Section("Fresh Preview Required") {
+                        Text("Winnow could not bind this preview to the current rule version. Test the rule again before saving.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -577,7 +590,7 @@ struct MailRuleReviewView: View {
                         }
                         HStack(spacing: 6) {
                             if !example.account.isEmpty { Text(example.account) }
-                            if let confidence = example.confidence { Text("\(confidence)%") }
+                            if let confidence = example.confidencePercentText { Text(confidence) }
                         }
                         .font(.caption2)
                         .foregroundStyle(.tertiary)

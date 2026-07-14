@@ -364,6 +364,7 @@ final class AppModel: ObservableObject {
             if enabled {
                 var draft = MailRuleDraft(rule: rule)
                 draft.enabled = true
+                draft.expectedRule = MailRuleVersionBinding(rule: rule)
                 _ = try await client.updateMailRule(id: rule.id, candidate: draft)
             } else {
                 _ = try await client.disableMailRule(id: rule.id)

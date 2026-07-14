@@ -15,6 +15,7 @@ import {
   runImmediateTransaction,
   setSyncState,
   setUserRuleEnabled,
+  updateUserRuleRecordById,
   upsertUserRuleRecord,
 } from './store.js';
 import { evaluateSemanticRulePreview } from './semantic-rule-preview.js';
@@ -265,21 +266,32 @@ function aggregateActivity(accounts, rule) {
   };
 }
 
-function splitExpectedConflict(input) {
+function validateExpectedBinding(value, name) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+  const unexpected = Object.keys(value).find(key => !['ruleId', 'updatedAt'].includes(key));
+  if (unexpected) throw new TypeError(`unexpected ${name} field: ${unexpected}`);
+  return {
+    ruleId: requiredText(value.ruleId, `${name}.ruleId`, 128),
+    updatedAt: requiredText(value.updatedAt, `${name}.updatedAt`, 128),
+  };
+}
+
+function splitExpectedBindings(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    return { ruleInput: input, expectedConflict: null };
+    return { ruleInput: input, expectedConflict: null, expectedRule: null };
   }
-  const { expectedConflict = null, ...ruleInput } = input;
-  if (expectedConflict !== null) {
-    if (!expectedConflict || typeof expectedConflict !== 'object' || Array.isArray(expectedConflict)) {
-      throw new TypeError('expectedConflict must be an object');
-    }
-    const unexpected = Object.keys(expectedConflict).find(key => !['ruleId', 'updatedAt'].includes(key));
-    if (unexpected) throw new TypeError(`unexpected expectedConflict field: ${unexpected}`);
-    requiredText(expectedConflict.ruleId, 'expectedConflict.ruleId', 128);
-    requiredText(expectedConflict.updatedAt, 'expectedConflict.updatedAt', 128);
-  }
-  return { ruleInput, expectedConflict };
+  const { expectedConflict = null, expectedRule = null, ...ruleInput } = input;
+  return {
+    ruleInput,
+    expectedConflict: expectedConflict === null
+      ? null
+      : validateExpectedBinding(expectedConflict, 'expectedConflict'),
+    expectedRule: expectedRule === null
+      ? null
+      : validateExpectedBinding(expectedRule, 'expectedRule'),
+  };
 }
 
 function conflictForNormalizedRule(normalized) {
@@ -288,7 +300,7 @@ function conflictForNormalizedRule(normalized) {
 }
 
 export function getUserRuleConflict(input, { source = 'api' } = {}) {
-  const { ruleInput } = splitExpectedConflict(input);
+  const { ruleInput } = splitExpectedBindings(input);
   const existing = ruleInput?.id ? getUserRuleRecord(ruleInput.id) : null;
   const normalized = normalizeUserRule(ruleInput, { source, existing });
   const conflict = conflictForNormalizedRule(normalized);
@@ -296,10 +308,30 @@ export function getUserRuleConflict(input, { source = 'api' } = {}) {
 }
 
 export function upsertUserRule(input, { source = 'api' } = {}) {
-  const { ruleInput, expectedConflict } = splitExpectedConflict(input);
+  const { ruleInput, expectedConflict, expectedRule } = splitExpectedBindings(input);
   return runImmediateTransaction(() => {
     const existing = ruleInput?.id ? getUserRuleRecord(ruleInput.id) : null;
+    if (existing && !expectedRule) {
+      throw new RuleConflictError(
+        'rule_revision_confirmation_required',
+        'Preview the current rule revision before saving edits',
+      );
+    }
+    if (
+      expectedRule
+      && (!existing
+        || expectedRule.ruleId !== existing.id
+        || expectedRule.updatedAt !== existing.updatedAt)
+    ) {
+      throw new RuleConflictError(
+        'rule_revision_changed',
+        'The rule changed; preview it again before saving',
+      );
+    }
     const normalized = normalizeUserRule(ruleInput, { source, existing });
+    if (existing && normalized.account !== existing.account) {
+      throw new TypeError('an existing rule cannot be moved to another account');
+    }
     const conflict = conflictForNormalizedRule(normalized);
     if (conflict && !expectedConflict) {
       throw new RuleConflictError(
@@ -323,8 +355,16 @@ export function upsertUserRule(input, { source = 'api' } = {}) {
       Date.parse(conflict?.updatedAt || '') || 0,
     );
     normalized.updatedAt = new Date(Math.max(Date.now(), previousRevisionTime + 1)).toISOString();
-    const saved = upsertUserRuleRecord(normalized);
-    if (existing && saved.id !== existing.id) deleteUserRuleRecord(existing.id);
+    let saved;
+    if (existing) {
+      // Preserve the edited rule's stable identity. A separately confirmed
+      // conflict is removed only after both revision bindings were validated.
+      if (conflict) deleteUserRuleRecord(conflict.id);
+      saved = updateUserRuleRecordById(normalized);
+    } else {
+      saved = upsertUserRuleRecord(normalized);
+    }
+    if (!saved) throw new Error('rule update did not persist');
     return toApiRule(saved);
   });
 }
@@ -543,9 +583,14 @@ export async function previewUserRule(input, {
   limit = 10,
   evaluator = evaluateSemanticRulePreview,
 } = {}) {
-  const normalized = normalizeUserRule(input, { source: 'api' });
+  const { ruleInput } = splitExpectedBindings(input);
+  const existing = ruleInput?.id ? getUserRuleRecord(ruleInput.id) : null;
+  const normalized = normalizeUserRule(ruleInput, { source: 'api', existing });
   const candidate = toApiRule(normalized);
   const conflict = replacementConflict(normalized);
+  const expectedRule = existing
+    ? { ruleId: existing.id, updatedAt: existing.updatedAt }
+    : null;
   if (normalized.type === 'semantic') {
     const recent = listRecentTrackedEmailItems({ account: normalized.account, days: 90, limit: 30 });
     const evaluated = await evaluator({ candidate, messages: recent });
@@ -577,6 +622,7 @@ export async function previewUserRule(input, {
       sampledAt: evaluated.sampledAt || new Date().toISOString(),
       model: evaluated.model || null,
       note: `Sampled estimate over ${recent.length} recently tracked message${recent.length === 1 ? '' : 's'} using stored subject, summary, and snippet fields only; this is not production-equivalent and does not guarantee how future mail will be classified. No Gmail, event, or rule state was changed.`,
+      ...(expectedRule ? { expectedRule } : {}),
       ...(conflict ? { conflict } : {}),
     };
   }
@@ -595,6 +641,7 @@ export async function previewUserRule(input, {
     matchCount: matched.length,
     evidence: matches,
     note: `Deterministic sample: this rule would match ${matched.length} of ${recent.length} recently tracked messages; no Gmail, event, or rule state was changed.`,
+    ...(expectedRule ? { expectedRule } : {}),
     ...(conflict ? { conflict } : {}),
   };
 }

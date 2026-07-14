@@ -633,8 +633,8 @@ private struct CreateRuleFromEmailView: View {
     }
 
     private func saveRule() {
-        guard let preview else { return }
-        let candidate = draft.bindingExpectedConflict(from: preview)
+        guard let reviewedPreview = preview else { return }
+        let candidate = draft.bindingExpectedGuards(from: reviewedPreview)
         Task {
             isSaving = true
             let saved = await model.createMailRule(candidate)
@@ -642,6 +642,9 @@ private struct CreateRuleFromEmailView: View {
             if saved {
                 showingReview = false
                 dismiss()
+            } else {
+                showingReview = false
+                preview = nil
             }
         }
     }

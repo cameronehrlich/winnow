@@ -140,7 +140,6 @@ afterEach(async () => {
   delete process.env.WINNOW_SKIP_LEGACY_IMPORT;
   delete process.env.WINNOW_API_TOKEN;
   delete process.env.WINNOW_CONFIG_PATH;
-  reloadConfig();
 });
 
 describe('assistant API', () => {
