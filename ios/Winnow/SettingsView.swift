@@ -81,7 +81,7 @@ struct SettingsView: View {
                         Section {
                             HStack(spacing: 12) {
                                 Image(systemName: "waveform.path.ecg")
-                                    .foregroundStyle(WinnowDesign.indigo)
+                                    .foregroundStyle(WinnowDesign.accent)
                                     .frame(width: 24)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Winnow service")

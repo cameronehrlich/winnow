@@ -316,7 +316,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
             if presentation == .inlineEmail {
                 Label("Conversation", systemImage: "sparkles")
                     .font(.headline)
-                    .foregroundStyle(WinnowDesign.indigo)
+                    .foregroundStyle(WinnowDesign.accent)
                 Text("This email · \(scopeDescription)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -357,7 +357,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         HStack(spacing: 9) {
             if reduceMotion {
                 Image(systemName: "sparkles")
-                    .foregroundStyle(WinnowDesign.indigo)
+                    .foregroundStyle(WinnowDesign.accent)
             } else {
                 ProgressView().controlSize(.small)
             }
@@ -412,7 +412,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                             }
                             .font(.caption.weight(.semibold))
                             .buttonStyle(.bordered)
-                            .tint(WinnowDesign.indigo)
+                            .tint(WinnowDesign.accent)
                             .fixedSize(horizontal: true, vertical: false)
                         }
                     }
@@ -453,7 +453,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                             .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
-                        .tint(WinnowDesign.indigo)
+                        .tint(WinnowDesign.accent)
                     }
                 }
             }
@@ -470,6 +470,21 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
     }
 
     private var composer: some View {
+        Group {
+            if #available(iOS 26.0, *) {
+                GlassEffectContainer(spacing: 10) {
+                    composerControls
+                }
+            } else {
+                composerControls
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+    }
+
+    private var composerControls: some View {
         HStack(alignment: .bottom, spacing: 10) {
             TextField("Ask Winnow…", text: $composerText, axis: .vertical)
                 .lineLimit(1...5)
@@ -478,27 +493,36 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                 .onSubmit(send)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 11)
-                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .modifier(AssistantComposerFieldStyle())
 
-            Button(action: send) {
-                Image(systemName: "arrow.up")
-                    .font(.headline.bold())
-                    .foregroundStyle(.white)
-                    .frame(width: 42, height: 42)
-                    .background(WinnowDesign.heroGradient, in: Circle())
-            }
-            .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isWorking)
-            .opacity(viewModel.isWorking ? 0.55 : 1)
-            .accessibilityLabel("Send message")
+            composerSendButton
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 10)
-        .padding(.bottom, 8)
-        .background {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .ignoresSafeArea(.keyboard, edges: .bottom)
+    }
+
+    @ViewBuilder
+    private var composerSendButton: some View {
+        if #available(iOS 26.0, *) {
+            sendButton
+                .buttonStyle(.plain)
+                .glassEffect(.regular.tint(WinnowDesign.indigo).interactive(), in: Circle())
+        } else {
+            sendButton
+                .buttonStyle(.plain)
+                .background(WinnowDesign.heroGradient, in: Circle())
         }
+    }
+
+    private var sendButton: some View {
+        Button(action: send) {
+            Image(systemName: "arrow.up")
+                .font(.headline.bold())
+                .foregroundStyle(.white)
+                .frame(width: 42, height: 42)
+                .contentShape(Circle())
+        }
+        .disabled(composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isWorking)
+        .opacity(viewModel.isWorking ? 0.55 : 1)
+        .accessibilityLabel("Send message")
     }
 
     private func errorCard(_ error: String) -> some View {
@@ -564,6 +588,25 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
     private func prepareDraftRevision(_ draft: AssistantDraft) {
         composerText = "Revise the \(draft.kind) draft. Change it so that: "
         composerFocused = true
+    }
+}
+
+private struct AssistantComposerFieldStyle: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .glassEffect(
+                    .regular.interactive(),
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                )
+        } else {
+            content
+                .background(
+                    .regularMaterial,
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                )
+        }
     }
 }
 
@@ -639,7 +682,7 @@ private struct AssistantEvidenceCard: View {
     private var content: some View {
         HStack(alignment: .top, spacing: 11) {
             Image(systemName: "envelope.fill")
-                .foregroundStyle(WinnowDesign.indigo)
+                .foregroundStyle(WinnowDesign.accent)
                 .frame(width: 24, height: 24)
             VStack(alignment: .leading, spacing: 3) {
                 Text(evidence.subject).font(.subheadline.weight(.semibold)).lineLimit(2)
@@ -732,7 +775,7 @@ private struct AssistantProposalCard: View {
                 HStack {
                     Button("Review & Confirm", action: review)
                         .buttonStyle(.borderedProminent)
-                        .tint(WinnowDesign.indigo)
+                        .tint(WinnowDesign.accent)
                     Button("Cancel", role: .cancel, action: cancel)
                         .buttonStyle(.bordered)
                 }
@@ -766,7 +809,7 @@ private struct ProposalConfirmationView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     Label("Confirm this exact action", systemImage: "checkmark.shield.fill")
                         .font(.title2.bold())
-                        .foregroundStyle(WinnowDesign.indigo)
+                        .foregroundStyle(WinnowDesign.accent)
                     Text("Nothing is approved until you tap Confirm below.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -801,7 +844,7 @@ private struct ProposalConfirmationView: View {
                         .padding(.vertical, 13)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(WinnowDesign.indigo)
+                    .tint(WinnowDesign.accent)
                     .disabled(isWorking || proposal.confirmationDigest.isEmpty)
 
                     Button("Cancel proposal", role: .cancel, action: cancel)

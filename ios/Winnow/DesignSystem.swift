@@ -3,6 +3,12 @@ import SwiftUI
 enum WinnowDesign {
     static let indigo = Color(red: 0.28, green: 0.22, blue: 0.82)
     static let brightIndigo = Color(red: 0.43, green: 0.37, blue: 0.98)
+    static let accent = Color(uiColor: UIColor { traits in
+        if traits.userInterfaceStyle == .dark {
+            return UIColor(red: 0.62, green: 0.57, blue: 1.00, alpha: 1)
+        }
+        return UIColor(red: 0.28, green: 0.22, blue: 0.82, alpha: 1)
+    })
     static let mint = Color(red: 0.19, green: 0.72, blue: 0.60)
     static let amber = Color(red: 0.94, green: 0.58, blue: 0.20)
     static let rose = Color(red: 0.92, green: 0.30, blue: 0.43)
@@ -174,9 +180,9 @@ struct AccountAvatarBadge: View {
 struct CapsuleLabel: View {
     let text: String
     let symbol: String?
-    var color: Color = WinnowDesign.indigo
+    var color: Color = WinnowDesign.accent
 
-    init(_ text: String, symbol: String? = nil, color: Color = WinnowDesign.indigo) {
+    init(_ text: String, symbol: String? = nil, color: Color = WinnowDesign.accent) {
         self.text = text
         self.symbol = symbol
         self.color = color

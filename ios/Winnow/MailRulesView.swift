@@ -197,7 +197,7 @@ private struct MailRuleRow: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: rule.actionSymbol)
-                    .foregroundStyle(rule.effect == "archive" ? WinnowDesign.indigo : WinnowDesign.mint)
+                    .foregroundStyle(rule.effect == "archive" ? WinnowDesign.accent : WinnowDesign.mint)
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(rule.description.isEmpty ? rule.matcherTitle : rule.description)
