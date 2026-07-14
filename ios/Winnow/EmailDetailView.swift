@@ -31,17 +31,6 @@ struct EmailDetailView: View {
 
                         actionsCard(item)
 
-                        if item.isConversation {
-                            ConversationPreviewSection(
-                                configuration: model.configuration,
-                                emailID: item.id,
-                                focusedMessageID: item.messageId,
-                                fallbackSubject: item.displaySubject ?? "No subject",
-                                account: item.account,
-                                viewFullConversation: { showingFullEmail = true }
-                            )
-                        }
-
                         if let decision = item.handlingDecision {
                             HandlingDecisionCard(
                                 decision: decision,
@@ -72,7 +61,13 @@ struct EmailDetailView: View {
                             InsightBlock(title: "Manual step needed", symbol: "envelope.badge", text: "This sender requires an email-based unsubscribe that Winnow can’t complete automatically.", color: WinnowDesign.amber)
                         }
 
-                        ConversationOpeningSection(
+                        ConversationPrelude(
+                            configuration: model.configuration,
+                            showsEarlierMessages: item.isConversation,
+                            emailID: item.id,
+                            focusedMessageID: item.messageId,
+                            fallbackSubject: item.displaySubject ?? "No subject",
+                            account: item.account,
                             summary: item.summary,
                             canLoadFullEmail: item.canLoadFullContent,
                             viewFullEmail: { showingFullEmail = true }
@@ -689,20 +684,29 @@ private struct InsightBlock: View {
     }
 }
 
-private struct ConversationOpeningSection: View {
+private struct ConversationPrelude: View {
+    let configuration: ServerConfiguration
+    let showsEarlierMessages: Bool
+    let emailID: String
+    let focusedMessageID: String
+    let fallbackSubject: String
+    let account: String
     let summary: String
     let canLoadFullEmail: Bool
     let viewFullEmail: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Label("Conversation", systemImage: "sparkles")
-                    .font(.headline)
-                    .foregroundStyle(WinnowDesign.accent)
-                Spacer()
+        VStack(alignment: .leading, spacing: 16) {
+            if showsEarlierMessages {
+                ConversationPreviewSection(
+                    configuration: configuration,
+                    emailID: emailID,
+                    focusedMessageID: focusedMessageID,
+                    fallbackSubject: fallbackSubject,
+                    account: account,
+                    viewFullConversation: viewFullEmail
+                )
             }
-            .padding(.horizontal, 4)
 
             if !summary.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
@@ -727,7 +731,7 @@ private struct ConversationOpeningSection: View {
                 }
                 .winnowCard()
                 .accessibilityElement(children: .contain)
-                .accessibilityLabel("Winnow's summary. Conversation opening context")
+                .accessibilityLabel("Winnow's summary")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
