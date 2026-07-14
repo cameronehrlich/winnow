@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { execFile, exec as execRaw, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { GogAdapter } from './adapters/gog.js';
+import { GogAdapter, normalizeGogMessage } from './adapters/gog.js';
 import { findMatchingAssistantRule } from './assistant-rules.js';
 import { classifyEmail } from './classify.js';
 import { loadConfig, getAdapter, getScanSearchQuery } from './config.js';
@@ -242,6 +242,7 @@ export async function scan(account, opts = {}) {
         unsubscribeLink,
         account,
         readState: inferReadState(enrichedMsg, searchQuery),
+        attachments: fullMessage ? normalizeGogMessage(fullMessage).attachments : undefined,
       };
 
       if (dryRun) {

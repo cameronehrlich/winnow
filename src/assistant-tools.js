@@ -6,6 +6,11 @@ import { followUnsubscribeLink } from './slack-actions.js';
 import { recordUnsubscribe } from './state.js';
 import { resolveTrackedContacts } from './contact-resolver.js';
 import {
+  assertReadableAttachment,
+  collectThreadAttachments,
+  MAX_ATTACHMENT_BYTES,
+} from './email-attachments.js';
+import {
   getEmailItem,
   getUserRuleRecord,
 } from './store.js';
@@ -34,6 +39,7 @@ export const ASSISTANT_TOOL_DEFINITIONS = Object.freeze([
   { name: 'mail.search', risk: 'read', description: 'Search configured Gmail accounts.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { account: { type: 'string' }, query: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 25 } } } },
   { name: 'contacts.resolve', risk: 'read', description: 'Resolve a person name to recent correspondent email candidates without guessing.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 10 } } } },
   { name: 'mail.get_thread', risk: 'read', description: 'Read one Gmail thread.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'threadId'], properties: { account: { type: 'string' }, threadId: { type: 'string' } } } },
+  { name: 'mail.read_attachment', risk: 'read', description: 'Read one supported attachment from the selected email thread only when its text context lacks the answer.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId', 'attachmentId'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, attachmentId: { type: 'string' } } } },
   ...['mail.archive', 'mail.mark_read', 'mail.mark_unread'].map(name => ({ name, risk: 'reversible', description: `${name.split('.')[1].replace('_', ' ')} one Gmail thread.`, inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'threadId'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' } } } })),
   { name: 'unsubscribe.request', risk: 'persistent', description: 'Discover and propose an unsubscribe method.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' } } } },
   { name: 'mail.send_reply', risk: 'outbound', description: 'Propose sending an exact reply draft.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId', 'draft'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' }, draft: { type: 'object', additionalProperties: false, required: ['body'], properties: { body: { type: 'string' }, to: { type: 'array', items: { type: 'string' } }, cc: { type: 'array', items: { type: 'string' } }, bcc: { type: 'array', items: { type: 'string' } }, subject: { type: 'string' } } } } } },
@@ -169,6 +175,14 @@ export function validateAssistantToolCall(name, rawArguments) {
     if (!ref.threadId) throw new AssistantToolError('invalid_tool_arguments', 'threadId is required');
     return { account: ref.account, threadId: ref.threadId };
   }
+  if (name === 'mail.read_attachment') {
+    exactKeys(args, ['account', 'messageId', 'attachmentId']);
+    return {
+      account: configuredAccount(string(args.account, 'account', { max: 320 })),
+      messageId: string(args.messageId, 'messageId', { max: 256 }),
+      attachmentId: string(args.attachmentId, 'attachmentId', { max: 2048 }),
+    };
+  }
   if (['mail.archive', 'mail.mark_read', 'mail.mark_unread'].includes(name)) {
     const ref = normalizeRef(args, ['account', 'messageId', 'threadId']);
     if (!ref.threadId) throw new AssistantToolError('invalid_tool_arguments', 'threadId is required');
@@ -272,6 +286,10 @@ function enforceConversationScope(conversation, args) {
   const item = getEmailItem(conversation.emailItemId);
   if (!item) throw new AssistantToolError('email_not_found', 'The contextual email no longer exists', 404);
   if (args.account && args.account !== item.account) throw new AssistantToolError('email_scope_mismatch', 'Tool does not target the contextual email', 403);
+  // Attachment message IDs can belong to an earlier message in the selected
+  // thread. prepareAssistantTool verifies the exact (messageId, attachmentId)
+  // tuple against a fresh read of that thread before downloading any bytes.
+  if (Object.hasOwn(args, 'attachmentId')) return { ...args, account: item.account };
   if (args.messageId && args.messageId !== item.messageId) throw new AssistantToolError('email_scope_mismatch', 'Tool does not target the contextual email', 403);
   if (args.threadId && args.threadId !== item.threadId) throw new AssistantToolError('email_scope_mismatch', 'Tool does not target the contextual email', 403);
   return {
@@ -404,6 +422,9 @@ export function createDefaultAssistantDependencies() {
     async searchMailbox(account, query, limit) { return adapter.searchMailbox(account, query, limit); },
     async getThread(account, threadId) { return adapter.getThread(account, threadId); },
     async getMessage(account, messageId) { return adapter.getMessage(account, messageId); },
+    async readAttachment(account, messageId, attachmentId, maxBytes) {
+      return adapter.getAttachment(account, messageId, attachmentId, { maxBytes });
+    },
     async archive(args) { return archiveEmail({ ...args, source: 'assistant', reason: 'Assistant archive' }); },
     async markRead(args) { return markEmailRead({ ...args, source: 'assistant', reason: 'Assistant mark read' }); },
     async markUnread(args) { return markEmailUnread({ ...args, source: 'assistant', reason: 'Assistant mark unread' }); },
@@ -470,6 +491,48 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
       kind: 'result', risk: definition.risk,
       result: { id: thread?.id || args.threadId, messages: messages.map(boundedMessageForModel) },
       evidence: messages.map(message => evidenceFromMessage(message, args.account)),
+    };
+  }
+  if (name === 'mail.read_attachment') {
+    if (conversation.scope !== 'email') {
+      throw new AssistantToolError('email_scope_required', 'Open an email before reading its attachment', 400);
+    }
+    const item = getEmailItem(conversation.emailItemId);
+    if (!item?.threadId) {
+      throw new AssistantToolError('attachment_not_found', 'The selected email has no readable attachment thread', 404);
+    }
+    const thread = await dependencies.getThread(item.account, item.threadId);
+    const attachment = collectThreadAttachments(thread).find(candidate => (
+      candidate.messageId === args.messageId && candidate.attachmentId === args.attachmentId
+    ));
+    let readable;
+    try {
+      readable = assertReadableAttachment(attachment);
+    } catch (error) {
+      throw new AssistantToolError(
+        error.code || 'attachment_not_found',
+        error.code === 'attachment_type_not_supported'
+          ? 'This attachment type is not supported yet'
+          : (error.code === 'attachment_size_not_supported'
+            ? 'This attachment is too large to inspect safely'
+            : 'This attachment is not part of the selected email thread'),
+        error.code === 'attachment_not_found' ? 404 : 400,
+      );
+    }
+    const data = await dependencies.readAttachment(
+      item.account,
+      readable.messageId,
+      readable.attachmentId,
+      Math.min(readable.sizeBytes, MAX_ATTACHMENT_BYTES),
+    );
+    if (!Buffer.isBuffer(data) || data.length > MAX_ATTACHMENT_BYTES || data.length > readable.sizeBytes) {
+      throw new AssistantToolError('attachment_size_not_supported', 'This attachment is too large to inspect safely');
+    }
+    return {
+      kind: 'result', risk: definition.risk,
+      result: { attachment: readable, contentLoaded: true },
+      privateAttachments: [{ ...readable, data }],
+      evidence: [],
     };
   }
   if (name === 'mail.archive') {

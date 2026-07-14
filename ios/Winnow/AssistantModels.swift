@@ -299,16 +299,18 @@ struct AssistantDraft: Decodable {
     let kind: String
     let to: [String]
     let cc: [String]
+    let bcc: [String]
     let subject: String
     let body: String
 
-    private enum CodingKeys: String, CodingKey { case kind, to, cc, subject, body }
+    private enum CodingKeys: String, CodingKey { case kind, to, cc, bcc, subject, body }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         kind = try values.decodeIfPresent(String.self, forKey: .kind) ?? "reply"
         to = try values.decodeIfPresent([String].self, forKey: .to) ?? []
         cc = try values.decodeIfPresent([String].self, forKey: .cc) ?? []
+        bcc = try values.decodeIfPresent([String].self, forKey: .bcc) ?? []
         subject = try values.decodeIfPresent(String.self, forKey: .subject) ?? ""
         body = try values.decodeIfPresent(String.self, forKey: .body) ?? ""
     }

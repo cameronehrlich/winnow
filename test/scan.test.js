@@ -244,6 +244,31 @@ On Mon, Jul 13, 2026 at 8:14 AM Account Team <accounts@example.com> wrote:
     assert.equal(listEvents({ limit: 20 }).filter(event => event.eventType === 'email.action_hook_ran').length, 0);
   });
 
+  it('caches attachment metadata from the full message without downloading bytes', async () => {
+    const messages = [{
+      id: 'm-with-pdf', threadId: 't-with-pdf', subject: 'Invoice',
+      from: 'Billing <billing@example.com>', snippet: 'Attached invoice', headers: {},
+      payload: { parts: [{
+        filename: 'invoice.pdf', mimeType: 'application/pdf',
+        body: { attachmentId: 'pdf-attachment', size: 143_501 },
+      }] },
+    }];
+    const results = await scan('me@example.com', {
+      adapter: makeAdapter(messages),
+      config: { scan: { max_messages: 10 } },
+      runHooks: false,
+      sendPush: false,
+      postToFeed: false,
+      classifyEmailFn: async () => ({ archive: false, confidence: 90, summary: 'Invoice attached' }),
+    });
+
+    assert.equal(results.length, 1);
+    assert.deepEqual(listEmailItems({ limit: 10 }).items[0].attachments, [{
+      messageId: 'm-with-pdf', attachmentId: 'pdf-attachment', filename: 'invoice.pdf',
+      mimeType: 'application/pdf', sizeBytes: 143_501,
+    }]);
+  });
+
   it('can rescan without duplicating processing stats or scan events', async () => {
     const messages = [{
       id: 'm-rescan-stats',

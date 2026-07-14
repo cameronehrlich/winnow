@@ -243,6 +243,93 @@ describe('assistant API', () => {
     assert.equal(calls.requests[0].availableTools.some(tool => tool.name === 'mail.get_thread'), false);
   });
 
+  it('reads a PDF from an earlier message in the selected thread without persisting its bytes', async () => {
+    let downloads = 0;
+    const attachmentId = 'a'.repeat(600);
+    setAssistantDependenciesFactoryForTests(() => ({
+      async getThread(account, threadId) {
+        assert.equal(account, 'me@example.com');
+        assert.equal(threadId, 't1');
+        return { id: 't1', messages: [{
+          id: 'earlier', messageId: 'earlier', threadId: 't1',
+          subject: 'Your invoice', body: 'The invoice is attached.',
+          attachments: [{
+            messageId: 'earlier', attachmentId, filename: 'invoice.pdf',
+            mimeType: 'application/pdf', sizeBytes: 143_501,
+          }],
+        }] };
+      },
+      async readAttachment(account, messageId, requestedAttachmentId, maxBytes) {
+        downloads += 1;
+        assert.equal(account, 'me@example.com');
+        assert.equal(messageId, 'earlier');
+        assert.equal(requestedAttachmentId, attachmentId);
+        assert.equal(maxBytes, 143_501);
+        return Buffer.from('%PDF-private-invoice');
+      },
+    }));
+    responses.push(
+      { text: '', toolCalls: [{
+        name: 'mail.read_attachment',
+        arguments: { account: 'me@example.com', messageId: 'earlier', attachmentId },
+      }], draft: null },
+      { text: 'The attached invoice total is $50.46.', toolCalls: [], draft: null },
+    );
+
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'How much is the attached invoice?', idempotencyKey: 'read-contextual-pdf',
+    });
+    const envelope = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(downloads, 1);
+    assert.equal(envelope.messages.at(-1).text, 'The attached invoice total is $50.46.');
+    assert.equal(calls.requests[0].contextualEmail.attachments[0].messageId, 'earlier');
+    assert.equal(calls.requests[0].availableTools.some(tool => tool.name === 'mail.read_attachment'), true);
+    assert.equal(calls.requests[1].toolResults[0].privateAttachments[0].data.toString(), '%PDF-private-invoice');
+
+    const inspector = new DatabaseSync(databasePath);
+    const audit = inspector.prepare("SELECT arguments_json, result_json FROM assistant_tool_calls WHERE tool = 'mail.read_attachment'").get();
+    inspector.close();
+    assert.ok(audit);
+    assert.doesNotMatch(`${audit.arguments_json}${audit.result_json}`, /PDF-private-invoice|JVBER/);
+  });
+
+  it('rejects an attachment tuple that is not in the selected thread before download', async () => {
+    let downloads = 0;
+    setAssistantDependenciesFactoryForTests(() => ({
+      async getThread() {
+        return { id: 't1', messages: [{
+          id: 'earlier', messageId: 'earlier', threadId: 't1', body: 'Attached.',
+          attachments: [{
+            messageId: 'earlier', attachmentId: 'pdf-1', filename: 'invoice.pdf',
+            mimeType: 'application/pdf', sizeBytes: 100,
+          }],
+        }] };
+      },
+      async readAttachment() { downloads += 1; return Buffer.from('%PDF'); },
+    }));
+    responses.push(
+      { text: '', toolCalls: [{
+        name: 'mail.read_attachment',
+        arguments: { account: 'me@example.com', messageId: 'other-message', attachmentId: 'pdf-1' },
+      }], draft: null },
+      { text: 'I could not inspect that attachment.', toolCalls: [], draft: null },
+    );
+
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Read the attached invoice', idempotencyKey: 'reject-foreign-attachment',
+    });
+    const envelope = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(downloads, 0);
+    assert.equal(calls.requests[1].toolResults[0].result.error, 'attachment_not_found');
+    assert.equal(envelope.messages.at(-1).text, 'I could not inspect that attachment.');
+  });
+
   it('recovers when the model tries an unrequested mailbox search in email scope', async () => {
     setAssistantDependenciesFactoryForTests(() => ({
       async getThread() {
@@ -1131,6 +1218,59 @@ describe('assistant API', () => {
     const forwardProposal = forwardEnvelope.messages.at(-1).proposal;
     assert.equal(forwardProposal.arguments.draft.skipAttachments, false);
     assert.match(forwardProposal.summary, /including attachments/i);
+  });
+
+  it('turns the exact stored draft into a confirmed send without regenerating it', async () => {
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    addAssistantMessage({
+      id: 'displayed-reply-draft',
+      conversationId: created.conversation.id,
+      role: 'assistant',
+      text: 'I drafted a reply.',
+      draft: {
+        kind: 'reply',
+        to: ['sender@example.com'],
+        cc: ['copy@example.com'],
+        bcc: [],
+        subject: 'Re: Order 123',
+        body: 'Thanks, that works for me.',
+      },
+    });
+
+    const path = `/v1/assistant/conversations/${created.conversation.id}/draft-send-proposal`;
+    const request = { messageId: 'displayed-reply-draft', idempotencyKey: 'send-displayed-draft' };
+    const proposedResponse = await post(path, request);
+    assert.equal(proposedResponse.status, 200);
+    const proposed = await proposedResponse.json();
+    const proposal = proposed.messages.at(-1).proposal;
+    assert.equal(calls.model, 0);
+    assert.equal(calls.reply, 0);
+    assert.equal(proposal.tool, 'mail.send_reply');
+    assert.deepEqual(proposal.arguments.draft, {
+      body: 'Thanks, that works for me.',
+      to: ['sender@example.com'],
+      cc: ['copy@example.com'],
+      bcc: [],
+      subject: 'Re: Order 123',
+    });
+
+    const replay = await post(path, request);
+    assert.equal(replay.status, 200);
+    assert.equal((await replay.json()).messages.at(-1).proposal.id, proposal.id);
+    assert.equal(calls.reply, 0);
+
+    const denied = await post(`/v1/assistant/proposals/${proposal.id}/confirm`, {
+      confirmationDigest: 'wrong-digest',
+    });
+    assert.equal(denied.status, 403);
+    assert.equal(calls.reply, 0);
+
+    const confirmed = await post(`/v1/assistant/proposals/${proposal.id}/confirm`, {
+      confirmationDigest: proposal.confirmationDigest,
+    });
+    assert.equal(confirmed.status, 200);
+    assert.equal(calls.reply, 1);
+    assert.deepEqual(calls.lastReply.draft, proposal.arguments.draft);
   });
 
   it('keeps iOS reminder proposals pending until the client reports a successful save', async () => {

@@ -259,10 +259,11 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                                 AssistantMessageView(
                                     message: message,
                                     accountStatus: accountStatus,
-                                    isProposalWorking: viewModel.activeProposalID == message.proposal?.id,
+                                    showsDraft: message.id == latestDraftMessageID,
+                                    isProposalWorking: viewModel.isSending || viewModel.activeProposalID == message.proposal?.id,
                                     reviewProposal: { reviewedProposal = $0 },
                                     cancelProposal: cancel,
-                                    reviseDraft: prepareDraftRevision
+                                    sendDraft: { sendDraft(message) }
                                 )
                                 .id(message.id)
                                 .transition(messageTransition)
@@ -589,6 +590,21 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         }
     }
 
+    private var latestDraftMessageID: String? {
+        viewModel.messages.last(where: { $0.draft != nil })?.id
+    }
+
+    private func sendDraft(_ message: AssistantMessage) {
+        guard message.draft != nil, !viewModel.isWorking else { return }
+        inlineThreadActivated = true
+        composerFocused = false
+        Task {
+            if let proposal = await viewModel.proposeDraftSend(messageID: message.id) {
+                reviewedProposal = proposal
+            }
+        }
+    }
+
     private func confirm(_ proposal: AssistantProposal) {
         inlineThreadActivated = true
         Task {
@@ -632,10 +648,6 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         }
     }
 
-    private func prepareDraftRevision(_ draft: AssistantDraft) {
-        composerText = "Revise the \(draft.kind) draft. Change it so that: "
-        composerFocused = true
-    }
 }
 
 private struct SuggestionCloudLayout: Layout {
@@ -715,10 +727,11 @@ private struct AssistantComposerFieldStyle: ViewModifier {
 private struct AssistantMessageView: View {
     let message: AssistantMessage
     let accountStatus: AccountStatus?
+    let showsDraft: Bool
     let isProposalWorking: Bool
     let reviewProposal: (AssistantProposal) -> Void
     let cancelProposal: (AssistantProposal) -> Void
-    let reviseDraft: (AssistantDraft) -> Void
+    let sendDraft: () -> Void
 
     private var isUser: Bool { message.role == "user" }
     private var isResult: Bool { message.kind == "result" || message.role == "tool" }
@@ -739,8 +752,13 @@ private struct AssistantMessageView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if let draft = message.draft {
-                AssistantDraftCard(draft: draft, revise: { reviseDraft(draft) })
+            if showsDraft, let draft = message.draft {
+                AssistantDraftCard(
+                    draft: draft,
+                    isWorking: isProposalWorking,
+                    allowsSend: message.proposal?.status != "pending" && message.proposal?.status != "completed",
+                    send: sendDraft
+                )
             }
 
             if let proposal = message.proposal {
@@ -844,7 +862,9 @@ private struct AssistantEvidenceCard: View {
 
 private struct AssistantDraftCard: View {
     let draft: AssistantDraft
-    let revise: () -> Void
+    let isWorking: Bool
+    let allowsSend: Bool
+    let send: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -856,20 +876,32 @@ private struct AssistantDraftCard: View {
             }
             if !draft.to.isEmpty { draftRow("To", draft.to.joined(separator: ", ")) }
             if !draft.cc.isEmpty { draftRow("Cc", draft.cc.joined(separator: ", ")) }
+            if !draft.bcc.isEmpty { draftRow("Bcc", draft.bcc.joined(separator: ", ")) }
             if !draft.subject.isEmpty { draftRow("Subject", draft.subject) }
             Divider()
             Text(draft.body).font(.subheadline).textSelection(.enabled)
             HStack {
-                Button("Revise with Winnow", action: revise)
-                Spacer()
                 Button {
                     UIPasteboard.general.string = draft.body
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
+                .buttonStyle(.bordered)
+                Spacer()
+                if allowsSend {
+                    Button(action: send) {
+                        if isWorking {
+                            ProgressView()
+                        } else {
+                            Label("Send", systemImage: "paperplane.fill")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(WinnowDesign.indigo)
+                    .disabled(isWorking)
+                }
             }
             .font(.caption.weight(.semibold))
-            .buttonStyle(.bordered)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .winnowCard(padding: 14)
@@ -938,25 +970,47 @@ private struct ProposalConfirmationView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    Label("Confirm this exact action", systemImage: "checkmark.shield.fill")
+                    Label(
+                        isOutbound ? "Review before sending" : "Confirm this exact action",
+                        systemImage: isOutbound ? "paperplane.fill" : "checkmark.shield.fill"
+                    )
                         .font(.title2.bold())
                         .foregroundStyle(WinnowDesign.accent)
-                    Text("Nothing is approved until you tap Confirm below.")
+                    Text(isOutbound
+                         ? "Verify the recipients and final draft. Nothing is sent until you tap Send Email below."
+                         : "Nothing is approved until you tap Confirm below.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
                     VStack(alignment: .leading, spacing: 12) {
                         confirmationRow("Scope", scopeTitle)
                         confirmationRow("Action", proposal.summary)
-                        confirmationRow("Tool", proposal.tool)
-                        confirmationRow("Risk", proposal.risk.capitalized)
-                        ForEach(proposal.arguments.keys.sorted(), id: \.self) { key in
-                            confirmationRow(key.humanizedAssistantKey, proposal.arguments[key]?.displayString ?? "")
+                        if isOutbound, let draft = proposal.arguments["draft"]?.objectValue {
+                            confirmationRow("From", proposal.arguments["account"]?.displayString ?? "")
+                            if let to = draft["to"] { confirmationRow("To", to.displayString) }
+                            if let cc = draft["cc"], !cc.displayString.isEmpty { confirmationRow("Cc", cc.displayString) }
+                            if let bcc = draft["bcc"], !bcc.displayString.isEmpty { confirmationRow("Bcc", bcc.displayString) }
+                            if let subject = draft["subject"], !subject.displayString.isEmpty {
+                                confirmationRow("Subject", subject.displayString)
+                            }
+                            confirmationRow("Message", draft["body"]?.displayString ?? draft["note"]?.displayString ?? "")
+                            if proposal.tool == "mail.send_forward" {
+                                confirmationRow(
+                                    "Attachments",
+                                    draft["skipAttachments"]?.boolValue == true ? "Excluded" : "Included"
+                                )
+                            }
+                        } else {
+                            confirmationRow("Tool", proposal.tool)
+                            confirmationRow("Risk", proposal.risk.capitalized)
+                            ForEach(proposal.arguments.keys.sorted(), id: \.self) { key in
+                                confirmationRow(key.humanizedAssistantKey, proposal.arguments[key]?.displayString ?? "")
+                            }
                         }
                     }
                     .winnowCard()
 
-                    if proposal.tool.contains("send") || proposal.risk == "outbound" {
+                    if isOutbound {
                         Label("This sends email as you. Verify every recipient and the final draft before confirming.", systemImage: "paperplane.fill")
                             .font(.footnote.weight(.medium))
                             .foregroundStyle(WinnowDesign.rose)
@@ -969,7 +1023,7 @@ private struct ProposalConfirmationView: View {
                     Button(action: confirm) {
                         HStack {
                             if isWorking { ProgressView().tint(.white) }
-                            Text(isWorking ? "Confirming…" : "Confirm action")
+                            Text(isWorking ? (isOutbound ? "Sending…" : "Confirming…") : (isOutbound ? "Send Email" : "Confirm Action"))
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 13)
@@ -985,7 +1039,7 @@ private struct ProposalConfirmationView: View {
                 .padding(18)
             }
             .background(AppBackdrop())
-            .navigationTitle("Review Action")
+            .navigationTitle(isOutbound ? "Review Email" : "Review Action")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -994,6 +1048,10 @@ private struct ProposalConfirmationView: View {
             }
         }
         .interactiveDismissDisabled(isWorking)
+    }
+
+    private var isOutbound: Bool {
+        proposal.tool.contains("send") || proposal.risk == "outbound"
     }
 
     private func confirmationRow(_ label: String, _ value: String) -> some View {

@@ -76,6 +76,11 @@ protocol AssistantService {
     ) -> AsyncThrowingStream<AssistantStreamEvent, Error>
 
     func assistantConversation(id: String) async throws -> AssistantConversationEnvelope
+    func proposeAssistantDraftSend(
+        conversationID: String,
+        messageID: String,
+        idempotencyKey: String
+    ) async throws -> AssistantConversationEnvelope
     func confirmAssistantProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope
     func completeAssistantClientProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope
     func cancelAssistantProposal(id: String) async throws -> AssistantConversationEnvelope
@@ -107,6 +112,34 @@ struct APIClient: AssistantService {
             timeoutInterval: 30
         )
         return response.content
+    }
+
+    func emailAttachments(emailID: String) async throws -> [EmailAttachment] {
+        let encodedID = Self.encodedPathSegment(emailID)
+        let response: EmailAttachmentListEnvelope = try await request(
+            path: "/v1/emails/\(encodedID)/attachments",
+            timeoutInterval: 30,
+            pathIsPercentEncoded: true
+        )
+        return response.attachments
+    }
+
+    func attachmentData(emailID: String, attachmentID: String) async throws -> Data {
+        guard !attachmentID.isEmpty else {
+            throw APIClientError.invalidRequest("This attachment is missing its download identifier.")
+        }
+        let encodedEmailID = Self.encodedPathSegment(emailID)
+        let encodedAttachmentID = Self.encodedPathSegment(attachmentID)
+        let data = try await responseData(
+            path: "/v1/emails/\(encodedEmailID)/attachments/\(encodedAttachmentID)",
+            accept: "application/octet-stream",
+            timeoutInterval: 45,
+            pathIsPercentEncoded: true
+        )
+        guard data.count <= 25 * 1_024 * 1_024 else {
+            throw APIClientError.invalidRequest("This attachment is too large to preview in Winnow.")
+        }
+        return data
     }
 
     func dailySummary(account: String = "") async throws -> DailySummary {
@@ -222,6 +255,24 @@ struct APIClient: AssistantService {
     func assistantConversation(id: String) async throws -> AssistantConversationEnvelope {
         let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
         return try await request(path: "/v1/assistant/conversations/\(encodedID)")
+    }
+
+    func proposeAssistantDraftSend(
+        conversationID: String,
+        messageID: String,
+        idempotencyKey: String
+    ) async throws -> AssistantConversationEnvelope {
+        let encodedID = conversationID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? conversationID
+        let body = try JSONSerialization.data(withJSONObject: [
+            "messageId": messageID,
+            "idempotencyKey": idempotencyKey,
+        ])
+        return try await request(
+            path: "/v1/assistant/conversations/\(encodedID)/draft-send-proposal",
+            method: "POST",
+            body: body,
+            timeoutInterval: 30
+        )
     }
 
     func sendAssistantMessage(
@@ -394,11 +445,51 @@ struct APIClient: AssistantService {
         queryItems: [URLQueryItem] = [],
         method: String = "GET",
         body: Data? = nil,
-        timeoutInterval: TimeInterval = 20
+        timeoutInterval: TimeInterval = 20,
+        pathIsPercentEncoded: Bool = false
     ) async throws -> Response {
+        let data = try await responseData(
+            path: path,
+            queryItems: queryItems,
+            method: method,
+            body: body,
+            accept: "application/json",
+            timeoutInterval: timeoutInterval,
+            pathIsPercentEncoded: pathIsPercentEncoded
+        )
+
+        do {
+            return try JSONDecoder().decode(Response.self, from: data)
+        } catch {
+            throw APIClientError.decoding(error.localizedDescription)
+        }
+    }
+
+    private func responseData(
+        path: String,
+        queryItems: [URLQueryItem] = [],
+        method: String = "GET",
+        body: Data? = nil,
+        accept: String,
+        timeoutInterval: TimeInterval,
+        pathIsPercentEncoded: Bool = false
+    ) async throws -> Data {
         guard let baseURL = configuration.normalizedBaseURL else { throw APIClientError.invalidServerURL }
-        guard var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw APIClientError.invalidServerURL
+        }
+        if pathIsPercentEncoded {
+            let basePath = components.percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let requestPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            components.percentEncodedPath = "/" + [basePath, requestPath]
+                .filter { !$0.isEmpty }
+                .joined(separator: "/")
+        } else {
+            guard let resolved = URLComponents(
+                url: baseURL.appendingPathComponent(path),
+                resolvingAgainstBaseURL: false
+            ) else { throw APIClientError.invalidServerURL }
+            components = resolved
         }
         if !queryItems.isEmpty { components.queryItems = queryItems }
         guard let url = components.url else { throw APIClientError.invalidServerURL }
@@ -406,7 +497,7 @@ struct APIClient: AssistantService {
         var request = URLRequest(url: url, timeoutInterval: timeoutInterval)
         request.httpMethod = method
         request.setValue("Bearer \(configuration.token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(accept, forHTTPHeaderField: "Accept")
         if method != "GET" {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = body ?? Data("{}".utf8)
@@ -427,12 +518,12 @@ struct APIClient: AssistantService {
             if http.statusCode == 401 { throw APIClientError.unauthorized }
             throw APIClientError.server(status: http.statusCode, message: message)
         }
+        return data
+    }
 
-        do {
-            return try JSONDecoder().decode(Response.self, from: data)
-        } catch {
-            throw APIClientError.decoding(error.localizedDescription)
-        }
+    private static func encodedPathSegment(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
     }
 
     func decodeAssistantStreamEvent(_ frame: AssistantServerSentEvent) throws -> AssistantStreamEvent? {

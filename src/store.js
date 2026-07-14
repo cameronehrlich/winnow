@@ -12,6 +12,7 @@ import {
   normalizeHandlingDecision,
 } from './handling-decisions.js';
 import { normalizeEmailHeaderText, splitEmailSender } from './email-metadata.js';
+import { normalizeAttachmentList } from './email-attachments.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DB_PATH = join(__dirname, '..', 'data', 'winnow.db');
@@ -145,6 +146,7 @@ function migrate() {
       mailbox_state TEXT NOT NULL DEFAULT 'unknown',
       read_state TEXT NOT NULL DEFAULT 'unknown',
       unsubscribe_url TEXT,
+      attachments_json TEXT,
       handling_decision_json TEXT,
       handling_undo_decision_id TEXT,
       handling_undo_status TEXT,
@@ -412,6 +414,9 @@ function migrate() {
   if (!emailColumns.some(column => column.name === 'handling_decision_json')) {
     database.exec('ALTER TABLE email_items ADD COLUMN handling_decision_json TEXT');
   }
+  if (!emailColumns.some(column => column.name === 'attachments_json')) {
+    database.exec('ALTER TABLE email_items ADD COLUMN attachments_json TEXT');
+  }
   for (const [name, definition] of [
     ['handling_undo_decision_id', 'TEXT'],
     ['handling_undo_status', 'TEXT'],
@@ -541,6 +546,9 @@ export function resultToEmailItem(result, opts = {}) {
     mailboxState,
     readState,
     unsubscribeUrl: result.unsubscribeLink || result.unsubscribe_url || '',
+    attachmentsJson: Array.isArray(result.attachments)
+      ? JSON.stringify(normalizeAttachmentList(result.attachments))
+      : null,
     handlingDecisionJson: handlingDecision ? safeJson(handlingDecision) : null,
     createdAt: timestamp,
     processedAt: timestamp,
@@ -578,6 +586,7 @@ function rowToEmailItem(row) {
     isRead: row.read_state === 'read' ? true : row.read_state === 'unread' ? false : null,
     archive: row.mailbox_state === 'archived' || row.triage_state === 'auto_archived' || row.triage_state === 'manual_archived',
     unsubscribeLink: row.unsubscribe_url || '',
+    attachments: normalizeAttachmentList(parseJson(row.attachments_json, [])),
     handlingDecision: normalizeHandlingDecision(parseJson(row.handling_decision_json, null)),
     handlingUndoDecisionId: row.handling_undo_decision_id || '',
     handlingUndoStatus: row.handling_undo_status || '',
@@ -595,13 +604,13 @@ export function upsertEmailItem(item) {
     INSERT INTO email_items (
       id, account, gmail_message_id, gmail_thread_id, from_name, from_email, subject, snippet,
       summary, action, deadline, impact, handling, reason, confidence, ephemeral, low_confidence_kept,
-      triage_state, mailbox_state, read_state, unsubscribe_url, handling_decision_json,
+      triage_state, mailbox_state, read_state, unsubscribe_url, attachments_json, handling_decision_json,
       created_at, processed_at, updated_at
     )
     VALUES (
       @id, @account, @gmailMessageId, @gmailThreadId, @fromName, @fromEmail, @subject, @snippet,
       @summary, @action, @deadline, @impact, @handling, @reason, @confidence, @ephemeral, @lowConfidenceKept,
-      @triageState, @mailboxState, @readState, @unsubscribeUrl, @handlingDecisionJson,
+      @triageState, @mailboxState, @readState, @unsubscribeUrl, @attachmentsJson, @handlingDecisionJson,
       @createdAt, @processedAt, @updatedAt
     )
     ON CONFLICT(id) DO UPDATE SET
@@ -624,6 +633,7 @@ export function upsertEmailItem(item) {
       mailbox_state = excluded.mailbox_state,
       read_state = excluded.read_state,
       unsubscribe_url = excluded.unsubscribe_url,
+      attachments_json = COALESCE(excluded.attachments_json, email_items.attachments_json),
       handling_decision_json = COALESCE(excluded.handling_decision_json, email_items.handling_decision_json),
       processed_at = COALESCE(excluded.processed_at, email_items.processed_at),
       updated_at = excluded.updated_at
@@ -637,6 +647,16 @@ export function upsertEmailItemFromResult(result, opts = {}) {
 
 export function getEmailItem(id) {
   return rowToEmailItem(getDb().prepare('SELECT * FROM email_items WHERE id = ?').get(id));
+}
+
+export function updateEmailItemAttachments(id, attachments) {
+  const normalized = normalizeAttachmentList(attachments);
+  const result = getDb().prepare(`
+    UPDATE email_items
+    SET attachments_json = ?, updated_at = ?
+    WHERE id = ?
+  `).run(JSON.stringify(normalized), nowIso(), id);
+  return result.changes === 1 ? getEmailItem(id) : null;
 }
 
 export function findEmailItemByGmail({ account, messageId, threadId }) {

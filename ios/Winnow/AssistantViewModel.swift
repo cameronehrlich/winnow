@@ -19,6 +19,7 @@ final class AssistantViewModel: ObservableObject {
     private let service: any AssistantService
     private var generation = 0
     private var failedMessageAttempt: FailedMessageAttempt?
+    private var draftSendIdempotencyKeys: [String: String] = [:]
 
     private struct FailedMessageAttempt {
         let text: String
@@ -176,6 +177,40 @@ final class AssistantViewModel: ObservableObject {
             activeProposalID == nil
         else { return false }
         return await send(attempt.text, permitsIndeterminateRetry: true)
+    }
+
+    func proposeDraftSend(messageID: String) async -> AssistantProposal? {
+        guard !isLoading, !isSending, activeProposalID == nil else { return nil }
+        if conversation == nil { await createConversation() }
+        guard let conversation else { return nil }
+
+        let idempotencyKey = draftSendIdempotencyKeys[messageID] ?? UUID().uuidString
+        draftSendIdempotencyKeys[messageID] = idempotencyKey
+        isSending = true
+        errorMessage = nil
+        let currentGeneration = generation
+        defer { if currentGeneration == generation { isSending = false } }
+
+        do {
+            let envelope = try await service.proposeAssistantDraftSend(
+                conversationID: conversation.id,
+                messageID: messageID,
+                idempotencyKey: idempotencyKey
+            )
+            guard currentGeneration == generation else { return nil }
+            apply(envelope, animatesResponse: true)
+            guard let proposal = envelope.messages.last?.proposal, proposal.isPending else {
+                draftSendIdempotencyKeys.removeValue(forKey: messageID)
+                errorMessage = "Winnow couldn’t prepare this draft to send. Please try again."
+                return nil
+            }
+            draftSendIdempotencyKeys.removeValue(forKey: messageID)
+            return proposal
+        } catch {
+            guard currentGeneration == generation else { return nil }
+            errorMessage = error.localizedDescription
+            return nil
+        }
     }
 
     @discardableResult

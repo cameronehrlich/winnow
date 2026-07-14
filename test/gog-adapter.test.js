@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
 import { GogAdapter, normalizeGogMessage } from '../src/adapters/gog.js';
 
 function fakeAdapter(responses) {
@@ -54,6 +55,7 @@ describe('GogAdapter assistant primitives', () => {
         to: 'me@example.com',
       },
       body: '',
+      attachments: [],
     });
     assert.deepEqual(calls[0].args, [
       'gmail', 'messages', 'search', 'order 123', '--max', '10', '--account', 'me@example.com',
@@ -103,6 +105,47 @@ describe('GogAdapter assistant primitives', () => {
     assert.equal(thread.historyId, 'history1');
     assert.equal(thread.messages[0].body, 'Latest reply body');
     assert.equal(thread.messages[0].from, 'sender@example.com');
+  });
+
+  it('preserves bounded canonical attachment metadata from nested MIME parts', () => {
+    const attachmentId = 'a'.repeat(600);
+    const message = normalizeGogMessage({
+      id: 'message1',
+      payload: {
+        parts: [{
+          mimeType: 'multipart/mixed',
+          parts: [{
+            filename: 'invoice.pdf',
+            mimeType: 'application/pdf',
+            body: { attachmentId, size: 143_501 },
+          }],
+        }],
+      },
+    });
+    assert.deepEqual(message.attachments, [{
+      messageId: 'message1', attachmentId, filename: 'invoice.pdf',
+      mimeType: 'application/pdf', sizeBytes: 143_501,
+    }]);
+  });
+
+  it('downloads a long attachment ID to a private temporary file', async () => {
+    const calls = [];
+    const attachmentId = 'b'.repeat(600);
+    const adapter = new GogAdapter({
+      command: '/fake/gog',
+      execute: async (command, args) => {
+        calls.push({ command, args });
+        const outputPath = args[args.indexOf('--out') + 1];
+        writeFileSync(outputPath, Buffer.from('%PDF-test'));
+        return { stdout: JSON.stringify({ bytes: 9 }) };
+      },
+    });
+    const data = await adapter.getAttachment('me@example.com', 'message1', attachmentId, { maxBytes: 100 });
+    assert.equal(data.toString(), '%PDF-test');
+    assert.deepEqual(calls[0].args.slice(0, 6), [
+      'gmail', 'attachment', 'message1', attachmentId, '--account', 'me@example.com',
+    ]);
+    assert.equal(calls[0].args.includes('--out'), true);
   });
 
   it('sends an exact reply only when reply is explicitly invoked', async () => {

@@ -9,7 +9,7 @@ import { followUnsubscribeLink } from './slack-actions.js';
 import { handleMcpMessage } from './mcp.js';
 import { getRuntimeStatus, listAccountStatus } from './status.js';
 import { getPushCapabilities } from './push.js';
-import { fetchEmailContent } from './email-content.js';
+import { fetchEmailAttachment, fetchEmailAttachments, fetchEmailContent } from './email-content.js';
 import { SemanticPreviewError } from './semantic-rule-preview.js';
 import {
   disableUserRule,
@@ -29,6 +29,7 @@ import {
   confirmAssistantProposal,
   createConversation,
   getConversation,
+  proposeAssistantDraftSend,
   submitAssistantMessage,
   validateAssistantMessageRequest,
 } from './assistant.js';
@@ -44,6 +45,7 @@ import {
   registerPushDevice,
   finishHandlingUndo,
   storeEvents,
+  updateEmailItemAttachments,
 } from './store.js';
 
 const MAX_JSON_BODY_BYTES = 1024 * 1024;
@@ -73,6 +75,22 @@ function sendJson(res, status, body) {
 function sendNoContent(res) {
   res.writeHead(202);
   res.end();
+}
+
+function sendAttachment(res, { attachment, data }) {
+  const fallbackName = String(attachment.filename || 'attachment.pdf')
+    .replace(/[^A-Za-z0-9._ -]/g, '_')
+    .slice(0, 120) || 'attachment.pdf';
+  const encodedName = encodeURIComponent(String(attachment.filename || fallbackName))
+    .replace(/['()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  res.writeHead(200, {
+    'Content-Type': attachment.mimeType,
+    'Content-Length': data.length,
+    'Content-Disposition': `inline; filename="${fallbackName}"; filename*=UTF-8''${encodedName}`,
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(data);
 }
 
 function createSseWriter(req, res) {
@@ -472,6 +490,14 @@ async function handleAuthed(req, res, url, dependencies = {}) {
     return;
   }
 
+  const assistantDraftSendMatch = route(url.pathname, '/v1/assistant/conversations/:id/draft-send-proposal');
+  if (req.method === 'POST' && assistantDraftSendMatch) {
+    const body = await readJsonObject(req);
+    assertBodyKeys(body, ['messageId', 'idempotencyKey']);
+    sendJson(res, 200, await proposeAssistantDraftSend(assistantDraftSendMatch.id, body));
+    return;
+  }
+
   const assistantConfirmMatch = route(url.pathname, '/v1/assistant/proposals/:id/confirm');
   if (req.method === 'POST' && assistantConfirmMatch) {
     const body = await readJsonObject(req);
@@ -533,10 +559,50 @@ async function handleAuthed(req, res, url, dependencies = {}) {
     }
     try {
       const getContent = dependencies.fetchEmailContent || fetchEmailContent;
-      sendJson(res, 200, { content: await getContent(item) });
+      const content = await getContent(item);
+      if (Array.isArray(content?.attachments)) updateEmailItemAttachments(item.id, content.attachments);
+      sendJson(res, 200, { content });
     } catch (err) {
       console.error(`[winnow/api] email content fetch failed for ${item.id}: ${err.message}`);
       sendJson(res, 502, { error: 'email_content_unavailable' });
+    }
+    return;
+  }
+
+  const emailAttachmentsMatch = route(url.pathname, '/v1/emails/:id/attachments');
+  if (req.method === 'GET' && emailAttachmentsMatch) {
+    const item = getEmailItem(emailAttachmentsMatch.id);
+    if (!item) {
+      sendJson(res, 404, { error: 'email_not_found' });
+      return;
+    }
+    try {
+      const getAttachments = dependencies.fetchEmailAttachments || fetchEmailAttachments;
+      const attachments = await getAttachments(item);
+      updateEmailItemAttachments(item.id, attachments);
+      sendJson(res, 200, { attachments });
+    } catch (err) {
+      console.error(`[winnow/api] attachment metadata fetch failed for ${item.id}: ${err.message}`);
+      sendJson(res, 502, { error: 'email_attachments_unavailable' });
+    }
+    return;
+  }
+
+  const emailAttachmentMatch = route(url.pathname, '/v1/emails/:id/attachments/:attachmentId');
+  if (req.method === 'GET' && emailAttachmentMatch) {
+    const item = getEmailItem(emailAttachmentMatch.id);
+    if (!item) {
+      sendJson(res, 404, { error: 'email_not_found' });
+      return;
+    }
+    try {
+      const getAttachment = dependencies.fetchEmailAttachment || fetchEmailAttachment;
+      sendAttachment(res, await getAttachment(item, emailAttachmentMatch.attachmentId));
+    } catch (err) {
+      const status = err.code === 'attachment_not_found' ? 404
+        : (err.code === 'attachment_type_not_supported' ? 415
+          : (err.code === 'attachment_size_not_supported' ? 413 : 502));
+      sendJson(res, status, { error: err.code || 'email_attachment_unavailable' });
     }
     return;
   }

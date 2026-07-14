@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchEmailContent } from '../src/email-content.js';
+import { fetchEmailAttachment, fetchEmailAttachments, fetchEmailContent } from '../src/email-content.js';
 
 describe('on-demand email content', () => {
   it('loads the exact account thread and converts HTML-only mail to readable text', async () => {
@@ -77,5 +77,59 @@ describe('on-demand email content', () => {
     }, { adapter });
 
     assert.equal(content.messages.some(message => message.id === 'selected'), true);
+  });
+
+  it('returns canonical thread attachment metadata without downloading bytes', async () => {
+    let downloads = 0;
+    const adapter = {
+      async getThread(account, threadId) {
+        assert.equal(account, 'me@example.com');
+        assert.equal(threadId, 't1');
+        return { messages: [{
+          id: 'earlier',
+          attachments: [{
+            messageId: 'earlier', attachmentId: 'pdf-1', filename: 'invoice.pdf',
+            mimeType: 'application/pdf', sizeBytes: 120,
+          }],
+        }] };
+      },
+      async getAttachment() { downloads += 1; },
+    };
+    const item = { id: 'email-1', account: 'me@example.com', threadId: 't1', messageId: 'later' };
+    const attachments = await fetchEmailAttachments(item, { adapter });
+    assert.deepEqual(attachments, [{
+      messageId: 'earlier', attachmentId: 'pdf-1', filename: 'invoice.pdf',
+      mimeType: 'application/pdf', sizeBytes: 120,
+    }]);
+    assert.equal(downloads, 0);
+  });
+
+  it('downloads only an attachment freshly verified in the exact item thread', async () => {
+    const calls = [];
+    const adapter = {
+      async getThread() {
+        return { messages: [{
+          id: 'earlier',
+          attachments: [{
+            messageId: 'earlier', attachmentId: 'pdf-1', filename: 'invoice.pdf',
+            mimeType: 'application/pdf', sizeBytes: 120,
+          }],
+        }] };
+      },
+      async getAttachment(account, messageId, attachmentId, options) {
+        calls.push({ account, messageId, attachmentId, options });
+        return Buffer.from('%PDF-test');
+      },
+    };
+    const item = { id: 'email-1', account: 'me@example.com', threadId: 't1', messageId: 'later' };
+    const result = await fetchEmailAttachment(item, 'pdf-1', { adapter });
+    assert.equal(result.attachment.messageId, 'earlier');
+    assert.equal(result.data.toString(), '%PDF-test');
+    assert.deepEqual(calls, [{
+      account: 'me@example.com', messageId: 'earlier', attachmentId: 'pdf-1', options: { maxBytes: 120 },
+    }]);
+
+    await assert.rejects(fetchEmailAttachment(item, 'not-in-thread', { adapter }), /attachment_not_found/);
+    assert.equal(calls.length, 1);
   });
 });

@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { ASSISTANT_SYSTEM_PROMPT, serializeAssistantModelInput } from '../src/assistant-model.js';
+import {
+  ASSISTANT_SYSTEM_PROMPT,
+  inlineAttachmentParts,
+  serializeAssistantModelInput,
+} from '../src/assistant-model.js';
 
 describe('assistant model context', () => {
   it('requires rule deduplication and preview before a future-mail proposal', () => {
@@ -13,6 +17,7 @@ describe('assistant model context', () => {
     assert.match(ASSISTANT_SYSTEM_PROMPT, /contextualEmail already contains the selected email/i);
     assert.match(ASSISTANT_SYSTEM_PROMPT, /Do not search the mailbox or fetch the same thread again/i);
     assert.match(ASSISTANT_SYSTEM_PROMPT, /finalAnswerRequired is true, make no tool calls/i);
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /use mail\.read_attachment only when contextualEmail lists/i);
   });
 
   it('keeps oversized context valid, bounded, and preserves tools and newest chat', () => {
@@ -39,5 +44,28 @@ describe('assistant model context', () => {
     assert.match(parsed.chatMessages.at(-1).text, /^29:/);
     assert.equal(parsed.contextualEmail.trust, 'untrusted_email_data');
     assert.equal(parsed.toolResults[0].trust, 'untrusted_tool_data');
+  });
+
+  it('keeps private attachment bytes out of JSON context and creates a bounded PDF part', () => {
+    const input = {
+      contextualEmail: {
+        reference: { account: 'me@example.com', messageId: 'm1', threadId: 't1' },
+        attachments: [{
+          messageId: 'm0', attachmentId: 'a1', filename: 'invoice.pdf',
+          mimeType: 'application/pdf', sizeBytes: 9,
+        }],
+      },
+      toolResults: [{
+        tool: 'mail.read_attachment',
+        result: { attachment: { filename: 'invoice.pdf' }, contentLoaded: true },
+        privateAttachments: [{ mimeType: 'application/pdf', data: Buffer.from('%PDF-test') }],
+      }],
+      availableTools: [],
+    };
+    const serialized = serializeAssistantModelInput(input);
+    assert.doesNotMatch(serialized, /JVBERS10ZXN0|PDF-test/);
+    assert.deepEqual(inlineAttachmentParts(input), [{
+      inlineData: { mimeType: 'application/pdf', data: Buffer.from('%PDF-test').toString('base64') },
+    }]);
   });
 });

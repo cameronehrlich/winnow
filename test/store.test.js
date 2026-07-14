@@ -222,6 +222,7 @@ describe('daily action summary', () => {
     inspector.close();
     assert.ok(columns.some(column => column.name === 'read_state'));
     assert.ok(columns.some(column => column.name === 'handling_decision_json'));
+    assert.ok(columns.some(column => column.name === 'attachments_json'));
     assert.ok(columns.some(column => column.name === 'handling_undo_status'));
     assert.ok(messageColumns.some(column => column.name === 'run_id'));
     assert.ok(runColumns.some(column => column.name === 'request_fingerprint'));
@@ -295,6 +296,22 @@ describe('daily action summary', () => {
     assert.equal(unread.isRead, false);
     assert.equal(unknown.readState, 'unknown');
     assert.equal(unknown.isRead, null);
+  });
+
+  it('round-trips bounded canonical attachment metadata', () => {
+    const attachmentId = 'a'.repeat(600);
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-attachment', threadId: 't-attachment',
+      from: 'Billing <billing@example.com>', subject: 'Invoice', archive: false,
+      attachments: [{
+        messageId: 'earlier', attachmentId, filename: 'invoice.pdf',
+        mimeType: 'APPLICATION/PDF', sizeBytes: 143_501,
+      }],
+    });
+    assert.deepEqual(item.attachments, [{
+      messageId: 'earlier', attachmentId, filename: 'invoice.pdf',
+      mimeType: 'application/pdf', sizeBytes: 143_501,
+    }]);
   });
 
   it('counts scan, archive, kept, restore, and unsubscribe events by Los Angeles day', () => {

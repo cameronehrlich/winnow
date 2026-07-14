@@ -149,7 +149,10 @@ function explicitlyRequestsMailboxSearch(text) {
 }
 
 function availableToolsForRequest(conversation, text) {
-  if (conversation.scope !== 'email' || explicitlyRequestsMailboxSearch(text)) {
+  if (conversation.scope !== 'email') {
+    return ASSISTANT_TOOL_DEFINITIONS.filter(definition => definition.name !== 'mail.read_attachment');
+  }
+  if (explicitlyRequestsMailboxSearch(text)) {
     return ASSISTANT_TOOL_DEFINITIONS;
   }
   return ASSISTANT_TOOL_DEFINITIONS.filter(definition =>
@@ -192,6 +195,13 @@ async function contextualEmail(conversation, dependencies) {
       snippet: item.snippet.slice(0, 500),
       summary: item.summary.slice(0, 1000),
     },
+    attachments: (thread?.messages || []).flatMap(message => message?.attachments || []).slice(0, 50).map(attachment => ({
+      messageId: String(attachment?.messageId || ''),
+      attachmentId: String(attachment?.attachmentId || ''),
+      filename: String(attachment?.filename || '').slice(0, 500),
+      mimeType: String(attachment?.mimeType || '').slice(0, 200),
+      sizeBytes: Number(attachment?.sizeBytes) || 0,
+    })).filter(attachment => attachment.messageId && attachment.attachmentId),
     messages: (thread?.messages || []).slice(-20).map(message => ({
       messageId: String(message?.messageId || message?.id || ''),
       threadId: String(message?.threadId || item.threadId || ''),
@@ -499,6 +509,154 @@ export async function submitAssistantMessage(
   return executeAssistantRun(run, conversation, normalizedText, onProgress);
 }
 
+export async function proposeAssistantDraftSend(
+  conversationId,
+  { messageId, idempotencyKey },
+) {
+  const conversation = getAssistantConversation(conversationId);
+  if (!conversation) throw new AssistantError(404, 'conversation_not_found');
+  if (conversation.scope !== 'email') {
+    throw new AssistantError(400, 'email_scope_required', 'Open an email before sending a draft');
+  }
+  if (typeof messageId !== 'string' || !messageId || messageId.length > 200) {
+    throw new AssistantError(400, 'invalid_message_id');
+  }
+  if (typeof idempotencyKey !== 'string' || !idempotencyKey || idempotencyKey.length > 200) {
+    throw new AssistantError(400, 'invalid_idempotency_key');
+  }
+
+  const sourceMessage = getAssistantMessage(messageId);
+  const draft = normalizeDraft(sourceMessage?.draft);
+  if (!sourceMessage || sourceMessage.conversationId !== conversationId || sourceMessage.role !== 'assistant' || !draft) {
+    throw new AssistantError(404, 'draft_not_found', 'This draft is no longer available');
+  }
+  const item = getEmailItem(conversation.emailItemId);
+  if (!item) throw new AssistantError(404, 'email_not_found');
+
+  const actionText = draft.kind === 'forward' ? 'Forward and send this draft.' : 'Send this reply draft.';
+  const requestFingerprint = assistantRequestFingerprint(`${actionText}\n${messageId}`);
+  const leaseToken = randomUUID();
+  const existingRun = getAssistantRunByIdempotencyKey(conversationId, idempotencyKey);
+  if (existingRun) {
+    const resumed = await resolveExistingAssistantRun(existingRun, requestFingerprint, leaseToken);
+    if (!resumed) return getAssistantConversationEnvelope(conversationId);
+    return finishDraftSendProposal(resumed, conversation, item, draft);
+  }
+
+  const requestedRunId = randomUUID();
+  const run = createAssistantRunWithUserMessage({
+    id: requestedRunId,
+    conversationId,
+    userMessageId: randomUUID(),
+    idempotencyKey,
+    requestFingerprint,
+    leaseToken,
+    text: actionText,
+  });
+  if (run.id !== requestedRunId) {
+    const resumed = await resolveExistingAssistantRun(run, requestFingerprint, leaseToken);
+    if (!resumed) return getAssistantConversationEnvelope(conversationId);
+    return finishDraftSendProposal(resumed, conversation, item, draft);
+  }
+  return finishDraftSendProposal(run, conversation, item, draft);
+}
+
+async function finishDraftSendProposal(run, conversation, item, draft) {
+  const tool = draft.kind === 'forward' ? 'mail.send_forward' : 'mail.send_reply';
+  const rawDraft = draft.kind === 'forward'
+    ? {
+      to: draft.to,
+      cc: draft.cc,
+      bcc: draft.bcc,
+      note: draft.body,
+      skipAttachments: false,
+    }
+    : {
+      body: draft.body,
+      to: draft.to,
+      cc: draft.cc,
+      bcc: draft.bcc,
+      subject: draft.subject,
+    };
+  try {
+    requireAssistantRunLease(run);
+    const prepared = await prepareAssistantTool({
+      name: tool,
+      rawArguments: {
+        account: item.account,
+        messageId: item.messageId,
+        threadId: item.threadId,
+        draft: rawDraft,
+      },
+      conversation,
+      latestUserText: draft.kind === 'forward' ? 'Forward and send this draft.' : 'Send this reply draft.',
+      dependencies: dependenciesFactory(),
+    });
+    if (prepared.kind !== 'proposal') throw new AssistantError(500, 'draft_proposal_failed');
+    requireAssistantRunLease(run);
+
+    const identity = createProposalIdentity();
+    const proposalInput = {
+      ...identity,
+      conversationId: conversation.id,
+      tool,
+      arguments: prepared.arguments,
+    };
+    const confirmationDigest = assistantProposalDigest(proposalInput);
+    const finished = finishAssistantRunWithProposal({
+      runId: run.id,
+      leaseToken: run.leaseToken,
+      proposal: {
+        id: identity.id,
+        conversationId: conversation.id,
+        runId: run.id,
+        tool,
+        risk: prepared.risk,
+        summary: prepared.summary,
+        arguments: prepared.arguments,
+        confirmationDigest,
+        expiresAt: new Date(Date.now() + PROPOSAL_TTL_MS).toISOString(),
+        idempotencyKey: identity.idempotencyKey,
+      },
+      toolCall: {
+        id: randomUUID(),
+        runId: run.id,
+        proposalId: identity.id,
+        tool,
+        risk: prepared.risk,
+        arguments: prepared.arguments,
+        status: 'proposed',
+      },
+      message: {
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: 'assistant',
+        text: 'Review the exact draft below, then confirm to send it.',
+        draft,
+        proposalId: identity.id,
+      },
+    });
+    if (!finished) throw new AssistantError(409, 'assistant_run_lease_lost');
+    return getAssistantConversationEnvelope(conversation.id);
+  } catch (err) {
+    if (err instanceof AssistantError && err.code === 'assistant_run_lease_lost') throw err;
+    requireAssistantRunLease(run);
+    finishAssistantRunWithMessage({
+      runId: run.id,
+      leaseToken: run.leaseToken,
+      status: 'failed',
+      errorCode: assistantFailureCode(err),
+      message: {
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: 'assistant',
+        text: errorText(err),
+      },
+    });
+    return getAssistantConversationEnvelope(conversation.id);
+  }
+}
+
 async function executeAssistantRun(run, conversation, text, onProgress) {
   const conversationId = conversation.id;
   const toolResults = [];
@@ -651,7 +809,14 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
             arguments: call.arguments, result: safeToolAudit(prepared), status: 'completed',
           });
           if (['read', 'reversible'].includes(definition?.risk)) completedToolCalls.add(callKey);
-          toolResults.push({ tool: call.name, result: prepared.result, trust: 'untrusted_tool_data' });
+          toolResults.push({
+            tool: call.name,
+            result: prepared.result,
+            trust: 'untrusted_tool_data',
+            ...(prepared.privateAttachments?.length
+              ? { privateAttachments: prepared.privateAttachments }
+              : {}),
+          });
           await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.toolComplete));
         } catch (err) {
           if (err instanceof AssistantError && err.code === 'assistant_run_lease_lost') throw err;
@@ -661,7 +826,13 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
             arguments: rejectedToolAudit(call.arguments), result: { error: err.code || 'tool_failed' }, status: 'failed',
           });
           if (err instanceof AssistantToolError
-              && ['duplicate_tool_call', 'tool_not_available_for_request'].includes(err.code)) {
+              && [
+                'duplicate_tool_call',
+                'tool_not_available_for_request',
+                'attachment_not_found',
+                'attachment_type_not_supported',
+                'attachment_size_not_supported',
+              ].includes(err.code)) {
             toolResults.push({
               tool: call.name,
               result: { error: err.code, message: err.message },

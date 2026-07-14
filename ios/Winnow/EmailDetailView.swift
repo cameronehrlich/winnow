@@ -1,8 +1,10 @@
 import Foundation
+import QuickLook
 import SwiftUI
 
 struct EmailDetailView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @EnvironmentObject private var model: AppModel
     let emailID: String
     @State private var confirmUnsubscribe = false
@@ -10,6 +12,10 @@ struct EmailDetailView: View {
     @State private var editingRule: MailRule?
     @State private var showingCreateRule = false
     @State private var showingFullEmail = false
+    @State private var fetchedAttachments: [EmailAttachment]?
+    @State private var downloadingAttachmentID: String?
+    @State private var attachmentPreviewURL: URL?
+    @State private var attachmentError: String?
 
     private var item: EmailItem? { model.email(id: emailID) }
 
@@ -67,7 +73,10 @@ struct EmailDetailView: View {
                             fallbackSubject: item.displaySubject ?? "No subject",
                             account: item.account,
                             summary: item.summary,
+                            attachments: fetchedAttachments ?? item.attachments,
+                            downloadingAttachmentID: downloadingAttachmentID,
                             canLoadFullEmail: item.canLoadFullContent,
+                            openAttachment: { openAttachment($0, from: item) },
                             viewFullEmail: { showingFullEmail = true }
                         )
                     }
@@ -94,11 +103,34 @@ struct EmailDetailView: View {
         }
         .navigationTitle("Email")
         .navigationBarTitleDisplayMode(.inline)
+        .quickLookPreview($attachmentPreviewURL)
+        .alert(
+            "Couldn’t Open Attachment",
+            isPresented: Binding(
+                get: { attachmentError != nil },
+                set: { if !$0 { attachmentError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(attachmentError ?? "The attachment couldn’t be opened.")
+        }
         .task(id: emailID) {
             guard let item = model.email(id: emailID) else { return }
             await model.markReadWhenOpened(item)
             if item.handlingDecision?.appliedRule != nil {
                 await model.loadMailRules(showsError: false)
+            }
+        }
+        .task(id: "attachments-\(emailID)") {
+            fetchedAttachments = nil
+            guard let item = model.email(id: emailID), item.canLoadFullContent else { return }
+            fetchedAttachments = try? await APIClient(configuration: model.configuration)
+                .emailAttachments(emailID: item.id)
+        }
+        .onDisappear {
+            if let attachmentPreviewURL {
+                AttachmentPreviewFile.remove(attachmentPreviewURL)
             }
         }
     }
@@ -254,6 +286,45 @@ struct EmailDetailView: View {
         Task { _ = await model.perform(action, on: item) }
     }
 
+    private func openAttachment(_ attachment: EmailAttachment, from item: EmailItem) {
+        guard downloadingAttachmentID == nil else { return }
+        guard !attachment.attachmentId.isEmpty else {
+            openAttachmentFallback(for: item)
+            return
+        }
+
+        downloadingAttachmentID = attachment.id
+        Task {
+            defer { downloadingAttachmentID = nil }
+            do {
+                let data = try await APIClient(configuration: model.configuration).attachmentData(
+                    emailID: item.id,
+                    attachmentID: attachment.attachmentId
+                )
+                if let attachmentPreviewURL {
+                    AttachmentPreviewFile.remove(attachmentPreviewURL)
+                }
+                attachmentPreviewURL = try AttachmentPreviewFile.write(
+                    data,
+                    filename: attachment.displayName,
+                    mimeType: attachment.mimeType
+                )
+            } catch let APIClientError.server(status, _) where [404, 413, 415].contains(status) {
+                openAttachmentFallback(for: item)
+            } catch {
+                attachmentError = error.localizedDescription
+            }
+        }
+    }
+
+    private func openAttachmentFallback(for item: EmailItem) {
+        if let gmailURL = item.gmailURL {
+            openURL(gmailURL)
+        } else {
+            showingFullEmail = true
+        }
+    }
+
     private func adjustFutureHandling(_ item: EmailItem, decision: EmailHandlingDecision) {
         Task {
             if model.mailRules.isEmpty { await model.loadMailRules(showsError: false) }
@@ -269,6 +340,46 @@ struct EmailDetailView: View {
         }
     }
 
+}
+
+private enum AttachmentPreviewFile {
+    static func write(_ data: Data, filename: String, mimeType: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WinnowAttachmentPreviews", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let suppliedName = (filename as NSString).lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeName = sanitizedFilename(suppliedName, mimeType: mimeType)
+        let url = directory.appendingPathComponent(safeName, isDirectory: false)
+        try data.write(to: url, options: [.atomic])
+        return url
+    }
+
+    static func remove(_ fileURL: URL) {
+        try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent())
+    }
+
+    private static func fallbackFilename(for mimeType: String) -> String {
+        switch mimeType.lowercased() {
+        case "application/pdf": "Attachment.pdf"
+        case "image/jpeg": "Attachment.jpg"
+        case "image/png": "Attachment.png"
+        case "text/plain": "Attachment.txt"
+        default: "Attachment"
+        }
+    }
+
+    private static func sanitizedFilename(_ suppliedName: String, mimeType: String) -> String {
+        guard !suppliedName.isEmpty, suppliedName != ".", suppliedName != ".." else {
+            return fallbackFilename(for: mimeType)
+        }
+        let value = suppliedName as NSString
+        let stem = String(value.deletingPathExtension.prefix(48))
+        let fileExtension = String(value.pathExtension.prefix(10))
+        return fileExtension.isEmpty ? stem : "\(stem).\(fileExtension)"
+    }
 }
 
 private struct HandlingDecisionCard: View {
@@ -702,8 +813,12 @@ private struct ConversationPrelude: View {
     let fallbackSubject: String
     let account: String
     let summary: String
+    let attachments: [EmailAttachment]
+    let downloadingAttachmentID: String?
     let canLoadFullEmail: Bool
+    let openAttachment: (EmailAttachment) -> Void
     let viewFullEmail: () -> Void
+    @State private var showingAttachmentChoices = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -728,15 +843,61 @@ private struct ConversationPrelude: View {
                         .font(.body)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                    if canLoadFullEmail {
-                        Button(action: viewFullEmail) {
-                            Label("View Full Email", systemImage: "doc.text.magnifyingglass")
+                    if !attachments.isEmpty || canLoadFullEmail {
+                        HStack(spacing: 12) {
+                            if let attachment = attachments.first {
+                                Button {
+                                    if attachments.count == 1 {
+                                        openAttachment(attachment)
+                                    } else {
+                                        showingAttachmentChoices = true
+                                    }
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        if downloadingAttachmentID != nil {
+                                            ProgressView()
+                                                .controlSize(.mini)
+                                        } else {
+                                            Image(systemName: "paperclip")
+                                        }
+                                        Text(attachmentTitle)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(WinnowDesign.accent)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .buttonStyle(.plain)
+                                .disabled(downloadingAttachmentID != nil)
+                                .accessibilityLabel(attachmentAccessibilityLabel)
+                                .accessibilityHint(attachments.count == 1
+                                    ? "Opens the attachment for preview."
+                                    : "Shows the attachment list.")
+                                .confirmationDialog(
+                                    "Attachments",
+                                    isPresented: $showingAttachmentChoices,
+                                    titleVisibility: .visible
+                                ) {
+                                    ForEach(attachments) { choice in
+                                        Button(choice.displayName) { openAttachment(choice) }
+                                    }
+                                    Button("Cancel", role: .cancel) {}
+                                }
+                            }
+
+                            if canLoadFullEmail {
+                                Button(action: viewFullEmail) {
+                                    Label("View Full Email", systemImage: "doc.text.magnifyingglass")
+                                        .fixedSize(horizontal: true, vertical: false)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityHint("Loads the complete message securely from Gmail.")
+                            }
                         }
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(WinnowDesign.accent)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .buttonStyle(.plain)
-                        .accessibilityHint("Loads the complete message securely from Gmail.")
                     }
                 }
                 .winnowCard()
@@ -745,6 +906,20 @@ private struct ConversationPrelude: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var attachmentTitle: String {
+        guard attachments.count == 1, let attachment = attachments.first else {
+            return "\(attachments.count) attachments"
+        }
+        return attachment.displayName
+    }
+
+    private var attachmentAccessibilityLabel: String {
+        guard attachments.count == 1, let attachment = attachments.first else {
+            return "Open \(attachments.count) attachments"
+        }
+        return "Open attachment, \(attachment.accessibilityDescription)"
     }
 }
 

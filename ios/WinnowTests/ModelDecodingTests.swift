@@ -114,6 +114,32 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(item.undoAction)
     }
 
+    func testEmailDecodesCanonicalAttachmentMetadata() throws {
+        let json = #"""
+        {
+          "id":"abc","threadId":"thread-1",
+          "attachments":[
+            {
+              "messageId":"message-1","attachmentId":"attachment-1",
+              "filename":"Invoice.pdf","mimeType":"application/pdf","sizeBytes":143501
+            },
+            {
+              "messageId":"message-2","attachmentId":"attachment-2",
+              "filename":"details.txt","mimeType":"text/plain","sizeBytes":"512"
+            }
+          ]
+        }
+        """#.data(using: .utf8)!
+
+        let item = try JSONDecoder().decode(EmailItem.self, from: json)
+        XCTAssertEqual(item.attachments.count, 2)
+        XCTAssertEqual(item.attachments.first?.id, "message-1|attachment-1")
+        XCTAssertEqual(item.attachments.first?.messageId, "message-1")
+        XCTAssertEqual(item.attachments.first?.displayName, "Invoice.pdf")
+        XCTAssertEqual(item.attachments.first?.sizeBytes, 143_501)
+        XCTAssertEqual(item.attachments.last?.sizeBytes, 512)
+    }
+
     func testEmailNormalizesDisplayMetadataAndHidesMissingSubject() throws {
         let json = #"{"id":"abc","fromName":"<>","fromEmail":"shawn@example.com","subject":"(no subject)"}"#.data(using: .utf8)!
         let item = try JSONDecoder().decode(EmailItem.self, from: json)
@@ -138,7 +164,15 @@ final class ModelDecodingTests: XCTestCase {
         let content = try JSONDecoder().decode(EmailContent.self, from: json)
         XCTAssertEqual(content.focusedMessageId, "m1")
         XCTAssertEqual(content.messages.first?.body, "Complete body")
+        XCTAssertTrue(content.attachments.isEmpty)
         XCTAssertFalse(content.truncated)
+    }
+
+    func testFullEmailContentDecodesThreadAttachments() throws {
+        let json = #"{"emailItemId":"abc","messages":[],"attachments":[{"messageId":"m1","attachmentId":"a1","filename":"Invoice.pdf","mimeType":"application/pdf","sizeBytes":143501}]}"#.data(using: .utf8)!
+        let content = try JSONDecoder().decode(EmailContent.self, from: json)
+
+        XCTAssertEqual(content.attachments.map(\.attachmentId), ["a1"])
     }
 
     func testFullEmailContentPutsSelectedMessageFirstThenNewest() throws {
@@ -802,6 +836,41 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     @MainActor
+    func testAssistantViewModelPreparesStoredDraftForExplicitConfirmation() async throws {
+        let service = AssistantServiceStub()
+        service.draftSendEnvelope = try JSONDecoder().decode(
+            AssistantConversationEnvelope.self,
+            from: Data(#"""
+            {
+              "conversation":{"id":"conversation-1","scope":"email","account":"me@example.com","emailItemId":"email-1"},
+              "messages":[{
+                "id":"proposal-message","conversationId":"conversation-1","role":"assistant",
+                "text":"Review the exact draft below, then confirm to send it.",
+                "draft":{"kind":"reply","to":["sender@example.com"],"cc":[],"bcc":["archive@example.com"],"subject":"Re: Hello","body":"Thanks."},
+                "proposal":{"id":"proposal-1","tool":"mail.send_reply","risk":"outbound","summary":"Send this reply","arguments":{},"confirmationDigest":"digest-1","status":"pending"}
+              }]
+            }
+            """#.utf8)
+        )
+        let model = AssistantViewModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            scope: .email,
+            account: "me@example.com",
+            emailItemID: "email-1",
+            service: service
+        )
+        await model.startIfNeeded()
+
+        let proposal = await model.proposeDraftSend(messageID: "draft-message")
+
+        XCTAssertEqual(proposal?.id, "proposal-1")
+        XCTAssertEqual(model.messages.last?.draft?.bcc, ["archive@example.com"])
+        XCTAssertEqual(service.draftSendMessageIDs, ["draft-message"])
+        XCTAssertEqual(service.draftSendIdempotencyKeys.count, 1)
+        XCTAssertFalse(service.draftSendIdempotencyKeys[0].isEmpty)
+    }
+
+    @MainActor
     func testAssistantViewModelRollsBackPreAcceptedFailureAndReusesIdempotencyKey() async throws {
         let service = AssistantServiceStub()
         let model = AssistantViewModel(
@@ -1011,6 +1080,9 @@ private final class AssistantServiceStub: AssistantService {
     var recoveryRequests = 0
     var recoveryError: Error?
     var recoveryEnvelope: AssistantConversationEnvelope?
+    var draftSendEnvelope: AssistantConversationEnvelope?
+    var draftSendMessageIDs: [String] = []
+    var draftSendIdempotencyKeys: [String] = []
 
     private let conversation = AssistantConversation(id: "conversation-1", scope: .mailbox)
 
@@ -1039,6 +1111,17 @@ private final class AssistantServiceStub: AssistantService {
         recoveryRequests += 1
         if let recoveryError { throw recoveryError }
         return recoveryEnvelope ?? envelope(messages: [])
+    }
+
+    func proposeAssistantDraftSend(
+        conversationID: String,
+        messageID: String,
+        idempotencyKey: String
+    ) async throws -> AssistantConversationEnvelope {
+        draftSendMessageIDs.append(messageID)
+        draftSendIdempotencyKeys.append(idempotencyKey)
+        guard let draftSendEnvelope else { throw StubError.failed }
+        return draftSendEnvelope
     }
 
     func confirmAssistantProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope {

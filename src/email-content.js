@@ -1,4 +1,9 @@
 import { GogAdapter, normalizeGogMessage } from './adapters/gog.js';
+import {
+  assertReadableAttachment,
+  collectThreadAttachments,
+  MAX_ATTACHMENT_BYTES,
+} from './email-attachments.js';
 import { emailBodyToText } from './message-content.js';
 
 const MAX_MESSAGES = 100;
@@ -56,6 +61,7 @@ export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {
     .filter(message => message.id || message.body);
 
   if (!normalized.length) throw new Error('Gmail returned no readable messages for this thread');
+  const attachments = collectThreadAttachments({ messages });
   return {
     emailItemId: item.id,
     account: item.account,
@@ -63,7 +69,41 @@ export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {
     focusedMessageId: item.messageId || normalized.at(-1)?.id || '',
     subject: item.subject || normalized[0].subject,
     messages: normalized,
+    attachments,
     truncated: truncated || budget === 0 || messages.length > MAX_MESSAGES,
     fetchedAt: new Date().toISOString(),
   };
+}
+
+export async function fetchEmailAttachments(item, { adapter = new GogAdapter() } = {}) {
+  if (!item?.account || (!item.threadId && !item.messageId)) {
+    throw new TypeError('Email account and Gmail identifier are required');
+  }
+  const messages = item.threadId
+    ? (await adapter.getThread(item.account, item.threadId))?.messages || []
+    : [normalizeGogMessage(await adapter.getMessage(item.account, item.messageId))];
+  return collectThreadAttachments({ messages });
+}
+
+export async function fetchEmailAttachment(item, attachmentId, { adapter = new GogAdapter() } = {}) {
+  const attachments = await fetchEmailAttachments(item, { adapter });
+  const matches = attachments.filter(attachment => attachment.attachmentId === attachmentId);
+  if (matches.length !== 1) {
+    const error = new Error(matches.length ? 'attachment_id_ambiguous' : 'attachment_not_found');
+    error.code = matches.length ? 'attachment_id_ambiguous' : 'attachment_not_found';
+    throw error;
+  }
+  const attachment = assertReadableAttachment(matches[0]);
+  const data = await adapter.getAttachment(
+    item.account,
+    attachment.messageId,
+    attachment.attachmentId,
+    { maxBytes: Math.min(attachment.sizeBytes, MAX_ATTACHMENT_BYTES) },
+  );
+  if (!Buffer.isBuffer(data) || data.length > MAX_ATTACHMENT_BYTES || data.length > attachment.sizeBytes) {
+    const error = new Error('attachment_size_not_supported');
+    error.code = 'attachment_size_not_supported';
+    throw error;
+  }
+  return { attachment, data };
 }

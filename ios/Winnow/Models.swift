@@ -9,6 +9,10 @@ struct EmailContentEnvelope: Decodable {
     let content: EmailContent
 }
 
+struct EmailAttachmentListEnvelope: Decodable {
+    let attachments: [EmailAttachment]
+}
+
 struct EmailContent: Decodable, Equatable {
     let emailItemId: String
     let account: String
@@ -16,6 +20,7 @@ struct EmailContent: Decodable, Equatable {
     let focusedMessageId: String?
     let subject: String
     let messages: [FullEmailMessage]
+    let attachments: [EmailAttachment]
     let truncated: Bool
     let fetchedAt: String
 
@@ -25,6 +30,24 @@ struct EmailContent: Decodable, Equatable {
               let focused = newestFirst.first(where: { $0.id == focusedMessageId })
         else { return newestFirst }
         return [focused] + newestFirst.filter { $0.id != focused.id }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case emailItemId, account, threadId, focusedMessageId, subject, messages
+        case attachments, truncated, fetchedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        emailItemId = try values.decodeIfPresent(String.self, forKey: .emailItemId) ?? ""
+        account = try values.decodeIfPresent(String.self, forKey: .account) ?? ""
+        threadId = try values.decodeIfPresent(String.self, forKey: .threadId) ?? ""
+        focusedMessageId = try values.decodeIfPresent(String.self, forKey: .focusedMessageId)
+        subject = try values.decodeIfPresent(String.self, forKey: .subject) ?? ""
+        messages = try values.decodeIfPresent([FullEmailMessage].self, forKey: .messages) ?? []
+        attachments = try values.decodeIfPresent([EmailAttachment].self, forKey: .attachments) ?? []
+        truncated = try values.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+        fetchedAt = try values.decodeIfPresent(String.self, forKey: .fetchedAt) ?? ""
     }
 }
 
@@ -36,6 +59,65 @@ struct FullEmailMessage: Decodable, Equatable, Identifiable {
     let subject: String
     let date: String
     let body: String
+}
+
+struct EmailAttachment: Decodable, Equatable, Identifiable {
+    let attachmentId: String
+    let messageId: String
+    let filename: String
+    let mimeType: String
+    let sizeBytes: Int64?
+
+    var id: String {
+        attachmentId.isEmpty
+            ? "\(messageId)|\(filename)|\(mimeType)|\(sizeBytes.map(String.init) ?? "")"
+            : "\(messageId)|\(attachmentId)"
+    }
+
+    var displayName: String { filename.isEmpty ? "Attachment" : filename }
+
+    var accessibilityDescription: String {
+        var components = [displayName]
+        if !mimeType.isEmpty { components.append(mimeType) }
+        if let sizeBytes {
+            components.append(ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file))
+        }
+        return components.joined(separator: ", ")
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, attachmentId, messageId, filename, name, mimeType, type, size, sizeBytes
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        filename = try values.decodeIfPresent(String.self, forKey: .filename)
+            ?? values.decodeIfPresent(String.self, forKey: .name)
+            ?? ""
+        mimeType = try values.decodeIfPresent(String.self, forKey: .mimeType)
+            ?? values.decodeIfPresent(String.self, forKey: .type)
+            ?? ""
+        sizeBytes = Self.decodeSize(from: values)
+        attachmentId = try values.decodeIfPresent(String.self, forKey: .attachmentId)
+            ?? values.decodeIfPresent(String.self, forKey: .id)
+            ?? ""
+        messageId = try values.decodeIfPresent(String.self, forKey: .messageId) ?? ""
+    }
+
+    private static func decodeSize(
+        from values: KeyedDecodingContainer<CodingKeys>
+    ) -> Int64? {
+        for key in [CodingKeys.size, .sizeBytes] {
+            if let value = try? values.decodeIfPresent(Int64.self, forKey: key) {
+                return value
+            }
+            if let value = try? values.decodeIfPresent(String.self, forKey: key),
+               let parsed = Int64(value) {
+                return parsed
+            }
+        }
+        return nil
+    }
 }
 
 struct EmailItem: Decodable, Identifiable, Equatable {
@@ -69,6 +151,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
     var trackedThreadMessageCount: Int
     let handlingDecision: EmailHandlingDecision?
     let undoAction: EmailAction?
+    let attachments: [EmailAttachment]
 
     var isArchived: Bool {
         switch mailboxState {
@@ -78,6 +161,15 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         }
     }
     var canLoadFullContent: Bool { !threadId.isEmpty || !messageId.isEmpty }
+    var gmailURL: URL? {
+        guard !threadId.isEmpty else { return nil }
+        var components = URLComponents(string: "https://mail.google.com/mail/u/")
+        if !account.isEmpty {
+            components?.queryItems = [URLQueryItem(name: "authuser", value: account)]
+        }
+        components?.fragment = "all/\(threadId)"
+        return components?.url
+    }
     var canUnsubscribe: Bool {
         !unsubscribeLink.isEmpty && !["succeeded", "attempted"].contains(unsubscribeState)
     }
@@ -131,6 +223,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         case lowConfidenceKept, triageState, mailboxState, archive, unsubscribeLink
         case createdAt, processedAt, updatedAt, readState, isRead, unsubscribeState
         case trackedThreadMessageCount, handlingDecision, undoAction
+        case attachments
     }
 
     init(from decoder: Decoder) throws {
@@ -170,6 +263,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         // make the core email unreadable to an older client.
         handlingDecision = (try? values.decodeIfPresent(EmailHandlingDecision.self, forKey: .handlingDecision)) ?? nil
         undoAction = (try? values.decodeIfPresent(EmailAction.self, forKey: .undoAction)) ?? nil
+        attachments = (try? values.decodeIfPresent([EmailAttachment].self, forKey: .attachments)) ?? []
 
         if let state = try values.decodeIfPresent(String.self, forKey: .readState) {
             readState = state

@@ -85,6 +85,24 @@ api:
       truncated: false,
       fetchedAt: '2026-06-29T16:01:00.000Z',
     }),
+    fetchEmailAttachments: async item => [{
+      messageId: 'm0', attachmentId: 'pdf-1', filename: 'invoice.pdf',
+      mimeType: 'application/pdf', sizeBytes: 9,
+    }],
+    fetchEmailAttachment: async (item, attachmentId) => {
+      if (attachmentId !== 'pdf-1') {
+        const error = new Error('attachment_not_found');
+        error.code = 'attachment_not_found';
+        throw error;
+      }
+      return {
+        attachment: {
+          messageId: 'm0', attachmentId, filename: 'invoice.pdf',
+          mimeType: 'application/pdf', sizeBytes: 9,
+        },
+        data: Buffer.from('%PDF-test'),
+      };
+    },
   };
   const item = upsertEmailItemFromResult({
     account: 'me@example.com',
@@ -97,6 +115,10 @@ api:
     readState: 'unread',
     unsubscribeLink: 'mailto:unsubscribe@example.com',
     confidence: 88,
+    attachments: [{
+      messageId: 'm0', attachmentId: 'pdf-1', filename: 'invoice.pdf',
+      mimeType: 'application/pdf', sizeBytes: 9,
+    }],
   }, {
     account: 'me@example.com',
     messageId: 'm1',
@@ -143,6 +165,10 @@ describe('local API', () => {
     assert.equal(emailJson.items[0].readState, 'unread');
     assert.equal(emailJson.items[0].isRead, false);
     assert.equal(emailJson.items[0].trackedThreadMessageCount, 1);
+    assert.deepEqual(emailJson.items[0].attachments, [{
+      messageId: 'm0', attachmentId: 'pdf-1', filename: 'invoice.pdf',
+      mimeType: 'application/pdf', sizeBytes: 9,
+    }]);
 
     const summary = await fetch(`${baseUrl}/v1/summaries/daily?date=2026-06-29`, { headers });
     assert.equal(summary.status, 200);
@@ -192,6 +218,30 @@ describe('local API', () => {
     assert.equal(body.content.messages[0].body, 'This is the complete message body.');
 
     const missing = await fetch(`${baseUrl}/v1/emails/missing/content`, { headers });
+    assert.equal(missing.status, 404);
+  });
+
+  it('refreshes attachment metadata and serves a scoped supported attachment', async () => {
+    const headers = { Authorization: 'Bearer test-token' };
+    const list = await fetch(`${baseUrl}/v1/emails`, { headers }).then(response => response.json());
+    const encodedID = encodeURIComponent(list.items[0].id);
+
+    const metadataResponse = await fetch(`${baseUrl}/v1/emails/${encodedID}/attachments`, { headers });
+    assert.equal(metadataResponse.status, 200);
+    const metadata = await metadataResponse.json();
+    assert.deepEqual(metadata.attachments, [{
+      messageId: 'm0', attachmentId: 'pdf-1', filename: 'invoice.pdf',
+      mimeType: 'application/pdf', sizeBytes: 9,
+    }]);
+    assert.deepEqual(getEmailItem(list.items[0].id).attachments, metadata.attachments);
+
+    const fileResponse = await fetch(`${baseUrl}/v1/emails/${encodedID}/attachments/pdf-1`, { headers });
+    assert.equal(fileResponse.status, 200);
+    assert.equal(fileResponse.headers.get('content-type'), 'application/pdf');
+    assert.match(fileResponse.headers.get('content-disposition'), /invoice\.pdf/);
+    assert.equal(Buffer.from(await fileResponse.arrayBuffer()).toString(), '%PDF-test');
+
+    const missing = await fetch(`${baseUrl}/v1/emails/${encodedID}/attachments/not-in-thread`, { headers });
     assert.equal(missing.status, 404);
   });
 

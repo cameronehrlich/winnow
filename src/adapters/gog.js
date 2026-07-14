@@ -1,7 +1,11 @@
 import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { GmailAdapter } from './gmail.js';
 import { normalizeEmailHeaderText } from '../email-metadata.js';
+import { collectMessageAttachments, MAX_ATTACHMENT_BYTES } from '../email-attachments.js';
 
 const defaultExecute = promisify(execFile);
 const GOG_FLAGS = ['--json', '--no-input'];
@@ -49,6 +53,10 @@ function validateAccount(account) {
 
 function validateGmailId(value, name) {
   return requireString(value, name, 256, { pattern: /^[A-Za-z0-9_-]+$/ });
+}
+
+function validateAttachmentId(value) {
+  return requireString(value, 'attachmentId', 2048, { pattern: /^[A-Za-z0-9_-]+$/ });
 }
 
 function normalizeRecipientList(value, name, { required = false } = {}) {
@@ -151,6 +159,7 @@ export function normalizeGogMessage(message, { includeBody = true, bodyLimit = M
     internalDate: String(value?.internalDate || value?.InternalDate || ''),
     headers,
     body,
+    attachments: collectMessageAttachments(value),
   };
 }
 
@@ -281,6 +290,34 @@ export class GogAdapter extends GmailAdapter {
       historyId: String(thread.historyId || thread.HistoryId || ''),
       messages,
     };
+  }
+
+  async getAttachment(account, messageId, attachmentId, { maxBytes = MAX_ATTACHMENT_BYTES } = {}) {
+    const safeAccount = validateAccount(account);
+    const safeMessageId = validateGmailId(messageId, 'messageId');
+    const safeAttachmentId = validateAttachmentId(attachmentId);
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ATTACHMENT_BYTES) {
+      throw new RangeError(`maxBytes must be an integer from 1 to ${MAX_ATTACHMENT_BYTES}`);
+    }
+
+    const directory = await mkdtemp(join(tmpdir(), 'winnow-attachment-'));
+    const path = join(directory, 'attachment');
+    try {
+      await this.#runJson([
+        'gmail', 'attachment', safeMessageId, safeAttachmentId,
+        '--account', safeAccount,
+        '--out', path,
+      ]);
+      const file = await stat(path);
+      if (!file.isFile() || file.size > maxBytes) {
+        const error = new Error('attachment_size_not_supported');
+        error.code = 'attachment_size_not_supported';
+        throw error;
+      }
+      return await readFile(path);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 
   async reply(account, reference, draft) {

@@ -31,6 +31,10 @@ export class GmailAdapter {
     throw new Error('Not implemented');
   }
 
+  async getAttachment(account, messageId, attachmentId, options) {
+    throw new Error('Not implemented');
+  }
+
   async ensureLabel(account, labelName) {
     throw new Error('Not implemented');
   }
