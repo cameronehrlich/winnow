@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { GmailAdapter } from './gmail.js';
+import { normalizeEmailHeaderText } from '../email-metadata.js';
 
 const defaultExecute = promisify(execFile);
 const GOG_FLAGS = ['--json', '--no-input'];
@@ -138,11 +139,11 @@ export function normalizeGogMessage(message, { includeBody = true, bodyLimit = M
     messageId: id,
     threadId: String(value?.threadId || value?.ThreadId || ''),
     snippet: String(value?.snippet || value?.Snippet || '').slice(0, 10_000),
-    subject: String(headers.subject || value?.subject || value?.Subject || '').slice(0, 2_000),
-    from: String(headers.from || value?.from || value?.From || '').slice(0, 2_000),
-    to: String(headers.to || value?.to || value?.To || '').slice(0, 4_000),
-    cc: String(headers.cc || value?.cc || value?.Cc || '').slice(0, 4_000),
-    date: String(headers.date || value?.date || value?.Date || '').slice(0, 200),
+    subject: normalizeEmailHeaderText(headers.subject || value?.subject || value?.Subject).slice(0, 2_000),
+    from: normalizeEmailHeaderText(headers.from || value?.from || value?.From).slice(0, 2_000),
+    to: normalizeEmailHeaderText(headers.to || value?.to || value?.To).slice(0, 4_000),
+    cc: normalizeEmailHeaderText(headers.cc || value?.cc || value?.Cc).slice(0, 4_000),
+    date: normalizeEmailHeaderText(headers.date || value?.date || value?.Date).slice(0, 200),
     labelIds: Array.isArray(labels)
       ? [...labels].slice(0, 100).map(String)
       : [],

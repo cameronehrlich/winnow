@@ -11,6 +11,7 @@ import {
   handlingUndoTargetReached,
   normalizeHandlingDecision,
 } from './handling-decisions.js';
+import { normalizeEmailHeaderText, splitEmailSender } from './email-metadata.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DB_PATH = join(__dirname, '..', 'data', 'winnow.db');
@@ -500,21 +501,12 @@ export function makeEmailItemId(account, messageId = '', threadId = '') {
   return Buffer.from(`${account || ''}\0${messageId || ''}\0${threadId || ''}`).toString('base64url');
 }
 
-function splitSender(from) {
-  const raw = String(from || '').trim();
-  const match = raw.match(/^"?([^"<]+)"?\s*<([^>]+)>/);
-  if (match) return { fromName: match[1].trim(), fromEmail: match[2].trim() };
-  const emailMatch = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  if (emailMatch) return { fromName: raw.replace(emailMatch[0], '').trim() || emailMatch[0].split('@')[0], fromEmail: emailMatch[0] };
-  return { fromName: raw || 'Unknown', fromEmail: '' };
-}
-
 export function resultToEmailItem(result, opts = {}) {
   const account = opts.account || result.account || '';
   const messageId = opts.messageId || result.messageId || '';
   const threadId = opts.threadId || result.threadId || '';
   const id = opts.id || result.emailItemId || makeEmailItemId(account, messageId, threadId);
-  const sender = splitSender(result.from);
+  const sender = splitEmailSender(result.from);
   const archived = Boolean(result.archive);
   const triageState = opts.triageState || (archived ? 'auto_archived' : 'kept');
   const mailboxState = opts.mailboxState || (archived ? 'archived' : 'inbox');
@@ -534,7 +526,7 @@ export function resultToEmailItem(result, opts = {}) {
     gmailThreadId: threadId || null,
     fromName: sender.fromName,
     fromEmail: sender.fromEmail,
-    subject: result.subject || '(no subject)',
+    subject: normalizeEmailHeaderText(result.subject) || '(no subject)',
     snippet: result.snippet || '',
     summary: result.summary || '',
     action: result.action || '',
@@ -558,15 +550,18 @@ export function resultToEmailItem(result, opts = {}) {
 
 function rowToEmailItem(row) {
   if (!row) return null;
+  const sender = splitEmailSender(
+    row.from_email ? `${row.from_name || ''} <${row.from_email}>` : row.from_name,
+  );
   return {
     id: row.id,
     account: row.account,
     messageId: row.gmail_message_id || '',
     threadId: row.gmail_thread_id || '',
-    fromName: row.from_name || '',
-    fromEmail: row.from_email || '',
-    from: row.from_email ? `${row.from_name || row.from_email} <${row.from_email}>` : (row.from_name || ''),
-    subject: row.subject || '(no subject)',
+    fromName: sender.fromName,
+    fromEmail: sender.fromEmail,
+    from: sender.fromEmail ? `${sender.fromName} <${sender.fromEmail}>` : sender.fromName,
+    subject: normalizeEmailHeaderText(row.subject) || '(no subject)',
     snippet: row.snippet || '',
     summary: row.summary || '',
     action: row.action || '',

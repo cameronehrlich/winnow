@@ -12,6 +12,7 @@ import { loadState, updateState, isProcessed, markProcessed, pruneOldResults, cl
 import { postEmailFeed } from './notify.js';
 import { maybeSendPushForEmail } from './push.js';
 import { appendEmailEvent, upsertEmailItemFromResult } from './store.js';
+import { normalizeEmailHeaderText } from './email-metadata.js';
 
 const execShellAsync = promisify(execRaw);
 
@@ -90,10 +91,10 @@ function enrichMessageFromFull(msg, full) {
     ...msg,
     body: full.body || msg.body || msg.snippet || '',
     headers,
-    from: headers?.from || headers?.From || msg.from,
-    to: headers?.to || headers?.To || msg.to,
-    subject: headers?.subject || headers?.Subject || msg.subject,
-    date: headers?.date || headers?.Date || msg.date,
+    from: normalizeEmailHeaderText(headers?.from || headers?.From || msg.from),
+    to: normalizeEmailHeaderText(headers?.to || headers?.To || msg.to),
+    subject: normalizeEmailHeaderText(headers?.subject || headers?.Subject || msg.subject),
+    date: normalizeEmailHeaderText(headers?.date || headers?.Date || msg.date),
   };
 }
 

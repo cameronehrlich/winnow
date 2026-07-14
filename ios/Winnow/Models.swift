@@ -89,8 +89,22 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         return noActionPhrases.contains(where: normalized.contains) ? nil : value
     }
 
+    var displaySubject: String? {
+        let value = subject
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !value.isEmpty, value.lowercased() != "(no subject)" else { return nil }
+        return value
+    }
+
     var senderDisplayName: String {
-        if !fromName.isEmpty { return fromName }
+        let normalizedName = fromName
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        let hasUsefulName = normalizedName.unicodeScalars.contains {
+            CharacterSet.alphanumerics.contains($0)
+        }
+        if hasUsefulName { return normalizedName }
         if !fromEmail.isEmpty { return fromEmail }
         if !from.isEmpty { return from }
         return "Unknown sender"
@@ -122,7 +136,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         fromName = try values.decodeIfPresent(String.self, forKey: .fromName) ?? ""
         fromEmail = try values.decodeIfPresent(String.self, forKey: .fromEmail) ?? ""
         from = try values.decodeIfPresent(String.self, forKey: .from) ?? ""
-        subject = try values.decodeIfPresent(String.self, forKey: .subject) ?? "(no subject)"
+        subject = try values.decodeIfPresent(String.self, forKey: .subject) ?? ""
         snippet = try values.decodeIfPresent(String.self, forKey: .snippet) ?? ""
         summary = try values.decodeIfPresent(String.self, forKey: .summary) ?? ""
         action = try values.decodeIfPresent(String.self, forKey: .action) ?? ""

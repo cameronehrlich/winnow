@@ -26,7 +26,7 @@ struct EmailDetailView: View {
                     configuration: model.configuration,
                     account: item.account,
                     emailItemID: item.id,
-                    contextTitle: item.subject,
+                    contextTitle: item.displaySubject ?? "No subject",
                     composerRequest: $assistantComposerRequest,
                     onMailboxChanged: { await model.refresh(silent: true) }
                 ) {
@@ -115,7 +115,7 @@ struct EmailDetailView: View {
                     FullEmailView(
                         configuration: model.configuration,
                         emailID: item.id,
-                        fallbackSubject: item.subject,
+                        fallbackSubject: item.displaySubject ?? "No subject",
                         account: item.account
                     )
                 }
@@ -174,9 +174,11 @@ struct EmailDetailView: View {
                 Spacer()
                 CapsuleLabel(item.isArchived ? "Archived" : "Inbox", symbol: item.isArchived ? "archivebox" : "tray", color: item.isArchived ? WinnowDesign.amber : WinnowDesign.mint)
             }
-            Text(item.subject)
-                .font(.title2.bold())
-                .fixedSize(horizontal: false, vertical: true)
+            if let subject = item.displaySubject {
+                Text(subject)
+                    .font(.title2.bold())
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 AccountAvatarBadge(account: model.account(email: item.account), size: 18)
                 Text(item.account)

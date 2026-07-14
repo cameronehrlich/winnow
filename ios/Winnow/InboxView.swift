@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum MailboxTab: Hashable {
     case inbox
@@ -45,6 +46,7 @@ struct InboxView: View {
     let mailbox: MailboxTab
     let openSettings: () -> Void
     let openStats: () -> Void
+    let switchMailbox: () -> Void
 
     @State private var account = ""
     @State private var searchText = ""
@@ -117,6 +119,7 @@ struct InboxView: View {
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
                 .refreshable { await model.refresh() }
+                .simultaneousGesture(mailboxSwitchGesture)
 
                 if model.isLoading && model.emails.isEmpty {
                     ProgressView("Distilling your inbox…")
@@ -166,6 +169,24 @@ struct InboxView: View {
     private var emptyTitle: String {
         if !searchQuery.isEmpty { return "No Results" }
         return mailbox == .inbox ? "Inbox Clear" : "Nothing Archived Yet"
+    }
+
+    private var mailboxSwitchGesture: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onEnded { value in
+                let horizontal = value.translation.width
+                let vertical = value.translation.height
+                let predictedHorizontal = value.predictedEndTranslation.width
+                let isHorizontal = abs(horizontal) > abs(vertical) * 1.35
+                let crossedThreshold = abs(horizontal) > 72 || abs(predictedHorizontal) > 140
+                let matchesDirection = mailbox == .inbox ? horizontal < 0 : horizontal > 0
+
+                guard isHorizontal, crossedThreshold, matchesDirection else { return }
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                withAnimation(.snappy(duration: 0.28)) {
+                    switchMailbox()
+                }
+            }
     }
 
     private var emptySymbol: String {

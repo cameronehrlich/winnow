@@ -25,6 +25,18 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(item.undoAction)
     }
 
+    func testEmailNormalizesDisplayMetadataAndHidesMissingSubject() throws {
+        let json = #"{"id":"abc","fromName":"<>","fromEmail":"shawn@example.com","subject":"(no subject)"}"#.data(using: .utf8)!
+        let item = try JSONDecoder().decode(EmailItem.self, from: json)
+
+        XCTAssertEqual(item.senderDisplayName, "shawn@example.com")
+        XCTAssertNil(item.displaySubject)
+
+        let foldedJSON = #"{"id":"folded","subject":" \n Follow-up work \t ready "}"#.data(using: .utf8)!
+        let folded = try JSONDecoder().decode(EmailItem.self, from: foldedJSON)
+        XCTAssertEqual(folded.displaySubject, "Follow-up work ready")
+    }
+
     func testFullEmailContentDecodes() throws {
         let json = #"{"emailItemId":"abc","account":"me@example.com","threadId":"t1","focusedMessageId":"m1","subject":"Hello","messages":[{"id":"m1","from":"Sender","to":"Me","cc":"","subject":"Hello","date":"Today","body":"Complete body"}],"truncated":false,"fetchedAt":"2026-07-13T12:00:00.000Z"}"#.data(using: .utf8)!
         let content = try JSONDecoder().decode(EmailContent.self, from: json)

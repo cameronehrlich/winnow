@@ -158,6 +158,16 @@ describe('GogAdapter assistant primitives', () => {
     assert.equal(normalized.body.length, 100_000);
   });
 
+  it('unfolds and trims malformed whitespace in message headers', () => {
+    const normalized = normalizeGogMessage({
+      id: 'm1',
+      subject: '\n  Follow-up work ready\n\tfor your approval  ',
+      from: '\n Belong <hello@example.com> ',
+    });
+    assert.equal(normalized.subject, 'Follow-up work ready for your approval');
+    assert.equal(normalized.from, 'Belong <hello@example.com>');
+  });
+
   it('keeps top-level body and headers from wrapped gmail get responses', () => {
     const message = normalizeGogMessage({
       body: 'Complete exact body',

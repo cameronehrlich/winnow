@@ -36,6 +36,21 @@ afterEach(() => {
 });
 
 describe('daily action summary', () => {
+  it('normalizes folded subjects and rejects punctuation-only sender names', () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com',
+      messageId: 'metadata',
+      threadId: 'metadata',
+      from: '<> <shawn@quickkeyapp.com>',
+      subject: '\n  RE: Sale of\n\t business  ',
+      archive: false,
+    });
+
+    assert.equal(item.subject, 'RE: Sale of business');
+    assert.equal(item.fromName, 'shawn');
+    assert.equal(item.fromEmail, 'shawn@quickkeyapp.com');
+  });
+
   it('keeps old inbox items in the mailbox reconciliation batch', () => {
     upsertEmailItemFromResult({
       account: 'me@example.com', messageId: 'old-inbox', threadId: 'old-inbox', archive: false,
