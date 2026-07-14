@@ -20,31 +20,35 @@ final class AppModel: ObservableObject {
     @Published var toast: ToastMessage?
     @Published var navigationRequest: EmailNavigationRequest?
     @Published var askNavigationRequest: UUID?
+    @Published private(set) var inboxNewItemsCutoff: Date?
+    @Published private(set) var archivedNewItemsCutoff: Date?
 
     private var hasLoaded = false
     private var autoRefreshTask: Task<Void, Never>?
     private var refreshInFlight = false
     private var refreshGeneration = 0
     private var pendingOptimisticActions: [String: EmailAction] = [:]
-    private var archivedIsVisible = false
+    private var visibleMailbox: MailboxTab?
+    private let inboxViewedKey = "winnow.inbox-last-viewed"
     private let archivedViewedKey = "winnow.archived-last-viewed"
 
     init(configuration: ServerConfiguration = ConfigurationStore.load()) {
         self.configuration = configuration
-        if UserDefaults.standard.object(forKey: archivedViewedKey) == nil {
-            UserDefaults.standard.set(Date(), forKey: archivedViewedKey)
+        let defaults = UserDefaults.standard
+        let now = Date()
+        if defaults.object(forKey: inboxViewedKey) == nil {
+            defaults.set(now, forKey: inboxViewedKey)
         }
+        if defaults.object(forKey: archivedViewedKey) == nil {
+            defaults.set(now, forKey: archivedViewedKey)
+        }
+        inboxNewItemsCutoff = defaults.object(forKey: inboxViewedKey) as? Date
+        archivedNewItemsCutoff = defaults.object(forKey: archivedViewedKey) as? Date
     }
 
     var isConfigured: Bool { configuration.isComplete }
     var isOnline: Bool { status?.ok == true }
     var inboxBadgeCount: Int { emails.lazy.filter { !$0.isArchived && $0.isUnread }.count }
-    var archivedBadgeCount: Int {
-        guard let viewedAt = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date else { return 0 }
-        return emails.lazy.filter { item in
-            item.isArchived && (item.displayDate ?? .distantPast) > viewedAt
-        }.count
-    }
 
     func initialLoad() async {
         guard isConfigured, !hasLoaded else { return }
@@ -101,7 +105,7 @@ final class AppModel: ObservableObject {
             lastRefresh = Date()
             WidgetSnapshotStore.save(emails: emails)
             PushNotificationManager.shared.setAppIconBadge(inboxBadgeCount)
-            if archivedIsVisible { markArchivedViewed() }
+            if let visibleMailbox { markMailboxSeen(visibleMailbox) }
         } catch {
             guard generation == refreshGeneration else { return }
             if !silent || emails.isEmpty {
@@ -418,9 +422,22 @@ final class AppModel: ObservableObject {
         if askNavigationRequest == request { askNavigationRequest = nil }
     }
 
-    func setArchivedVisible(_ visible: Bool) {
-        archivedIsVisible = visible
-        if visible { markArchivedViewed() }
+    func newItemsCutoff(for mailbox: MailboxTab) -> Date? {
+        mailbox == .inbox ? inboxNewItemsCutoff : archivedNewItemsCutoff
+    }
+
+    func setVisibleMailbox(_ mailbox: MailboxTab?) {
+        guard visibleMailbox != mailbox else { return }
+        visibleMailbox = mailbox
+        guard let mailbox else { return }
+
+        let cutoff = UserDefaults.standard.object(forKey: viewedKey(for: mailbox)) as? Date
+        if mailbox == .inbox {
+            inboxNewItemsCutoff = cutoff
+        } else {
+            archivedNewItemsCutoff = cutoff
+        }
+        markMailboxSeen(mailbox)
     }
 
     func requestNavigation(emailID: String, mailboxState: String = "inbox") {
@@ -445,9 +462,17 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func markArchivedViewed() {
-        UserDefaults.standard.set(Date(), forKey: archivedViewedKey)
-        objectWillChange.send()
+    private func viewedKey(for mailbox: MailboxTab) -> String {
+        mailbox == .inbox ? inboxViewedKey : archivedViewedKey
+    }
+
+    private func markMailboxSeen(_ mailbox: MailboxTab) {
+        guard let newestDate = emails.lazy
+            .filter({ mailbox.includes($0) })
+            .compactMap(\.displayDate)
+            .max()
+        else { return }
+        UserDefaults.standard.set(newestDate, forKey: viewedKey(for: mailbox))
     }
 
     private func replace(_ item: EmailItem) {

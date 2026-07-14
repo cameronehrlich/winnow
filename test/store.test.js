@@ -13,6 +13,7 @@ import {
   getLifetimeActionSummary,
   getMailboxCounts,
   getRuleActivity,
+  listRecentTrackedEmailItems,
   listPushDevices,
   listDeliveryRecords,
   registerPushDevice,
@@ -35,6 +36,19 @@ afterEach(() => {
 });
 
 describe('daily action summary', () => {
+  it('keeps old inbox items in the mailbox reconciliation batch', () => {
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'old-inbox', threadId: 'old-inbox', archive: false,
+    }, { timestamp: '2020-01-01T00:00:00.000Z' });
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'recent-archive', threadId: 'recent-archive', archive: true,
+    });
+
+    const items = listRecentTrackedEmailItems({ account: 'me@example.com', days: 7, limit: 10 });
+
+    assert.deepEqual(items.map(item => item.messageId), ['old-inbox', 'recent-archive']);
+  });
+
   it('rotates APNs tokens by stable installation and tracks environments', () => {
     const first = registerPushDevice({
       deviceToken: 'a'.repeat(64),

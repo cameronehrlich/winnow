@@ -70,12 +70,29 @@ struct InboxView: View {
         }
     }
 
+    private var newItemsDividerIndex: Int? {
+        guard searchQuery.isEmpty,
+              let cutoff = model.newItemsCutoff(for: mailbox),
+              let firstPreviouslySeen = filteredEmails.firstIndex(where: {
+                  ($0.displayDate ?? .distantPast) <= cutoff
+              }),
+              firstPreviouslySeen > 0
+        else { return nil }
+        return firstPreviouslySeen
+    }
+
     var body: some View {
         NavigationStack(path: $navigationPath) {
             ZStack {
                 AppBackdrop()
                 List {
-                    ForEach(filteredEmails) { item in
+                    ForEach(Array(filteredEmails.enumerated()), id: \.element.id) { index, item in
+                        if index == newItemsDividerIndex {
+                            NewItemsDivider()
+                                .listRowInsets(EdgeInsets(top: 4, leading: 18, bottom: 4, trailing: 18))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                        }
                         EmailCard(
                             item: item,
                             account: model.account(email: item.account),
@@ -162,6 +179,21 @@ struct InboxView: View {
 
     private func perform(_ action: EmailAction, on item: EmailItem) {
         Task { _ = await model.perform(action, on: item, optimisticDelay: .milliseconds(140)) }
+    }
+}
+
+private struct NewItemsDivider: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Rectangle().fill(WinnowDesign.brightIndigo.opacity(0.45)).frame(height: 1)
+            Text("New since last visit")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(WinnowDesign.brightIndigo)
+                .fixedSize()
+            Rectangle().fill(WinnowDesign.brightIndigo.opacity(0.45)).frame(height: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Earlier messages start here")
     }
 }
 

@@ -796,11 +796,14 @@ export function listRecentTrackedEmailItems({ account = '', days = 7, limit = 10
   if (account) params.account = account;
   return getDb().prepare(`
     SELECT * FROM email_items
-    WHERE processed_at >= @cutoff
+    WHERE (processed_at >= @cutoff OR mailbox_state = 'inbox')
       AND gmail_message_id IS NOT NULL
       AND gmail_message_id != ''
       ${accountSql}
-    ORDER BY processed_at DESC
+    -- Inbox rows must be reconciled regardless of age so archiving directly in
+    -- Gmail cannot leave a stale actionable card in Winnow. Recent archived
+    -- rows still fill the remaining batch for restore/read-state detection.
+    ORDER BY CASE WHEN mailbox_state = 'inbox' THEN 0 ELSE 1 END, processed_at DESC
     LIMIT @limit
   `).all(params).map(rowToEmailItem);
 }

@@ -22,18 +22,23 @@ struct RootView: View {
         .animation(.easeOut(duration: 0.25), value: model.isConfigured)
         .task {
             await model.initialLoad()
-            if scenePhase == .active { model.startAutoRefresh() }
+            if scenePhase == .active {
+                model.setVisibleMailbox(mailbox(for: selectedTab))
+                model.startAutoRefresh()
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
+                model.setVisibleMailbox(mailbox(for: selectedTab))
                 Task { await model.refresh(silent: !model.emails.isEmpty) }
                 model.startAutoRefresh()
             } else {
+                model.setVisibleMailbox(nil)
                 model.stopAutoRefresh()
             }
         }
         .onChange(of: selectedTab) { _, newTab in
-            model.setArchivedVisible(newTab == .archived)
+            model.setVisibleMailbox(mailbox(for: newTab))
         }
         .onChange(of: model.isConfigured) { _, isConfigured in
             if isConfigured, scenePhase == .active {
@@ -98,7 +103,6 @@ struct RootView: View {
             Tab("Archived", systemImage: "archivebox", value: RootTab.archived) {
                 InboxView(mailbox: .archived, openSettings: openSettings)
             }
-            .badge(model.archivedBadgeCount)
 
             Tab("Stats", systemImage: "chart.bar.xaxis", value: RootTab.stats) {
                 StatsView(openSettings: openSettings)
@@ -119,7 +123,6 @@ struct RootView: View {
 
             InboxView(mailbox: .archived, openSettings: openSettings)
                 .tabItem { Label("Archived", systemImage: "archivebox") }
-                .badge(model.archivedBadgeCount)
                 .tag(RootTab.archived)
 
             StatsView(openSettings: openSettings)
@@ -134,6 +137,14 @@ struct RootView: View {
 
     private func openSettings() {
         settingsPresented = true
+    }
+
+    private func mailbox(for tab: RootTab) -> MailboxTab? {
+        switch tab {
+        case .inbox: .inbox
+        case .archived: .archived
+        case .stats, .ask: nil
+        }
     }
 
     private func handleDeepLink(_ url: URL) {

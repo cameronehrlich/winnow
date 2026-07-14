@@ -27,6 +27,27 @@ afterEach(() => {
 });
 
 describe('mailbox reconciliation', () => {
+  it('carries a Gmail archive into Winnow even when the tracked item is old', async () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com',
+      messageId: 'm-old-inbox',
+      threadId: 't-old-inbox',
+      from: 'Sender <sender@example.com>',
+      subject: 'Archived directly in Gmail',
+      archive: false,
+      readState: 'read',
+    }, { timestamp: '2020-01-01T00:00:00.000Z' });
+    const adapter = {
+      getMailboxState: async () => ({ mailboxState: 'archived', unread: false, labels: [] }),
+    };
+
+    const result = await reconcileMailbox({ account: item.account, days: 7, adapter });
+
+    assert.equal(result.checked, 1);
+    assert.equal(result.changed, 1);
+    assert.equal(getEmailItem(item.id).mailboxState, 'archived');
+  });
+
   it('silently hydrates migrated unknown read state', async () => {
     const item = upsertEmailItemFromResult({
       account: 'me@example.com',

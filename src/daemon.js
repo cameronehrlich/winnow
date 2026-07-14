@@ -33,7 +33,7 @@ async function runScanCycle(accounts, searchQuery) {
 async function runReconcileCycle(accounts) {
   for (const account of accounts) {
     try {
-      const result = await reconcileMailbox({ account, days: 7, limit: 100 });
+      const result = await reconcileMailbox({ account, days: 7, limit: 200 });
       if (result.changed > 0) {
         console.log(`[winnow/daemon] Reconciled ${result.changed}/${result.checked} mailbox state changes for ${account}`);
       }
