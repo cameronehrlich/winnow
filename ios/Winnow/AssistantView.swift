@@ -244,7 +244,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                 ScrollView {
                     // Conversation threads are bounded. A lazy stack here can enter
                     // a SwiftUI placement loop when the inline email detail contains
-                    // the nested horizontal suggestions scroller and begins moving.
+                    // the wrapping suggestion cloud and begins moving.
                     VStack(spacing: presentation == .inlineEmail ? 16 : 14) {
                         leadingContent
 
@@ -267,6 +267,10 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                                 .id(message.id)
                                 .transition(messageTransition)
                             }
+                        }
+
+                        if presentation == .inlineEmail {
+                            suggestionCloud
                         }
 
                         if viewModel.isSending {
@@ -426,27 +430,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
 
     @ViewBuilder
     private var emptyState: some View {
-        if presentation == .inlineEmail {
-            VStack(alignment: .leading, spacing: 8) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(suggestions, id: \.self) { suggestion in
-                            Button(suggestion) {
-                                composerText = suggestion
-                                composerFocused = true
-                            }
-                            .font(.caption.weight(.semibold))
-                            .buttonStyle(.bordered)
-                            .tint(WinnowDesign.accent)
-                            .fixedSize(horizontal: true, vertical: false)
-                        }
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 4)
-            .padding(.bottom, 4)
-        } else {
+        if presentation != .inlineEmail {
             VStack(spacing: 18) {
                 VStack(spacing: 8) {
                     Image(systemName: "sparkles")
@@ -487,16 +471,38 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         }
     }
 
+    private var suggestionCloud: some View {
+        SuggestionCloudLayout(spacing: 7) {
+            ForEach(suggestions, id: \.self) { suggestion in
+                Button(suggestion) {
+                    composerText = suggestion
+                    composerFocused = true
+                }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .controlSize(.small)
+                .tint(WinnowDesign.accent)
+                .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 4)
+        .padding(.bottom, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Suggested messages")
+    }
+
     private var suggestions: [String] {
         if viewModel.scope == .email {
             return [
-                "What do I need to do?",
+                "What should I do?",
                 "Draft a reply",
-                "What’s the key takeaway?",
-                "Unsubscribe me",
-                "Always archive messages like this",
-                "Always keep messages like this",
-                "Why was this handled?",
+                "Key takeaway?",
+                "Unsubscribe",
+                "Always archive",
+                "Always keep",
+                "Why handled?",
             ]
         }
         return ["Find my most recent order", "Where can I find my EIN?", "Show receipts from this month"]
@@ -645,6 +651,61 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
     private func prepareDraftRevision(_ draft: AssistantDraft) {
         composerText = "Revise the \(draft.kind) draft. Change it so that: "
         composerFocused = true
+    }
+}
+
+private struct SuggestionCloudLayout: Layout {
+    let spacing: CGFloat
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        let fallbackWidth = subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+        let availableWidth = proposal.width ?? fallbackWidth
+        let result = arrangement(maxWidth: availableWidth, subviews: subviews)
+        return CGSize(width: proposal.width ?? result.size.width, height: result.size.height)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        let result = arrangement(maxWidth: bounds.width, subviews: subviews)
+        for (subview, origin) in zip(subviews, result.origins) {
+            subview.place(
+                at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y),
+                anchor: .topLeading,
+                proposal: .unspecified
+            )
+        }
+    }
+
+    private func arrangement(maxWidth: CGFloat, subviews: Subviews) -> (size: CGSize, origins: [CGPoint]) {
+        var origins: [CGPoint] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var contentWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+
+            origins.append(CGPoint(x: x, y: y))
+            contentWidth = max(contentWidth, x + size.width)
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+
+        return (CGSize(width: contentWidth, height: y + rowHeight), origins)
     }
 }
 
