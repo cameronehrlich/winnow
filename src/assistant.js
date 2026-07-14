@@ -142,6 +142,36 @@ function modelMessages(messages) {
   }));
 }
 
+function explicitlyRequestsMailboxSearch(text) {
+  const request = String(text || '').toLowerCase();
+  return /\b(?:search|find|locate|look up|show|list)\b.{0,60}\b(?:email|emails|mail|message|messages|invoice|invoices|receipt|receipts|order|orders)\b/.test(request)
+    || /\b(?:other|another|previous|earlier|older|all)\b.{0,40}\b(?:email|emails|mail|message|messages|invoice|invoices|receipt|receipts)\b/.test(request);
+}
+
+function availableToolsForRequest(conversation, text) {
+  if (conversation.scope !== 'email' || explicitlyRequestsMailboxSearch(text)) {
+    return ASSISTANT_TOOL_DEFINITIONS;
+  }
+  return ASSISTANT_TOOL_DEFINITIONS.filter(definition =>
+    !['mail.search', 'mail.get_thread'].includes(definition.name)
+  );
+}
+
+function assistantToolDefinition(name) {
+  const canonicalName = name === 'rules.create' ? 'rules.upsert' : name;
+  return ASSISTANT_TOOL_DEFINITIONS.find(definition => definition.name === canonicalName);
+}
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, stableValue(value[key])]));
+}
+
+function toolCallKey(call) {
+  return `${String(call?.name || '')}:${JSON.stringify(stableValue(call?.arguments || {}))}`;
+}
+
 async function contextualEmail(conversation, dependencies) {
   if (conversation.scope !== 'email') return null;
   const item = getEmailItem(conversation.emailItemId);
@@ -473,6 +503,8 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
   const conversationId = conversation.id;
   const toolResults = [];
   const evidence = [];
+  const evidenceKeys = new Set();
+  const completedToolCalls = new Set();
   const stopHeartbeat = startAssistantRunHeartbeat(run);
   try {
     requireAssistantRunLease(run);
@@ -480,38 +512,58 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
     const model = createAssistantModel();
     await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.context));
     const context = await contextualEmail(conversation, dependencies);
+    const requestTools = availableToolsForRequest(conversation, text);
+    const availableToolNames = new Set(requestTools.map(tool => tool.name));
+    if (availableToolNames.has('rules.upsert')) availableToolNames.add('rules.create');
+    const modelInput = finalAnswerRequired => ({
+      environment: {
+        currentTime: new Date().toISOString(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      },
+      conversation: {
+        scope: conversation.scope,
+        account: conversation.account,
+        contextualReference: context?.reference || null,
+        finalAnswerRequired,
+      },
+      chatMessages: modelMessages(listAssistantMessages(conversationId)),
+      contextualEmail: context,
+      toolResults,
+      availableTools: finalAnswerRequired ? [] : requestTools,
+    });
+    const appendEvidence = items => {
+      for (const item of items || []) {
+        const identity = [item.account, item.emailItemId, item.messageId, item.threadId]
+          .map(value => String(value || ''));
+        const key = identity.some(Boolean)
+          ? identity.join('\u0000')
+          : JSON.stringify(stableValue(item));
+        if (evidenceKeys.has(key)) continue;
+        evidenceKeys.add(key);
+        evidence.push(item);
+      }
+    };
+    const finishWithResponse = response => {
+      requireAssistantRunLease(run);
+      finishAssistantRunWithMessage({
+        runId: run.id,
+        leaseToken: run.leaseToken,
+        message: {
+          id: randomUUID(), conversationId, role: 'assistant',
+          text: response?.text || 'I could not find that detail in the available email context.',
+          evidence, draft: normalizeDraft(response?.draft),
+        },
+      });
+    };
     let response = null;
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
       await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.model));
-      response = await boundedModelResponse(model, {
-        environment: {
-          currentTime: new Date().toISOString(),
-          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        },
-        conversation: {
-          scope: conversation.scope,
-          account: conversation.account,
-          contextualReference: context?.reference || null,
-        },
-        chatMessages: modelMessages(listAssistantMessages(conversationId)),
-        contextualEmail: context,
-        toolResults,
-        availableTools: ASSISTANT_TOOL_DEFINITIONS,
-      });
+      response = await boundedModelResponse(model, modelInput(false));
       requireAssistantRunLease(run);
       await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.modelComplete));
       const calls = Array.isArray(response?.toolCalls) ? response.toolCalls.slice(0, 3) : [];
       if (!calls.length) {
-        requireAssistantRunLease(run);
-        finishAssistantRunWithMessage({
-          runId: run.id,
-          leaseToken: run.leaseToken,
-          message: {
-            id: randomUUID(), conversationId, role: 'assistant',
-            text: response?.text || 'I could not determine a safe answer.',
-            evidence, draft: normalizeDraft(response?.draft),
-          },
-        });
+        finishWithResponse(response);
         await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.finalizing));
         return getAssistantConversationEnvelope(conversationId);
       }
@@ -521,15 +573,31 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
       // makes compound requests such as "archive this and future messages"
       // deterministic even if the model returns the proposal call first.
       const orderedCalls = calls.map((call, index) => ({ call, index })).sort((left, right) => {
-        const risk = entry => ASSISTANT_TOOL_DEFINITIONS.find(definition => definition.name === entry.call.name)?.risk;
+        const risk = entry => assistantToolDefinition(entry.call.name)?.risk;
         const priority = entry => ['read', 'reversible'].includes(risk(entry)) ? 0 : 1;
         return priority(left) - priority(right) || left.index - right.index;
       }).map(entry => entry.call);
       for (const call of orderedCalls) {
         const callId = randomUUID();
+        const definition = assistantToolDefinition(call.name);
         try {
           requireAssistantRunLease(run);
           await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.tool));
+          if (!availableToolNames.has(call.name)) {
+            throw new AssistantToolError(
+              'tool_not_available_for_request',
+              'Answer from the selected email context; mailbox search was not requested',
+              400,
+            );
+          }
+          const callKey = toolCallKey(call);
+          if (['read', 'reversible'].includes(definition?.risk) && completedToolCalls.has(callKey)) {
+            throw new AssistantToolError(
+              'duplicate_tool_call',
+              'This read tool already ran with the same arguments; use its existing result',
+              400,
+            );
+          }
           const prepared = await prepareAssistantTool({
             name: call.name,
             rawArguments: call.arguments,
@@ -538,7 +606,7 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
             dependencies,
           });
           requireAssistantRunLease(run);
-          evidence.push(...(prepared.evidence || []));
+          appendEvidence(prepared.evidence);
           if (prepared.kind === 'proposal') {
             const identity = createProposalIdentity();
             const proposalInput = {
@@ -582,15 +650,26 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
             id: callId, runId: run.id, tool: call.name, risk: prepared.risk,
             arguments: call.arguments, result: safeToolAudit(prepared), status: 'completed',
           });
+          if (['read', 'reversible'].includes(definition?.risk)) completedToolCalls.add(callKey);
           toolResults.push({ tool: call.name, result: prepared.result, trust: 'untrusted_tool_data' });
           await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.toolComplete));
         } catch (err) {
           if (err instanceof AssistantError && err.code === 'assistant_run_lease_lost') throw err;
           recordAssistantToolCall({
             id: callId, runId: run.id, tool: call.name,
-            risk: ASSISTANT_TOOL_DEFINITIONS.find(definition => definition.name === call.name)?.risk || 'read',
+            risk: assistantToolDefinition(call.name)?.risk || 'read',
             arguments: rejectedToolAudit(call.arguments), result: { error: err.code || 'tool_failed' }, status: 'failed',
           });
+          if (err instanceof AssistantToolError
+              && ['duplicate_tool_call', 'tool_not_available_for_request'].includes(err.code)) {
+            toolResults.push({
+              tool: call.name,
+              result: { error: err.code, message: err.message },
+              trust: 'untrusted_tool_data',
+            });
+            await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.toolComplete));
+            continue;
+          }
           throw err;
         }
       }
@@ -600,17 +679,14 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
       }
     }
 
+    // A bounded tool loop should end with synthesis, not a user-facing limit
+    // error. Remove all tools for one final model turn so it must answer from
+    // the selected email and the evidence already gathered.
+    await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.model));
+    response = await boundedModelResponse(model, modelInput(true));
     requireAssistantRunLease(run);
-    finishAssistantRunWithMessage({
-      runId: run.id,
-      leaseToken: run.leaseToken,
-      status: 'failed',
-      errorCode: 'tool_limit_reached',
-      message: {
-        id: randomUUID(), conversationId, role: 'assistant', evidence,
-        text: 'I reached the safe tool limit before I could finish. Please narrow the request and try again.',
-      },
-    });
+    await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.modelComplete));
+    finishWithResponse(response);
     await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.finalizing));
     return getAssistantConversationEnvelope(conversationId);
   } catch (err) {

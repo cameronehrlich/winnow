@@ -9,6 +9,12 @@ describe('assistant model context', () => {
     assert.match(ASSISTANT_SYSTEM_PROMPT, /meaningfully different intent separate/i);
   });
 
+  it('requires email-scoped questions to use their selected message before searching', () => {
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /contextualEmail already contains the selected email/i);
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /Do not search the mailbox or fetch the same thread again/i);
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /finalAnswerRequired is true, make no tool calls/i);
+  });
+
   it('keeps oversized context valid, bounded, and preserves tools and newest chat', () => {
     const input = {
       conversation: { scope: 'email', account: 'me@example.com' },

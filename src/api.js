@@ -136,7 +136,7 @@ function assistantStreamError(err) {
   }
   return {
     error: 'assistant_failed',
-    message: 'The assistant request could not be completed safely',
+    message: 'Winnow could not complete this request. Please try again.',
     retryable: true,
   };
 }

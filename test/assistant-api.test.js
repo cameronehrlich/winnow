@@ -104,12 +104,13 @@ api:
   responses = [];
   calls = {
     search: 0, unsubscribe: 0, reply: 0, archive: 0, model: 0,
-    lastReply: null, lastChatMessages: null,
+    lastReply: null, lastChatMessages: null, requests: [],
   };
   setAssistantModelFactoryForTests(() => ({
     async respond(request) {
       calls.model += 1;
       calls.lastChatMessages = request.chatMessages;
+      calls.requests.push(request);
       const response = responses.shift();
       if (!response) throw new Error('missing_fake_model_response');
       if (response.delay) await new Promise(resolve => setTimeout(resolve, response.delay));
@@ -215,6 +216,130 @@ describe('assistant API', () => {
       JSON.stringify(events.filter(event => event.event !== 'complete')),
       /RAW USER REQUEST|SHOULD NOT COME FROM SEARCH|EIN|arguments|token|secret/i,
     );
+  });
+
+  it('answers contextual email questions without offering a mailbox search', async () => {
+    setAssistantDependenciesFactoryForTests(() => ({
+      async getThread() {
+        return { id: 't1', messages: [{
+          id: 'm1', messageId: 'm1', threadId: 't1',
+          subject: 'Your invoice', from: 'Billing <billing@example.com>',
+          body: 'The invoice was matched to a $50.46 charge.',
+        }] };
+      },
+    }));
+    responses.push({ text: 'The invoice is for $50.46.', toolCalls: [], draft: null });
+
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'How much is it for?', idempotencyKey: 'contextual-invoice-amount',
+    });
+    const envelope = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(envelope.messages.at(-1).text, 'The invoice is for $50.46.');
+    assert.match(calls.requests[0].contextualEmail.messages[0].body, /\$50\.46/);
+    assert.equal(calls.requests[0].availableTools.some(tool => tool.name === 'mail.search'), false);
+    assert.equal(calls.requests[0].availableTools.some(tool => tool.name === 'mail.get_thread'), false);
+  });
+
+  it('recovers when the model tries an unrequested mailbox search in email scope', async () => {
+    setAssistantDependenciesFactoryForTests(() => ({
+      async getThread() {
+        return { id: 't1', messages: [{
+          id: 'm1', messageId: 'm1', threadId: 't1',
+          subject: 'Your invoice', from: 'Billing <billing@example.com>',
+          body: 'The invoice was matched to a $50.46 charge.',
+        }] };
+      },
+      async searchMailbox() {
+        calls.search += 1;
+        return { messages: [] };
+      },
+    }));
+    responses.push(
+      { text: '', toolCalls: [{ name: 'mail.search', arguments: { query: 'invoice amount' } }] },
+      { text: 'The selected email says the charge was $50.46.', toolCalls: [], draft: null },
+    );
+
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'How much is it for?', idempotencyKey: 'ignore-unrequested-search',
+    });
+    const envelope = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(calls.search, 0);
+    assert.equal(calls.model, 2);
+    assert.equal(envelope.messages.at(-1).text, 'The selected email says the charge was $50.46.');
+    assert.equal(
+      calls.requests[1].toolResults[0].result.error,
+      'tool_not_available_for_request',
+    );
+  });
+
+  it('allows mailbox search from email scope when the user explicitly asks for other messages', async () => {
+    responses.push(
+      { text: '', toolCalls: [{ name: 'mail.search', arguments: { query: 'Apple invoices' } }] },
+      { text: 'I found the other invoice email.', toolCalls: [], draft: null },
+    );
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Find my other invoice emails', idempotencyKey: 'explicit-contextual-search',
+    });
+    const envelope = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(calls.search, 1);
+    assert.equal(calls.requests[0].availableTools.some(tool => tool.name === 'mail.search'), true);
+    assert.equal(envelope.messages.at(-1).text, 'I found the other invoice email.');
+  });
+
+  it('runs an identical read only once and asks the model to use the existing result', async () => {
+    responses.push(
+      { text: '', toolCalls: [{ name: 'mail.search', arguments: { query: 'EIN', limit: 5 } }] },
+      { text: '', toolCalls: [{ name: 'mail.search', arguments: { limit: 5, query: 'EIN' } }] },
+      { text: 'The existing search result contains the EIN confirmation.', toolCalls: [], draft: null },
+    );
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Find my EIN email', idempotencyKey: 'deduplicate-read-tools',
+    });
+    const envelope = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(calls.search, 1);
+    assert.equal(calls.model, 3);
+    assert.equal(envelope.messages.at(-1).evidence.length, 1);
+    assert.equal(calls.requests[2].toolResults.at(-1).result.error, 'duplicate_tool_call');
+  });
+
+  it('forces a final synthesis instead of returning a tool-limit failure', async () => {
+    responses.push(
+      { text: '', toolCalls: [{ name: 'mail.search', arguments: { query: 'invoice' } }] },
+      { text: '', toolCalls: [{ name: 'mail.search', arguments: { query: 'Apple invoice' } }] },
+      { text: '', toolCalls: [{ name: 'mail.search', arguments: { query: 'billing receipt' } }] },
+      { text: 'I found the best supported result from the searches already completed.', toolCalls: [] },
+    );
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Find the relevant invoice', idempotencyKey: 'final-synthesis-after-tools',
+    });
+    const envelope = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(calls.search, 3);
+    assert.equal(calls.model, 4);
+    assert.equal(envelope.messages.at(-1).text, 'I found the best supported result from the searches already completed.');
+    assert.equal(envelope.messages.at(-1).evidence.length, 1);
+    assert.equal(calls.requests.at(-1).conversation.finalAnswerRequired, true);
+    assert.deepEqual(calls.requests.at(-1).availableTools, []);
+    const inspector = new DatabaseSync(databasePath, { readOnly: true });
+    const run = inspector.prepare('SELECT status, error_code FROM assistant_runs WHERE idempotency_key = ?')
+      .get('final-synthesis-after-tools');
+    inspector.close();
+    assert.equal(run.status, 'completed');
+    assert.equal(run.error_code, null);
   });
 
   it('emits accepted only after the run and user message commit, and ignores callback failures', async () => {
