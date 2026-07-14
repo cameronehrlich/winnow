@@ -124,13 +124,23 @@ struct AccountFilterMenu: View {
             Picker("Account", selection: $selection) {
                 Text("All Accounts").tag("")
                 ForEach(accounts) { account in
-                    Text(account.email).tag(account.email)
+                    Text(verbatim: nonBreakingEmail(account.email))
+                        .font(.subheadline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                        .allowsTightening(true)
+                        .accessibilityLabel(account.email)
+                        .tag(account.email)
                 }
             }
         } label: {
             Image(systemName: selection.isEmpty ? "person.2" : "person.crop.circle")
         }
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    private func nonBreakingEmail(_ email: String) -> String {
+        email.replacingOccurrences(of: ".", with: "\u{2060}.\u{2060}")
     }
 }
 
