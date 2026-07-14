@@ -222,6 +222,42 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertTrue(envelope.messages.first?.proposal?.isPending == true)
     }
 
+    func testAssistantMarkdownFormatsModelOutputAndPreservesLayout() {
+        let message = AssistantMessage(
+            id: "assistant-markdown",
+            role: "assistant",
+            text: "The **review is on hold**.\n\n1. Provide the `order form`.\n2. Confirm retention."
+        )
+
+        XCTAssertEqual(
+            String(message.formattedText.characters),
+            "The review is on hold.\n\n1. Provide the order form.\n2. Confirm retention."
+        )
+        XCTAssertTrue(message.formattedText.runs.contains {
+            $0.inlinePresentationIntent?.contains(.stronglyEmphasized) == true
+        })
+        XCTAssertTrue(message.formattedText.runs.contains {
+            $0.inlinePresentationIntent?.contains(.code) == true
+        })
+    }
+
+    func testAssistantMarkdownDoesNotFormatUserTextOrActivateLinks() {
+        let user = AssistantMessage(
+            id: "user-markdown",
+            role: "user",
+            text: "Keep **these markers** literal"
+        )
+        XCTAssertEqual(String(user.formattedText.characters), "Keep **these markers** literal")
+
+        let assistant = AssistantMessage(
+            id: "assistant-link",
+            role: "assistant",
+            text: "Read [the source](https://example.com)"
+        )
+        XCTAssertEqual(String(assistant.formattedText.characters), "Read the source")
+        XCTAssertFalse(assistant.formattedText.runs.contains { $0.link != nil })
+    }
+
     func testAssistantModelsTolerateOptionalFieldsAndLegacyToolName() throws {
         let json = #"""
         {

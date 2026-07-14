@@ -116,6 +116,33 @@ struct AssistantMessage: Decodable, Identifiable {
     }
 }
 
+enum AssistantMarkdown {
+    static func render(_ source: String) -> AttributedString {
+        guard var rendered = try? AttributedString(
+            markdown: source,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) else {
+            return AttributedString(source)
+        }
+
+        // Assistant text can be influenced by untrusted email content. Preserve
+        // Markdown styling without making model-generated URLs tappable.
+        let linkRanges = rendered.runs.compactMap { run in
+            run.link == nil ? nil : run.range
+        }
+        for range in linkRanges {
+            rendered[range].link = nil
+        }
+        return rendered
+    }
+}
+
+extension AssistantMessage {
+    var formattedText: AttributedString {
+        role == "user" ? AttributedString(text) : AssistantMarkdown.render(text)
+    }
+}
+
 struct AssistantStreamAccepted: Decodable, Equatable {
     let runId: String?
     let userMessageId: String?

@@ -571,7 +571,7 @@ private struct AssistantMessageView: View {
     var body: some View {
         VStack(alignment: isUser ? .trailing : .leading, spacing: 10) {
             if !message.text.isEmpty {
-                Text(message.text)
+                Text(message.formattedText)
                     .font(.body)
                     .foregroundStyle(isUser ? Color.white : Color.primary)
                     .padding(.horizontal, 14)
