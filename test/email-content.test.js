@@ -132,4 +132,35 @@ describe('on-demand email content', () => {
     await assert.rejects(fetchEmailAttachment(item, 'not-in-thread', { adapter }), /attachment_not_found/);
     assert.equal(calls.length, 1);
   });
+
+  it('resolves a rotating provider attachment locator through unique cached metadata', async () => {
+    const adapter = {
+      async getThread() {
+        return { messages: [{
+          id: 'earlier',
+          attachments: [{
+            messageId: 'earlier', attachmentId: 'fresh-provider-id', filename: 'invoice.pdf',
+            mimeType: 'application/pdf', sizeBytes: 120,
+          }],
+        }] };
+      },
+      async getAttachment(account, messageId, attachmentId) {
+        assert.equal(account, 'me@example.com');
+        assert.equal(messageId, 'earlier');
+        assert.equal(attachmentId, 'fresh-provider-id');
+        return Buffer.from('%PDF-test');
+      },
+    };
+    const item = {
+      id: 'email-1', account: 'me@example.com', threadId: 't1', messageId: 'later',
+      attachments: [{
+        messageId: 'earlier', attachmentId: 'cached-provider-id', filename: 'invoice.pdf',
+        mimeType: 'application/pdf', sizeBytes: 120,
+      }],
+    };
+
+    const result = await fetchEmailAttachment(item, 'cached-provider-id', { adapter });
+    assert.equal(result.attachment.attachmentId, 'fresh-provider-id');
+    assert.equal(result.data.toString(), '%PDF-test');
+  });
 });

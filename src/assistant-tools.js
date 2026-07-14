@@ -9,6 +9,7 @@ import {
   assertReadableAttachment,
   collectThreadAttachments,
   MAX_ATTACHMENT_BYTES,
+  resolveFreshAttachment,
 } from './email-attachments.js';
 import {
   getEmailItem,
@@ -502,12 +503,14 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
       throw new AssistantToolError('attachment_not_found', 'The selected email has no readable attachment thread', 404);
     }
     const thread = await dependencies.getThread(item.account, item.threadId);
-    const attachment = collectThreadAttachments(thread).find(candidate => (
-      candidate.messageId === args.messageId && candidate.attachmentId === args.attachmentId
-    ));
+    const freshAttachments = collectThreadAttachments(thread);
     let readable;
     try {
-      readable = assertReadableAttachment(attachment);
+      readable = assertReadableAttachment(resolveFreshAttachment(
+        { messageId: args.messageId, attachmentId: args.attachmentId },
+        item.attachments,
+        freshAttachments,
+      ));
     } catch (error) {
       throw new AssistantToolError(
         error.code || 'attachment_not_found',

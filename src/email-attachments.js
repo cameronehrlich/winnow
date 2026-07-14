@@ -102,3 +102,48 @@ export function assertReadableAttachment(attachment) {
   }
   return normalized;
 }
+
+export function resolveFreshAttachment(
+  { attachmentId, messageId = '' },
+  cachedAttachments,
+  freshAttachments,
+) {
+  const cached = normalizeAttachmentList(cachedAttachments);
+  const fresh = normalizeAttachmentList(freshAttachments);
+  const exact = fresh.filter(attachment => (
+    attachment.attachmentId === attachmentId
+    && (!messageId || attachment.messageId === messageId)
+  ));
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) {
+    const error = new Error('attachment_id_ambiguous');
+    error.code = 'attachment_id_ambiguous';
+    throw error;
+  }
+
+  // gog's Gmail attachment locator is opaque and can rotate between reads.
+  // Resolve a previously exposed locator through its cached metadata, then use
+  // the freshly verified locator only when the stable metadata is unique.
+  const prior = cached.filter(attachment => (
+    attachment.attachmentId === attachmentId
+    && (!messageId || attachment.messageId === messageId)
+  ));
+  if (prior.length !== 1) {
+    const error = new Error(prior.length ? 'attachment_id_ambiguous' : 'attachment_not_found');
+    error.code = prior.length ? 'attachment_id_ambiguous' : 'attachment_not_found';
+    throw error;
+  }
+  const expected = prior[0];
+  const matches = fresh.filter(attachment => (
+    attachment.messageId === expected.messageId
+    && attachment.filename === expected.filename
+    && attachment.mimeType === expected.mimeType
+    && attachment.sizeBytes === expected.sizeBytes
+  ));
+  if (matches.length !== 1) {
+    const error = new Error(matches.length ? 'attachment_id_ambiguous' : 'attachment_not_found');
+    error.code = matches.length ? 'attachment_id_ambiguous' : 'attachment_not_found';
+    throw error;
+  }
+  return matches[0];
+}

@@ -32,6 +32,7 @@ import {
   listAssistantMessages,
   recordAssistantToolCall,
   touchAssistantRunLease,
+  updateEmailItemAttachments,
 } from './store.js';
 
 const PROPOSAL_TTL_MS = 15 * 60 * 1000;
@@ -185,6 +186,17 @@ async function contextualEmail(conversation, dependencies) {
   } catch {
     // Metadata still gives the assistant a useful, bounded fallback when Gmail is temporarily unavailable.
   }
+  const sourceAttachments = thread
+    ? (thread.messages || []).flatMap(message => message?.attachments || [])
+    : item.attachments;
+  const attachments = (sourceAttachments || []).slice(0, 50).map(attachment => ({
+    messageId: String(attachment?.messageId || ''),
+    attachmentId: String(attachment?.attachmentId || ''),
+    filename: String(attachment?.filename || '').slice(0, 500),
+    mimeType: String(attachment?.mimeType || '').slice(0, 200),
+    sizeBytes: Number(attachment?.sizeBytes) || 0,
+  })).filter(attachment => attachment.messageId && attachment.attachmentId);
+  if (thread) updateEmailItemAttachments(item.id, attachments);
   return {
     trust: 'untrusted_email_data',
     reference: { account: item.account, messageId: item.messageId, threadId: item.threadId },
@@ -195,13 +207,7 @@ async function contextualEmail(conversation, dependencies) {
       snippet: item.snippet.slice(0, 500),
       summary: item.summary.slice(0, 1000),
     },
-    attachments: (thread?.messages || []).flatMap(message => message?.attachments || []).slice(0, 50).map(attachment => ({
-      messageId: String(attachment?.messageId || ''),
-      attachmentId: String(attachment?.attachmentId || ''),
-      filename: String(attachment?.filename || '').slice(0, 500),
-      mimeType: String(attachment?.mimeType || '').slice(0, 200),
-      sizeBytes: Number(attachment?.sizeBytes) || 0,
-    })).filter(attachment => attachment.messageId && attachment.attachmentId),
+    attachments,
     messages: (thread?.messages || []).slice(-20).map(message => ({
       messageId: String(message?.messageId || message?.id || ''),
       threadId: String(message?.threadId || item.threadId || ''),

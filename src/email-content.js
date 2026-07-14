@@ -3,6 +3,7 @@ import {
   assertReadableAttachment,
   collectThreadAttachments,
   MAX_ATTACHMENT_BYTES,
+  resolveFreshAttachment,
 } from './email-attachments.js';
 import { emailBodyToText } from './message-content.js';
 
@@ -87,13 +88,11 @@ export async function fetchEmailAttachments(item, { adapter = new GogAdapter() }
 
 export async function fetchEmailAttachment(item, attachmentId, { adapter = new GogAdapter() } = {}) {
   const attachments = await fetchEmailAttachments(item, { adapter });
-  const matches = attachments.filter(attachment => attachment.attachmentId === attachmentId);
-  if (matches.length !== 1) {
-    const error = new Error(matches.length ? 'attachment_id_ambiguous' : 'attachment_not_found');
-    error.code = matches.length ? 'attachment_id_ambiguous' : 'attachment_not_found';
-    throw error;
-  }
-  const attachment = assertReadableAttachment(matches[0]);
+  const attachment = assertReadableAttachment(resolveFreshAttachment(
+    { attachmentId },
+    item.attachments,
+    attachments,
+  ));
   const data = await adapter.getAttachment(
     item.account,
     attachment.messageId,

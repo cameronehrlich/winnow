@@ -246,15 +246,18 @@ describe('assistant API', () => {
   it('reads a PDF from an earlier message in the selected thread without persisting its bytes', async () => {
     let downloads = 0;
     const attachmentId = 'a'.repeat(600);
+    const freshAttachmentId = 'b'.repeat(600);
+    let threadReads = 0;
     setAssistantDependenciesFactoryForTests(() => ({
       async getThread(account, threadId) {
+        threadReads += 1;
         assert.equal(account, 'me@example.com');
         assert.equal(threadId, 't1');
         return { id: 't1', messages: [{
           id: 'earlier', messageId: 'earlier', threadId: 't1',
           subject: 'Your invoice', body: 'The invoice is attached.',
           attachments: [{
-            messageId: 'earlier', attachmentId, filename: 'invoice.pdf',
+            messageId: 'earlier', attachmentId: threadReads === 1 ? attachmentId : freshAttachmentId, filename: 'invoice.pdf',
             mimeType: 'application/pdf', sizeBytes: 143_501,
           }],
         }] };
@@ -263,7 +266,7 @@ describe('assistant API', () => {
         downloads += 1;
         assert.equal(account, 'me@example.com');
         assert.equal(messageId, 'earlier');
-        assert.equal(requestedAttachmentId, attachmentId);
+        assert.equal(requestedAttachmentId, freshAttachmentId);
         assert.equal(maxBytes, 143_501);
         return Buffer.from('%PDF-private-invoice');
       },
