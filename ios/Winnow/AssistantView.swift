@@ -212,7 +212,10 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: presentation == .inlineEmail ? 16 : 14) {
+                    // Conversation threads are bounded. A lazy stack here can enter
+                    // a SwiftUI placement loop when the inline email detail contains
+                    // the nested horizontal suggestions scroller and begins moving.
+                    VStack(spacing: presentation == .inlineEmail ? 16 : 14) {
                         leadingContent
 
                         scopeLabel

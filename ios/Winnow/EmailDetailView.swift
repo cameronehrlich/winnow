@@ -32,6 +32,8 @@ struct EmailDetailView: View {
                     VStack(spacing: 16) {
                         senderHeader(item)
 
+                        actionsCard(item)
+
                         if !item.summary.isEmpty {
                             InsightBlock(title: "Summary", symbol: "text.alignleft", text: item.summary, color: WinnowDesign.indigo)
                         }
@@ -50,8 +52,6 @@ struct EmailDetailView: View {
                         if hasDetails(item) {
                             detailsCard(item)
                         }
-
-                        actionsCard(item)
 
                         if !item.snippet.isEmpty, item.snippet != item.summary {
                             InsightBlock(title: "Message preview", symbol: "quote.opening", text: item.snippet, color: .secondary)
