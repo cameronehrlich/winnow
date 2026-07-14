@@ -122,8 +122,7 @@ struct RootView: View {
                 InboxView(
                     mailbox: .inbox,
                     openSettings: openSettings,
-                    openStats: openStats,
-                    switchMailbox: { selectedTab = .archived }
+                    openStats: openStats
                 )
             }
             .badge(model.inboxBadgeCount)
@@ -132,8 +131,7 @@ struct RootView: View {
                 InboxView(
                     mailbox: .archived,
                     openSettings: openSettings,
-                    openStats: openStats,
-                    switchMailbox: { selectedTab = .inbox }
+                    openStats: openStats
                 )
             }
 
@@ -148,8 +146,7 @@ struct RootView: View {
             InboxView(
                 mailbox: .inbox,
                 openSettings: openSettings,
-                openStats: openStats,
-                switchMailbox: { selectedTab = .archived }
+                openStats: openStats
             )
                 .tabItem { Label("Inbox", systemImage: "tray.full") }
                 .badge(model.inboxBadgeCount)
@@ -158,8 +155,7 @@ struct RootView: View {
             InboxView(
                 mailbox: .archived,
                 openSettings: openSettings,
-                openStats: openStats,
-                switchMailbox: { selectedTab = .inbox }
+                openStats: openStats
             )
                 .tabItem { Label("Archived", systemImage: "archivebox") }
                 .tag(RootTab.archived)

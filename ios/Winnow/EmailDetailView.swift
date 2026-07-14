@@ -25,6 +25,7 @@ struct EmailDetailView: View {
                 EmailAssistantThreadView(
                     configuration: model.configuration,
                     account: item.account,
+                    accountStatus: model.account(email: item.account),
                     emailItemID: item.id,
                     contextTitle: item.displaySubject ?? "No subject",
                     composerRequest: $assistantComposerRequest,
@@ -32,8 +33,6 @@ struct EmailDetailView: View {
                 ) {
                     VStack(spacing: 16) {
                         senderHeader(item)
-
-                        actionsCard(item)
 
                         if !item.summary.isEmpty {
                             InsightBlock(
@@ -46,6 +45,8 @@ struct EmailDetailView: View {
                                 action: item.canLoadFullContent ? { showingFullEmail = true } : nil
                             )
                         }
+
+                        actionsCard(item)
 
                         if item.isConversation {
                             ConversationPreviewSection(
@@ -229,55 +230,58 @@ struct EmailDetailView: View {
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.secondary)
 
-            AdaptiveActionPair {
-                Button {
+            HStack(alignment: .top, spacing: 8) {
+                CompactDetailActionButton(
+                    title: item.isArchived ? "Inbox" : "Archive",
+                    symbol: item.isArchived ? "tray.and.arrow.down" : "archivebox",
+                    color: item.isArchived ? WinnowDesign.mint : WinnowDesign.amber
+                ) {
                     performPrimaryMailboxAction(on: item)
-                } label: {
-                    DetailActionLabel(
-                        title: item.isArchived ? "Move to Inbox" : "Archive",
-                        symbol: item.isArchived ? "tray.and.arrow.down" : "archivebox"
-                    )
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(WinnowDesign.accent)
-            } trailing: {
-                Button {
+                .accessibilityLabel(item.isArchived ? "Move to Inbox" : "Archive")
+
+                CompactDetailActionButton(
+                    title: item.isUnread ? "Mark Read" : "Unread",
+                    symbol: item.isUnread ? "envelope.open" : "envelope.badge",
+                    color: WinnowDesign.accent
+                ) {
                     Task { _ = await model.perform(item.isUnread ? .markRead : .markUnread, on: item) }
-                } label: {
-                    DetailActionLabel(
-                        title: item.isUnread ? "Mark Read" : "Mark Unread",
-                        symbol: item.isUnread ? "envelope.open" : "envelope.badge"
-                    )
                 }
-                .buttonStyle(.bordered)
-                .tint(WinnowDesign.accent)
-            }
+                .accessibilityLabel(item.isUnread ? "Mark as read" : "Mark as unread")
 
-            if item.canUnsubscribe {
-                unsubscribeButton
-            }
-
-            if item.canLoadFullContent, item.summary.isEmpty {
-                Button { showingFullEmail = true } label: {
-                    DetailActionLabel(title: "View Full Email", symbol: "doc.text.magnifyingglass")
+                if item.canUnsubscribe {
+                    CompactDetailActionButton(
+                        title: "Unsubscribe",
+                        symbol: "person.crop.circle.badge.minus",
+                        color: WinnowDesign.rose
+                    ) {
+                        confirmUnsubscribe = true
+                    }
                 }
-                .buttonStyle(.bordered)
-                .tint(WinnowDesign.accent)
-                .accessibilityHint("Loads the complete message securely from Gmail.")
-            }
 
-            if item.handlingDecision == nil {
-                Button {
-                    showingCreateRule = true
-                } label: {
-                    DetailActionLabel(title: "Create Rule from This Email", symbol: "checklist")
+                if item.canLoadFullContent, item.summary.isEmpty {
+                    CompactDetailActionButton(
+                        title: "Full Email",
+                        symbol: "doc.text.magnifyingglass",
+                        color: WinnowDesign.accent
+                    ) {
+                        showingFullEmail = true
+                    }
+                    .accessibilityHint("Loads the complete message securely from Gmail.")
                 }
-                .buttonStyle(.bordered)
-                .tint(WinnowDesign.accent)
+
+                if item.handlingDecision == nil {
+                    CompactDetailActionButton(
+                        title: "New Rule",
+                        symbol: "checklist",
+                        color: WinnowDesign.mint
+                    ) {
+                        showingCreateRule = true
+                    }
+                }
             }
         }
-        .font(.subheadline.weight(.semibold))
-        .winnowCard(padding: 14)
+        .winnowCard(padding: 12)
         .disabled(model.performingEmailIDs.contains(item.id))
     }
 
@@ -287,14 +291,6 @@ struct EmailDetailView: View {
             dismiss()
         }
         Task { _ = await model.perform(action, on: item) }
-    }
-
-    private var unsubscribeButton: some View {
-        Button(role: .destructive) { confirmUnsubscribe = true } label: {
-            DetailActionLabel(title: "Unsubscribe", symbol: "person.crop.circle.badge.minus")
-        }
-        .buttonStyle(.bordered)
-        .tint(WinnowDesign.rose)
     }
 
     private func adjustFutureHandling(_ item: EmailItem, decision: EmailHandlingDecision) {
@@ -384,76 +380,105 @@ private struct HandlingDecisionCard: View {
     let undo: () -> Void
     let adjust: () -> Void
     let createRule: () -> Void
+    @State private var isExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                Label(
-                    headline,
-                    systemImage: decision.effect == .archive ? "archivebox.fill" : "tray.fill"
-                )
-                    .font(.headline)
-                    .foregroundStyle(decision.effect == .archive ? WinnowDesign.accent : WinnowDesign.mint)
-                Spacer()
-                if let confidence = decision.confidence {
-                    CapsuleLabel("\(confidence)%", color: WinnowDesign.accent)
-                }
-            }
-
-            if !decision.explanation.isEmpty {
-                Text(decision.explanation)
-                    .font(.subheadline)
-            }
-
-            if let rule = decision.appliedRule {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("RULE BASIS")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                    Text(rule.displayTitle)
-                        .font(.caption.weight(.semibold))
-                    Text(rule.attributionDescription)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else if let basis = decision.basis {
-                Text(basis.title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if canUndo {
-                AdaptiveActionPair {
-                    Button(action: undo) {
-                        DetailActionLabel(title: "Undo This Email", symbol: "arrow.uturn.backward")
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: decision.effect == .archive ? "archivebox.fill" : "tray.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(effectColor)
+                        .frame(width: 34, height: 34)
+                        .background(effectColor.opacity(0.14), in: Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(headline)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text("Why Winnow handled this")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(WinnowDesign.accent)
-                } trailing: {
-                    Button(action: adjust) {
-                        DetailActionLabel(title: "Adjust Future", symbol: "slider.horizontal.3")
+                    Spacer(minLength: 6)
+                    if let confidence = decision.confidence {
+                        Text("\(confidence)%")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(effectColor)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(WinnowDesign.accent)
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
                 }
-            } else {
-                Button(action: adjust) {
-                    Label("Adjust Future Handling", systemImage: "slider.horizontal.3")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(WinnowDesign.accent)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(headline). Why Winnow handled this")
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
 
-            Button(action: createRule) {
-                Label("Create a New Rule from This Email", systemImage: "plus.circle")
-                    .frame(maxWidth: .infinity)
+            if isExpanded {
+                Divider()
+                    .padding(.vertical, 12)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    if !decision.explanation.isEmpty {
+                        Text(decision.explanation)
+                            .font(.subheadline)
+                    }
+
+                    if let rule = decision.appliedRule {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("RULE BASIS")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.secondary)
+                            Text(rule.displayTitle)
+                                .font(.caption.weight(.semibold))
+                            Text(rule.attributionDescription)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if let basis = decision.basis {
+                        Text(basis.title)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack(alignment: .top, spacing: 8) {
+                        if canUndo {
+                            CompactDetailActionButton(
+                                title: "Undo Email",
+                                symbol: "arrow.uturn.backward",
+                                color: WinnowDesign.amber,
+                                action: undo
+                            )
+                        }
+
+                        CompactDetailActionButton(
+                            title: "Adjust Future",
+                            symbol: "slider.horizontal.3",
+                            color: WinnowDesign.accent,
+                            action: adjust
+                        )
+
+                        CompactDetailActionButton(
+                            title: "New Rule",
+                            symbol: "plus.circle",
+                            color: WinnowDesign.mint,
+                            action: createRule
+                        )
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            .buttonStyle(.bordered)
-            .tint(WinnowDesign.accent)
         }
-        .winnowCard(padding: 14)
+        .winnowCard(padding: 12)
         .disabled(isBusy)
+    }
+
+    private var effectColor: Color {
+        decision.effect == .archive ? WinnowDesign.accent : WinnowDesign.mint
     }
 
     private var headline: String {
@@ -1242,42 +1267,31 @@ private struct DetailDivider: View {
     }
 }
 
-private struct DetailActionLabel: View {
+private struct CompactDetailActionButton: View {
     let title: String
     let symbol: String
+    let color: Color
+    let action: () -> Void
 
     var body: some View {
-        Label(title, systemImage: symbol)
-            .lineLimit(1)
-            .minimumScaleFactor(0.82)
-            .frame(maxWidth: .infinity, minHeight: 34)
-    }
-}
-
-private struct AdaptiveActionPair<Leading: View, Trailing: View>: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    private let leading: Leading
-    private let trailing: Trailing
-
-    init(
-        @ViewBuilder leading: () -> Leading,
-        @ViewBuilder trailing: () -> Trailing
-    ) {
-        self.leading = leading()
-        self.trailing = trailing()
-    }
-
-    var body: some View {
-        if dynamicTypeSize.isAccessibilitySize {
-            VStack(spacing: 10) {
-                leading
-                trailing
+        Button(action: action) {
+            VStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(color)
+                    .frame(width: 36, height: 36)
+                    .background(color.opacity(0.14), in: Circle())
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .minimumScaleFactor(0.8)
             }
-        } else {
-            HStack(spacing: 10) {
-                leading
-                trailing
-            }
+            .frame(maxWidth: .infinity, minHeight: 58, alignment: .top)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 }

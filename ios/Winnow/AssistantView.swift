@@ -104,6 +104,7 @@ struct AssistantConversationView: View {
 struct EmailAssistantThreadView<DetailContent: View>: View {
     private let configuration: ServerConfiguration
     private let account: String
+    private let accountStatus: AccountStatus?
     private let emailItemID: String
     private let contextTitle: String?
     private let onMailboxChanged: () async -> Void
@@ -113,6 +114,7 @@ struct EmailAssistantThreadView<DetailContent: View>: View {
     init(
         configuration: ServerConfiguration,
         account: String,
+        accountStatus: AccountStatus?,
         emailItemID: String,
         contextTitle: String?,
         composerRequest: Binding<AssistantComposerRequest?> = .constant(nil),
@@ -121,6 +123,7 @@ struct EmailAssistantThreadView<DetailContent: View>: View {
     ) {
         self.configuration = configuration
         self.account = account
+        self.accountStatus = accountStatus
         self.emailItemID = emailItemID
         self.contextTitle = contextTitle
         _composerRequest = composerRequest
@@ -136,6 +139,7 @@ struct EmailAssistantThreadView<DetailContent: View>: View {
             emailItemID: emailItemID,
             contextTitle: contextTitle,
             presentation: .inlineEmail,
+            accountStatus: accountStatus,
             composerRequest: $composerRequest,
             onMailboxChanged: onMailboxChanged
         ) {
@@ -156,6 +160,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
     @StateObject private var viewModel: AssistantViewModel
     private let contextTitle: String?
     private let presentation: AssistantPresentation
+    private let accountStatus: AccountStatus?
     @Binding private var composerRequest: AssistantComposerRequest?
     private let onMailboxChanged: () async -> Void
     private let leadingContent: LeadingContent
@@ -167,6 +172,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
         emailItemID: String?,
         contextTitle: String?,
         presentation: AssistantPresentation,
+        accountStatus: AccountStatus? = nil,
         composerRequest: Binding<AssistantComposerRequest?> = .constant(nil),
         onMailboxChanged: @escaping () async -> Void,
         @ViewBuilder leadingContent: () -> LeadingContent
@@ -179,6 +185,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
         ))
         self.contextTitle = contextTitle
         self.presentation = presentation
+        self.accountStatus = accountStatus
         _composerRequest = composerRequest
         self.onMailboxChanged = onMailboxChanged
         self.leadingContent = leadingContent()
@@ -189,6 +196,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
             viewModel: viewModel,
             contextTitle: contextTitle,
             presentation: presentation,
+            accountStatus: accountStatus,
             composerRequest: $composerRequest,
             onMailboxChanged: onMailboxChanged
         ) {
@@ -207,6 +215,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
 
     let contextTitle: String?
     let presentation: AssistantPresentation
+    let accountStatus: AccountStatus?
     @Binding var composerRequest: AssistantComposerRequest?
     let onMailboxChanged: () async -> Void
     let leadingContent: LeadingContent
@@ -215,6 +224,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         viewModel: AssistantViewModel,
         contextTitle: String?,
         presentation: AssistantPresentation,
+        accountStatus: AccountStatus? = nil,
         composerRequest: Binding<AssistantComposerRequest?> = .constant(nil),
         onMailboxChanged: @escaping () async -> Void,
         @ViewBuilder leadingContent: () -> LeadingContent
@@ -222,6 +232,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         self.viewModel = viewModel
         self.contextTitle = contextTitle
         self.presentation = presentation
+        self.accountStatus = accountStatus
         _composerRequest = composerRequest
         self.onMailboxChanged = onMailboxChanged
         self.leadingContent = leadingContent()
@@ -325,22 +336,24 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
     }
 
     private var scopeLabel: some View {
-        VStack(alignment: .leading, spacing: presentation == .inlineEmail ? 5 : 2) {
+        Group {
             if presentation == .inlineEmail {
-                Label("Conversation", systemImage: "sparkles")
-                    .font(.headline)
-                    .foregroundStyle(WinnowDesign.accent)
-                Text("This email · \(scopeDescription)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    AccountAvatarBadge(account: accountStatus, size: 22)
+                    Label("Conversation", systemImage: "sparkles")
+                        .font(.headline)
+                        .foregroundStyle(WinnowDesign.accent)
+                    Spacer()
+                }
             } else {
-                Text(viewModel.scope == .email ? "Asking about this email · \(scopeDescription)" : "Searching \(scopeDescription)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if let contextTitle, !contextTitle.isEmpty {
-                    Text(contextTitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(viewModel.scope == .email ? "Asking about this email · \(scopeDescription)" : "Searching \(scopeDescription)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if let contextTitle, !contextTitle.isEmpty {
+                        Text(contextTitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
                 }
             }
         }
@@ -411,11 +424,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
     @ViewBuilder
     private var emptyState: some View {
         if presentation == .inlineEmail {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Ask a question or tell Winnow what to do with this message.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
+            VStack(alignment: .leading, spacing: 8) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(suggestions, id: \.self) { suggestion in
@@ -477,7 +486,15 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
 
     private var suggestions: [String] {
         if viewModel.scope == .email {
-            return ["Why was this handled?", "Always archive messages like this", "Always keep messages like this"]
+            return [
+                "What do I need to do?",
+                "Draft a reply",
+                "What’s the key takeaway?",
+                "Unsubscribe me",
+                "Always archive messages like this",
+                "Always keep messages like this",
+                "Why was this handled?",
+            ]
         }
         return ["Find my most recent order", "Where can I find my EIN?", "Show receipts from this month"]
     }
