@@ -194,9 +194,28 @@ The bearer-authenticated endpoints are:
 POST /v1/assistant/conversations
 GET  /v1/assistant/conversations/:id
 POST /v1/assistant/conversations/:id/messages
+POST /v1/assistant/conversations/:id/messages/stream
 POST /v1/assistant/proposals/:id/confirm
 POST /v1/assistant/proposals/:id/cancel
 ```
+
+The `/messages/stream` endpoint accepts the same JSON body as `/messages`:
+
+```json
+{
+  "text": "Where is my most recent order?",
+  "idempotencyKey": "client-generated-stable-key"
+}
+```
+
+It returns a `text/event-stream` response with these typed events, in order:
+
+- `accepted` — `{ "runId": "...", "userMessageId": "..." }` after the run and user message are durably stored.
+- `progress` — `{ "stage": "...", "label": "..." }` using only server-owned lifecycle stages and labels. Progress never includes model tokens, chain-of-thought, raw email, tool arguments, or secrets.
+- `complete` — the same assistant conversation envelope returned by the synchronous `/messages` endpoint.
+- `error` — `{ "error": "...", "message": "...", "retryable": true }` only when the stream cannot safely return a completed run. Ordinary model and tool failures are persisted and returned through `complete`.
+
+The server emits SSE comment heartbeats while the request is active. Losing the connection does not cancel the durable run: retry with the same `idempotencyKey` to wait for or replay it. A key is bound to the normalized message text and returns `idempotency_key_reused` if reused for different text. The synchronous endpoint remains supported and shares the same idempotent execution engine.
 
 ### Ephemeral Emails
 

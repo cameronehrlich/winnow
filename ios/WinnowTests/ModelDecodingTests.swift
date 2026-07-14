@@ -192,7 +192,7 @@ final class ModelDecodingTests: XCTestCase {
         {
           "conversation":{"id":"conversation-1","scope":"email","account":"me@example.com","emailItemId":"email-1"},
           "messages":[{
-            "id":"message-1","conversationId":"conversation-1","role":"assistant","text":"I found it.","kind":"proposal",
+            "id":"message-1","conversationId":"conversation-1","runId":"run-1","role":"assistant","text":"I found it.","kind":"proposal",
             "createdAt":"2026-07-13T12:00:00.000Z",
             "evidence":[{"account":"me@example.com","messageId":"gmail-1","threadId":"thread-1","from":"Store","subject":"Order 123","snippet":"Shipped"}],
             "draft":{"kind":"reply","to":["store@example.com"],"cc":[],"subject":"Re: Order 123","body":"Thanks."},
@@ -207,6 +207,7 @@ final class ModelDecodingTests: XCTestCase {
 
         let envelope = try JSONDecoder().decode(AssistantConversationEnvelope.self, from: json)
         XCTAssertEqual(envelope.conversation.scope, .email)
+        XCTAssertEqual(envelope.messages.first?.runId, "run-1")
         XCTAssertEqual(envelope.messages.first?.evidence.first?.subject, "Order 123")
         XCTAssertEqual(envelope.messages.first?.draft?.to, ["store@example.com"])
         XCTAssertEqual(envelope.messages.first?.proposal?.tool, "send.reply")
@@ -475,6 +476,373 @@ final class ModelDecodingTests: XCTestCase {
         let updated = try await client.customizeBaselineRule(draft.bindingExpectedGuards(from: preview))
         XCTAssertEqual(updated.id, existing.id)
         XCTAssertEqual(updated.effect, "archive")
+    }
+
+    func testAssistantSSEParserHandlesByteBoundariesCRLFMultilineAndUnknownEvents() throws {
+        let complete = #"{"conversation":{"id":"conversation-1","scope":"mailbox"},"messages":[{"id":"answer-1","role":"assistant","text":"Done"}]}"#
+        let wire = [
+            ": heartbeat\r\n",
+            "event: accepted\r\n",
+            "data: {\"runId\":\"run-1\",\r\n",
+            "data: \"userMessageId\":\"user-1\"}\r\n",
+            "\r\n",
+            "event: future-event\n",
+            "data: this need not be JSON\n",
+            "\n",
+            "event: progress\n",
+            "data: {\"stage\":\"search\",\"label\":\"Searching 📬\",\"future\":true}\n",
+            "\n",
+            "event: complete\r\n",
+            "data: \(complete)\r\n",
+        ].joined()
+
+        var parser = AssistantServerSentEventParser()
+        var frames: [AssistantServerSentEvent] = []
+        for byte in Data(wire.utf8) {
+            frames.append(contentsOf: try parser.append(Data([byte])))
+        }
+        frames.append(contentsOf: try parser.finish())
+
+        XCTAssertEqual(frames.map(\.name), ["accepted", "future-event", "progress", "complete"])
+        let client = APIClient(configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"))
+
+        guard case let .accepted(accepted)? = try client.decodeAssistantStreamEvent(frames[0]) else {
+            return XCTFail("Expected accepted event")
+        }
+        XCTAssertEqual(accepted.runId, "run-1")
+        XCTAssertEqual(accepted.userMessageId, "user-1")
+        XCTAssertNil(try client.decodeAssistantStreamEvent(frames[1]))
+
+        guard case let .progress(progress)? = try client.decodeAssistantStreamEvent(frames[2]) else {
+            return XCTFail("Expected progress event")
+        }
+        XCTAssertEqual(progress.stage, "search")
+        XCTAssertEqual(progress.label, "Searching 📬")
+
+        guard case let .complete(envelope)? = try client.decodeAssistantStreamEvent(frames[3]) else {
+            return XCTFail("Expected complete event")
+        }
+        XCTAssertEqual(envelope.messages.first?.id, "answer-1")
+    }
+
+    func testAssistantSSEKnownMalformedAndErrorEventsFailSafely() throws {
+        let client = APIClient(configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"))
+        let malformed = AssistantServerSentEvent(
+            name: "progress",
+            data: Data(#"{"stage":"search"}"#.utf8)
+        )
+        XCTAssertThrowsError(try client.decodeAssistantStreamEvent(malformed)) { error in
+            guard case APIClientError.decoding = error else {
+                return XCTFail("Expected decoding error, got \(error)")
+            }
+        }
+
+        let failure = AssistantServerSentEvent(
+            name: "error",
+            data: Data(#"{"error":"provider_failed","message":"Search failed safely.","retryable":true,"extra":1}"#.utf8)
+        )
+        XCTAssertThrowsError(try client.decodeAssistantStreamEvent(failure)) { error in
+            guard case let APIClientError.assistantStream(message, retryable) = error else {
+                return XCTFail("Expected assistant stream error, got \(error)")
+            }
+            XCTAssertEqual(message, "Search failed safely.")
+            XCTAssertTrue(retryable)
+        }
+
+        var parser = AssistantServerSentEventParser()
+        let oversized = Data((
+            "data: " + String(repeating: "x", count: AssistantServerSentEventParser.maximumEventBytes + 1)
+        ).utf8)
+        XCTAssertThrowsError(try parser.append(oversized)) { error in
+            guard case AssistantServerSentEventParserError.eventTooLarge = error else {
+                return XCTFail("Expected safe size error, got \(error)")
+            }
+        }
+    }
+
+    @MainActor
+    func testAssistantViewModelOptimisticallySendsThenReconcilesCanonicalEnvelope() async throws {
+        let service = AssistantServiceStub()
+        let model = AssistantViewModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            scope: .mailbox,
+            service: service
+        )
+        await model.startIfNeeded()
+
+        let sendTask = Task { await model.send("Find my order") }
+        await waitUntil { service.continuation != nil }
+        XCTAssertEqual(model.messages.last?.text, "Find my order")
+        XCTAssertTrue(model.messages.last?.id.hasPrefix("optimistic-user-") == true)
+        XCTAssertTrue(model.isSending)
+
+        service.continuation?.yield(.accepted(AssistantStreamAccepted(runId: "run-1", userMessageId: "user-1")))
+        await waitUntil { model.messages.last?.id == "user-1" }
+        service.continuation?.yield(.progress(AssistantStreamProgress(stage: "search", label: "Searching mail")))
+        await waitUntil { model.progress?.stage == "search" }
+        XCTAssertEqual(model.progress?.label, "Searching mail")
+
+        let completed = service.envelope(messages: [
+            AssistantMessage(id: "user-1", conversationId: "conversation-1", role: "user", text: "Find my order"),
+            AssistantMessage(id: "answer-1", conversationId: "conversation-1", role: "assistant", text: "I found it."),
+        ])
+        service.continuation?.yield(.complete(completed))
+        service.continuation?.finish()
+
+        let sendSucceeded = await sendTask.value
+        XCTAssertTrue(sendSucceeded)
+        XCTAssertEqual(model.messages.map(\.id), ["user-1", "answer-1"])
+        XCTAssertEqual(model.messages.filter { $0.role == "user" }.count, 1)
+        XCTAssertEqual(model.canonicalResponseRevision, 1)
+        XCTAssertNil(model.progress)
+    }
+
+    @MainActor
+    func testAssistantViewModelRollsBackPreAcceptedFailureAndReusesIdempotencyKey() async throws {
+        let service = AssistantServiceStub()
+        let model = AssistantViewModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            scope: .mailbox,
+            service: service
+        )
+        await model.startIfNeeded()
+
+        let first = Task { await model.send("Find my EIN") }
+        await waitUntil { service.continuation != nil }
+        let optimisticID = try XCTUnwrap(model.messages.last?.id)
+        service.continuation?.finish(throwing: AssistantServiceStub.StubError.failed)
+        let firstSucceeded = await first.value
+        XCTAssertFalse(firstSucceeded)
+        XCTAssertTrue(model.messages.isEmpty)
+        XCTAssertTrue(model.shouldRestoreFailedComposerText)
+        let firstKey = try XCTUnwrap(service.idempotencyKeys.first)
+
+        service.continuation = nil
+        let retry = Task { await model.send("Find my EIN") }
+        await waitUntil { service.idempotencyKeys.count == 2 && service.continuation != nil }
+        XCTAssertEqual(service.idempotencyKeys[1], firstKey)
+        XCTAssertEqual(model.messages.last?.id, optimisticID)
+        service.continuation?.yield(.complete(service.envelope(messages: [
+            AssistantMessage(id: "user-ein", role: "user", text: "Find my EIN"),
+            AssistantMessage(id: "answer-ein", role: "assistant", text: "Here it is."),
+        ])))
+        service.continuation?.finish()
+        let retrySucceeded = await retry.value
+        XCTAssertTrue(retrySucceeded)
+    }
+
+    @MainActor
+    func testAssistantViewModelAcceptedEOFBlocksNewIntentAndRetriesOriginalKey() async throws {
+        let service = AssistantServiceStub()
+        service.recoveryError = AssistantServiceStub.StubError.failed
+        let model = AssistantViewModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            scope: .mailbox,
+            service: service
+        )
+        await model.startIfNeeded()
+
+        let first = Task { await model.send("Locate order 42") }
+        await waitUntil { service.continuation != nil }
+        service.continuation?.yield(.accepted(AssistantStreamAccepted(runId: "run-42", userMessageId: "user-42")))
+        service.continuation?.finish()
+        let firstSucceeded = await first.value
+        XCTAssertFalse(firstSucceeded)
+        XCTAssertEqual(model.messages.last?.id, "user-42")
+        XCTAssertTrue(model.hasIndeterminateMessageAttempt)
+        XCTAssertTrue(model.isWorking)
+        XCTAssertEqual(service.recoveryRequests, 1)
+        let firstKey = try XCTUnwrap(service.idempotencyKeys.first)
+
+        let differentRequestSucceeded = await model.send("Start a different request")
+        XCTAssertFalse(differentRequestSucceeded)
+        XCTAssertEqual(service.idempotencyKeys.count, 1)
+
+        service.continuation = nil
+        let retry = Task { await model.retryIndeterminateMessage() }
+        await waitUntil { service.idempotencyKeys.count == 2 && service.continuation != nil }
+        XCTAssertEqual(service.idempotencyKeys[1], firstKey)
+        service.continuation?.yield(.complete(service.envelope(messages: [
+            AssistantMessage(id: "user-42", role: "user", text: "Locate order 42"),
+            AssistantMessage(id: "answer-42", role: "assistant", text: "Order located."),
+        ])))
+        service.continuation?.finish()
+        let retrySucceeded = await retry.value
+        XCTAssertTrue(retrySucceeded)
+        XCTAssertFalse(model.hasIndeterminateMessageAttempt)
+    }
+
+    @MainActor
+    func testAssistantViewModelNewConversationClearsSupersededSendingState() async {
+        let service = AssistantServiceStub()
+        let model = AssistantViewModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            scope: .mailbox,
+            service: service
+        )
+        await model.startIfNeeded()
+
+        let supersededSend = Task { await model.send("Old request") }
+        await waitUntil { service.continuation != nil }
+        let oldContinuation = service.continuation
+        XCTAssertTrue(model.isSending)
+
+        await model.newConversation()
+        XCTAssertFalse(model.isSending)
+        XCTAssertFalse(model.isWorking)
+        XCTAssertTrue(model.messages.isEmpty)
+
+        oldContinuation?.finish()
+        let oldSendSucceeded = await supersededSend.value
+        XCTAssertFalse(oldSendSucceeded)
+        XCTAssertFalse(model.isSending)
+    }
+
+    @MainActor
+    func testAssistantViewModelRecoversCanonicalAnswerAfterAcceptedDisconnect() async {
+        let service = AssistantServiceStub()
+        service.recoveryEnvelope = service.envelope(messages: [
+            AssistantMessage(id: "user-recovered", role: "user", text: "Recover this"),
+            AssistantMessage(
+                id: "answer-recovered",
+                runId: "run-recovered",
+                role: "assistant",
+                text: "Recovered safely."
+            ),
+        ])
+        let model = AssistantViewModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            scope: .mailbox,
+            service: service
+        )
+        await model.startIfNeeded()
+
+        let send = Task { await model.send("Recover this") }
+        await waitUntil { service.continuation != nil }
+        service.continuation?.yield(.accepted(AssistantStreamAccepted(
+            runId: "run-recovered",
+            userMessageId: "user-recovered"
+        )))
+        service.continuation?.finish()
+
+        let succeeded = await send.value
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(model.messages.map(\.id), ["user-recovered", "answer-recovered"])
+        XCTAssertFalse(model.hasIndeterminateMessageAttempt)
+        XCTAssertEqual(service.recoveryRequests, 1)
+    }
+
+    @MainActor
+    func testAssistantViewModelDoesNotRecoverFromAnotherRunsAnswer() async {
+        let service = AssistantServiceStub()
+        service.recoveryEnvelope = service.envelope(messages: [
+            AssistantMessage(id: "user-target", role: "user", text: "Target request"),
+            AssistantMessage(id: "answer-other", runId: "run-other", role: "assistant", text: "Other result"),
+        ])
+        let model = AssistantViewModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            scope: .mailbox,
+            service: service
+        )
+        await model.startIfNeeded()
+
+        let send = Task { await model.send("Target request") }
+        await waitUntil { service.continuation != nil }
+        service.continuation?.yield(.accepted(AssistantStreamAccepted(
+            runId: "run-target",
+            userMessageId: "user-target"
+        )))
+        service.continuation?.finish()
+
+        let succeeded = await send.value
+        XCTAssertFalse(succeeded)
+        XCTAssertTrue(model.hasIndeterminateMessageAttempt)
+        XCTAssertEqual(model.messages.last?.id, "user-target")
+        XCTAssertFalse(model.messages.contains { $0.id == "answer-other" })
+    }
+
+    @MainActor
+    func testAssistantViewModelLegacyAcceptedEventRemainsIndeterminateDuringRecovery() async {
+        let service = AssistantServiceStub()
+        service.recoveryEnvelope = service.envelope(messages: [
+            AssistantMessage(id: "user-legacy", role: "user", text: "Legacy request"),
+            AssistantMessage(id: "answer-unattributed", role: "assistant", text: "Unattributed result"),
+        ])
+        let model = AssistantViewModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            scope: .mailbox,
+            service: service
+        )
+        await model.startIfNeeded()
+
+        let send = Task { await model.send("Legacy request") }
+        await waitUntil { service.continuation != nil }
+        service.continuation?.yield(.accepted(AssistantStreamAccepted(
+            runId: nil,
+            userMessageId: "user-legacy"
+        )))
+        service.continuation?.finish()
+
+        let succeeded = await send.value
+        XCTAssertFalse(succeeded)
+        XCTAssertTrue(model.hasIndeterminateMessageAttempt)
+        XCTAssertFalse(model.messages.contains { $0.id == "answer-unattributed" })
+    }
+
+    @MainActor
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        for _ in 0..<200 {
+            if condition() { return }
+            await Task.yield()
+        }
+        XCTFail("Timed out waiting for asynchronous state")
+    }
+}
+
+private final class AssistantServiceStub: AssistantService {
+    enum StubError: Error { case failed }
+
+    var continuation: AsyncThrowingStream<AssistantStreamEvent, Error>.Continuation?
+    var idempotencyKeys: [String] = []
+    var recoveryRequests = 0
+    var recoveryError: Error?
+    var recoveryEnvelope: AssistantConversationEnvelope?
+
+    private let conversation = AssistantConversation(id: "conversation-1", scope: .mailbox)
+
+    func envelope(messages: [AssistantMessage]) -> AssistantConversationEnvelope {
+        AssistantConversationEnvelope(conversation: conversation, messages: messages)
+    }
+
+    func createAssistantConversation(
+        scope: AssistantScope,
+        account: String?,
+        emailItemID: String?
+    ) async throws -> AssistantConversationEnvelope {
+        envelope(messages: [])
+    }
+
+    func sendAssistantMessageStream(
+        conversationID: String,
+        text: String,
+        idempotencyKey: String
+    ) -> AsyncThrowingStream<AssistantStreamEvent, Error> {
+        idempotencyKeys.append(idempotencyKey)
+        return AsyncThrowingStream { continuation = $0 }
+    }
+
+    func assistantConversation(id: String) async throws -> AssistantConversationEnvelope {
+        recoveryRequests += 1
+        if let recoveryError { throw recoveryError }
+        return recoveryEnvelope ?? envelope(messages: [])
+    }
+
+    func confirmAssistantProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope {
+        envelope(messages: [])
+    }
+
+    func cancelAssistantProposal(id: String) async throws -> AssistantConversationEnvelope {
+        envelope(messages: [])
     }
 }
 

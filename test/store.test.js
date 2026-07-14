@@ -100,16 +100,54 @@ describe('daily action summary', () => {
         UNIQUE(account, gmail_message_id)
       )
     `);
+    legacy.exec(`
+      CREATE TABLE assistant_conversations (
+        id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        account TEXT,
+        email_item_id TEXT,
+        title TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE assistant_messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        text TEXT NOT NULL DEFAULT '',
+        evidence_json TEXT NOT NULL DEFAULT '[]',
+        draft_json TEXT,
+        proposal_id TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE assistant_runs (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        user_message_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        idempotency_key TEXT,
+        error_code TEXT,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        UNIQUE(conversation_id, idempotency_key)
+      );
+    `);
     legacy.close();
 
     ensureStore();
     const inspector = new DatabaseSync(path, { readOnly: true });
     const columns = inspector.prepare('PRAGMA table_info(email_items)').all();
+    const messageColumns = inspector.prepare('PRAGMA table_info(assistant_messages)').all();
+    const runColumns = inspector.prepare('PRAGMA table_info(assistant_runs)').all();
     const indexes = inspector.prepare('PRAGMA index_list(email_items)').all();
     inspector.close();
     assert.ok(columns.some(column => column.name === 'read_state'));
     assert.ok(columns.some(column => column.name === 'handling_decision_json'));
     assert.ok(columns.some(column => column.name === 'handling_undo_status'));
+    assert.ok(messageColumns.some(column => column.name === 'run_id'));
+    assert.ok(runColumns.some(column => column.name === 'request_fingerprint'));
+    assert.ok(runColumns.some(column => column.name === 'lease_token'));
+    assert.ok(runColumns.some(column => column.name === 'lease_updated_at'));
     assert.ok(indexes.some(index => index.name === 'idx_email_items_rule_activity'));
   });
 
