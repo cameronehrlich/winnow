@@ -594,6 +594,21 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(payload["match"])
     }
 
+    func testCompoundSubjectRuleDecodesDisplaysAndRoundTrips() throws {
+        let json = #"{"id":"rule-2","account":"me@example.com","type":"exact","effect":"archive","matcherKind":"sender","matcherValue":"systemmessage@paycomonline.com","subjectMatchMode":"exact","subjectMatchValue":"New Check Available","description":"Paycom checks","enabled":true,"scope":"user","source":"assistant","editable":true}"#.data(using: .utf8)!
+        let rule = try JSONDecoder().decode(MailRule.self, from: json)
+
+        XCTAssertEqual(rule.subjectMatchMode, "exact")
+        XCTAssertEqual(rule.subjectMatchValue, "New Check Available")
+        XCTAssertTrue(rule.matcherTitle.contains("Subject is “New Check Available”"))
+
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(MailRuleDraft(rule: rule))) as? [String: Any]
+        )
+        XCTAssertEqual(payload["subjectMatchMode"] as? String, "exact")
+        XCTAssertEqual(payload["subjectMatchValue"] as? String, "New Check Available")
+    }
+
     func testRuleAPIUsesUnifiedRoutesAndCandidateShapes() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MailRuleURLProtocol.self]

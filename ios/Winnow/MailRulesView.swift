@@ -334,9 +334,11 @@ struct MailRuleEditorView: View {
         let matcherIsPresent = rule.belongsWithDefaults || (draft.type == "semantic"
             ? draft.match?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             : draft.matcherValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+        let subjectIsValid = draft.type != "exact" || draft.subjectMatchMode == nil
+            || draft.subjectMatchValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         let accountIsScoped = !rule.isBaseline
             || draft.account?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        return matcherIsPresent && accountIsScoped && !isPreviewing && !isSaving
+        return matcherIsPresent && subjectIsValid && accountIsScoped && !isPreviewing && !isSaving
     }
 
     var body: some View {
@@ -428,6 +430,28 @@ struct MailRuleEditorView: View {
                         ))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+
+                        Toggle("Limit to subject", isOn: Binding(
+                            get: { draft.subjectMatchMode != nil },
+                            set: { enabled in
+                                draft.subjectMatchMode = enabled ? "exact" : nil
+                                if !enabled { draft.subjectMatchValue = nil }
+                            }
+                        ))
+
+                        if draft.subjectMatchMode != nil {
+                            Picker("Subject match", selection: Binding(
+                                get: { draft.subjectMatchMode ?? "exact" },
+                                set: { draft.subjectMatchMode = $0 }
+                            )) {
+                                Text("Exactly").tag("exact")
+                                Text("Starts With").tag("prefix")
+                            }
+                            TextField("Subject", text: Binding(
+                                get: { draft.subjectMatchValue ?? "" },
+                                set: { draft.subjectMatchValue = $0 }
+                            ))
+                        }
                     }
                 }
 

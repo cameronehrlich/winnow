@@ -119,10 +119,38 @@ describe('GogAdapter assistant primitives', () => {
           { mimeType: 'text/html', body: { data: html } },
         ],
       },
-    });
+    }, { includeHtml: true });
 
     assert.equal(message.body, 'Readable fallback');
     assert.equal(message.htmlBody, '<html><body><strong>Formatted body</strong></body></html>');
+  });
+
+  it('does not extract HTML during ordinary message normalization', () => {
+    const html = Buffer.from('<p>Private formatted body</p>').toString('base64url');
+    const message = normalizeGogMessage({
+      id: 'message1',
+      payload: { mimeType: 'text/html', body: { data: html } },
+    });
+
+    assert.equal(Object.hasOwn(message, 'htmlBody'), false);
+  });
+
+  it('extracts thread HTML only when the on-demand caller opts in', async () => {
+    const html = Buffer.from('<p>Formatted thread body</p>').toString('base64url');
+    const response = { thread: {
+      id: 'thread1',
+      messages: [{
+        id: 'message1',
+        payload: { mimeType: 'text/html', body: { data: html } },
+      }],
+    } };
+    const { adapter } = fakeAdapter(() => response);
+
+    const ordinary = await adapter.getThread('me@example.com', 'thread1');
+    const onDemand = await adapter.getThread('me@example.com', 'thread1', { includeHtml: true });
+
+    assert.equal(Object.hasOwn(ordinary.messages[0], 'htmlBody'), false);
+    assert.equal(onDemand.messages[0].htmlBody, '<p>Formatted thread body</p>');
   });
 
   it('preserves bounded canonical attachment metadata from nested MIME parts', () => {

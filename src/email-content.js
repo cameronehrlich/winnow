@@ -39,14 +39,14 @@ export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {
 
   let messages;
   if (item.threadId) {
-    const thread = await adapter.getThread(item.account, item.threadId);
+    const thread = await adapter.getThread(item.account, item.threadId, { includeHtml: true });
     messages = Array.isArray(thread?.messages) ? thread.messages : [];
     if (item.messageId && !messages.some(message => message?.id === item.messageId || message?.messageId === item.messageId)) {
-      const exact = normalizeGogMessage(await adapter.getMessage(item.account, item.messageId));
+      const exact = normalizeGogMessage(await adapter.getMessage(item.account, item.messageId), { includeHtml: true });
       if (exact.id || exact.body) messages = [exact, ...messages];
     }
   } else {
-    messages = [normalizeGogMessage(await adapter.getMessage(item.account, item.messageId))];
+    messages = [normalizeGogMessage(await adapter.getMessage(item.account, item.messageId), { includeHtml: true })];
   }
 
   let budget = MAX_TOTAL_CHARS;

@@ -161,6 +161,7 @@ function extractHtmlBody(value, maxLength = MAX_HTML_BODY_LENGTH) {
 
 export function normalizeGogMessage(message, {
   includeBody = true,
+  includeHtml = false,
   bodyLimit = MAX_BODY_LENGTH,
   htmlBodyLimit = MAX_HTML_BODY_LENGTH,
 } = {}) {
@@ -173,7 +174,9 @@ export function normalizeGogMessage(message, {
   const headers = headersFrom(value || {});
   const id = String(value?.id || value?.Id || '');
   const body = includeBody ? extractBody(value).slice(0, Math.max(0, bodyLimit)) : '';
-  const htmlBody = includeBody ? extractHtmlBody(value, Math.max(0, htmlBodyLimit)) : '';
+  const htmlBody = includeBody && includeHtml
+    ? extractHtmlBody(value, Math.max(0, htmlBodyLimit))
+    : '';
   const labels = value?.labelIds || value?.LabelIds || value?.labels || value?.Labels;
 
   return {
@@ -193,7 +196,7 @@ export function normalizeGogMessage(message, {
     internalDate: String(value?.internalDate || value?.InternalDate || ''),
     headers,
     body,
-    ...(includeBody ? { htmlBody } : {}),
+    ...(includeBody && includeHtml ? { htmlBody } : {}),
     attachments: collectMessageAttachments(value),
   };
 }
@@ -303,7 +306,7 @@ export class GogAdapter extends GmailAdapter {
     return data;
   }
 
-  async getThread(account, threadId) {
+  async getThread(account, threadId, { includeHtml = false } = {}) {
     const safeThreadId = validateGmailId(threadId, 'threadId');
     const data = await this.#runJson([
       'gmail', 'thread', 'get', safeThreadId,
@@ -318,11 +321,12 @@ export class GogAdapter extends GmailAdapter {
       .slice(0, MAX_THREAD_MESSAGES)
       .map(message => {
         const normalized = normalizeGogMessage(message, {
+          includeHtml,
           bodyLimit: bodyBudget,
           htmlBodyLimit: htmlBodyBudget,
         });
         bodyBudget = Math.max(0, bodyBudget - normalized.body.length);
-        htmlBodyBudget = Math.max(0, htmlBodyBudget - normalized.htmlBody.length);
+        htmlBodyBudget = Math.max(0, htmlBodyBudget - (normalized.htmlBody?.length || 0));
         return normalized;
       });
     return {

@@ -22,6 +22,8 @@ struct MailRule: Decodable, Identifiable, Equatable {
     let match: String?
     let matcherKind: String?
     let matcherValue: String?
+    let subjectMatchMode: String?
+    let subjectMatchValue: String?
     let description: String
     let enabled: Bool
     let scope: String
@@ -59,11 +61,15 @@ struct MailRule: Decodable, Identifiable, Equatable {
     var matcherTitle: String {
         if type == "semantic" { return match?.nilIfBlank ?? description.nilIfBlank ?? "Semantic match" }
         let kind = (matcherKind ?? "exact").replacingOccurrences(of: "_", with: " ").capitalized
-        return "\(kind): \(matcherValue?.nilIfBlank ?? match?.nilIfBlank ?? "Not specified")"
+        let primary = "\(kind): \(matcherValue?.nilIfBlank ?? match?.nilIfBlank ?? "Not specified")"
+        guard let subject = subjectMatchValue?.nilIfBlank else { return primary }
+        let relation = subjectMatchMode == "prefix" ? "starts with" : "is"
+        return "\(primary) · Subject \(relation) “\(subject)”"
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, account, type, effect, match, matcherKind, matcherValue, description
+        case id, account, type, effect, match, matcherKind, matcherValue
+        case subjectMatchMode, subjectMatchValue, description
         case enabled, scope, source, editable, baselineRuleId, sourceEmailItemId
         case createdAt, updatedAt, activity
     }
@@ -77,6 +83,8 @@ struct MailRule: Decodable, Identifiable, Equatable {
         match = try values.decodeIfPresent(String.self, forKey: .match)?.nilIfBlank
         matcherKind = try values.decodeIfPresent(String.self, forKey: .matcherKind)?.nilIfBlank
         matcherValue = try values.decodeIfPresent(String.self, forKey: .matcherValue)?.nilIfBlank
+        subjectMatchMode = try values.decodeIfPresent(String.self, forKey: .subjectMatchMode)?.nilIfBlank
+        subjectMatchValue = try values.decodeIfPresent(String.self, forKey: .subjectMatchValue)?.nilIfBlank
         description = try values.decodeIfPresent(String.self, forKey: .description) ?? ""
         enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         scope = try values.decodeIfPresent(String.self, forKey: .scope) ?? "user"
@@ -98,6 +106,8 @@ struct MailRuleDraft: Encodable, Equatable {
     var match: String?
     var matcherKind: String?
     var matcherValue: String?
+    var subjectMatchMode: String?
+    var subjectMatchValue: String?
     var description: String
     var enabled: Bool
     var baselineRuleId: String?
@@ -113,6 +123,8 @@ struct MailRuleDraft: Encodable, Equatable {
         match = rule.match
         matcherKind = rule.matcherKind
         matcherValue = rule.matcherValue
+        subjectMatchMode = rule.subjectMatchMode
+        subjectMatchValue = rule.subjectMatchValue
         description = rule.description
         enabled = rule.enabled
         baselineRuleId = rule.baselineRuleId ?? (rule.isBaseline ? rule.id : nil)
@@ -128,6 +140,8 @@ struct MailRuleDraft: Encodable, Equatable {
         match: String? = nil,
         matcherKind: String? = nil,
         matcherValue: String? = nil,
+        subjectMatchMode: String? = nil,
+        subjectMatchValue: String? = nil,
         description: String,
         enabled: Bool = true,
         baselineRuleId: String? = nil,
@@ -140,6 +154,8 @@ struct MailRuleDraft: Encodable, Equatable {
         self.match = match
         self.matcherKind = matcherKind
         self.matcherValue = matcherValue
+        self.subjectMatchMode = subjectMatchMode
+        self.subjectMatchValue = subjectMatchValue
         self.description = description
         self.enabled = enabled
         self.baselineRuleId = baselineRuleId
@@ -150,6 +166,7 @@ struct MailRuleDraft: Encodable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id, account, type, effect, match, matcherKind, matcherValue
+        case subjectMatchMode, subjectMatchValue
         case description, enabled, baselineRuleId, sourceEmailItemId, expectedConflict, expectedRule
     }
 
@@ -168,6 +185,8 @@ struct MailRuleDraft: Encodable, Equatable {
         if type == "exact" {
             try values.encode(matcherKind ?? "sender", forKey: .matcherKind)
             try values.encodeIfPresent(matcherValue, forKey: .matcherValue)
+            try values.encodeIfPresent(subjectMatchMode, forKey: .subjectMatchMode)
+            try values.encodeIfPresent(subjectMatchValue, forKey: .subjectMatchValue)
         } else {
             try values.encodeIfPresent(match, forKey: .match)
         }
