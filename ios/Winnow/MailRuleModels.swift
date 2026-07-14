@@ -44,6 +44,18 @@ struct MailRule: Decodable, Identifiable, Equatable {
     var actionTitle: String { effect == "archive" ? "Archive" : "Keep" }
     var actionSymbol: String { effect == "archive" ? "archivebox" : "tray" }
     var accountTitle: String { account?.nilIfBlank ?? "All accounts" }
+    var displayTitle: String {
+        let label = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        if label.isEmpty || (source == "import" && label.caseInsensitiveCompare("Imported from account YAML") == .orderedSame) {
+            return matcherTitle
+        }
+        return label
+    }
+    var supportingTitle: String? {
+        let matcher = matcherTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !matcher.isEmpty, matcher.caseInsensitiveCompare(displayTitle) != .orderedSame else { return nil }
+        return matcher
+    }
     var matcherTitle: String {
         if type == "semantic" { return match?.nilIfBlank ?? description.nilIfBlank ?? "Semantic match" }
         let kind = (matcherKind ?? "exact").replacingOccurrences(of: "_", with: " ").capitalized
