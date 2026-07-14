@@ -407,6 +407,70 @@ describe('local API', () => {
     assert.match(invalidAccountJson.error.message, /configured accounts/);
   });
 
+  it('validates MCP mutation arguments and deduplicates unsubscribe attempts', async () => {
+    const headers = {
+      Authorization: 'Bearer test-token',
+      'Content-Type': 'application/json',
+    };
+    const feed = await fetch(`${baseUrl}/v1/emails?limit=1`, {
+      headers: { Authorization: 'Bearer test-token' },
+    }).then(response => response.json());
+    const item = feed.items[0];
+
+    const malformedArgs = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 22,
+        method: 'tools/call',
+        params: {
+          name: 'winnow_archive_email',
+          arguments: { id: item.id, reason: false },
+        },
+      }),
+    });
+    const malformedJson = await malformedArgs.json();
+    assert.equal(malformedJson.error.code, -32602);
+    assert.match(malformedJson.error.message, /reason must be a string/);
+
+    const first = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 23,
+        method: 'tools/call',
+        params: {
+          name: 'winnow_unsubscribe_email',
+          arguments: { id: item.id },
+        },
+      }),
+    });
+    const firstJson = await first.json();
+    assert.equal(firstJson.result.structuredContent.ok, false);
+    assert.equal(firstJson.result.structuredContent.outcome, 'attempted');
+    assert.equal(firstJson.result.structuredContent.requiresManualAction, true);
+
+    const second = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 24,
+        method: 'tools/call',
+        params: {
+          name: 'winnow_unsubscribe_email',
+          arguments: { id: item.id },
+        },
+      }),
+    });
+    const secondJson = await second.json();
+    assert.equal(secondJson.result.structuredContent.outcome, 'attempted');
+    assert.equal(secondJson.result.structuredContent.deduplicated, true);
+    assert.equal(listEvents({ limit: 10 }).filter(event => event.eventType === 'email.unsubscribe_attempted').length, 1);
+  });
+
   it('reports mailto unsubscribe as manual and deduplicates repeat taps', async () => {
     const headers = { Authorization: 'Bearer test-token' };
     const feed = await fetch(`${baseUrl}/v1/emails?limit=1`, { headers });

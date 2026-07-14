@@ -1,7 +1,7 @@
 import { archiveEmail, markEmailRead, markEmailUnread, moveEmailToInbox } from './actions.js';
 import { getAccounts } from './config.js';
 import { scan } from './scan.js';
-import { recordUnsubscribe } from './state.js';
+import { findUnsubscribeForEmail, recordUnsubscribe } from './state.js';
 import { followUnsubscribeLink } from './slack-actions.js';
 import {
   getDailyActionSummary,
@@ -138,6 +138,26 @@ function argumentError(message) {
   return Object.assign(new Error(message), { code: 'invalid_arguments' });
 }
 
+function assertPlainArguments(args = {}) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    throw argumentError('tool arguments must be an object');
+  }
+  return args;
+}
+
+function requireStringArgument(args, key) {
+  if (typeof args[key] !== 'string' || !args[key].trim()) {
+    throw argumentError(`${key} must be a non-empty string`);
+  }
+  return args[key];
+}
+
+function optionalStringArgument(args, key, fallback = '') {
+  if (args[key] === undefined) return fallback;
+  if (typeof args[key] !== 'string') throw argumentError(`${key} must be a string`);
+  return args[key];
+}
+
 function optionalBoolean(args, key, fallback = undefined) {
   if (args[key] === undefined) return fallback;
   if (typeof args[key] !== 'boolean') throw argumentError(`${key} must be a boolean`);
@@ -185,6 +205,22 @@ async function unsubscribeEmail(id) {
   const item = requireEmail(id);
   if (!item.unsubscribeLink) return { ok: false, error: 'unsubscribe_link_missing', item };
 
+  const previous = findUnsubscribeForEmail({
+    account: item.account,
+    threadId: item.threadId,
+    sender: item.from,
+  });
+  if (previous && ['succeeded', 'attempted'].includes(previous.status)) {
+    return {
+      ok: previous.status === 'succeeded',
+      outcome: previous.status,
+      requiresManualAction: previous.status === 'attempted',
+      deduplicated: true,
+      item,
+      entry: previous,
+    };
+  }
+
   try {
     const result = await followUnsubscribeLink(item.unsubscribeLink);
     const entry = recordUnsubscribe({
@@ -198,7 +234,12 @@ async function unsubscribeEmail(id) {
       note: result.note,
       urlHost: result.urlHost,
     });
-    return { ok: true, entry };
+    return {
+      ok: result.status === 'succeeded',
+      outcome: result.status,
+      requiresManualAction: result.status === 'attempted',
+      entry,
+    };
   } catch (err) {
     const entry = recordUnsubscribe({
       sender: item.from,
@@ -232,6 +273,7 @@ async function runScanTool(args = {}) {
 }
 
 async function callTool(name, args = {}) {
+  args = assertPlainArguments(args);
   switch (name) {
     case 'winnow_status':
       return getRuntimeStatus();
@@ -248,15 +290,15 @@ async function callTool(name, args = {}) {
     case 'winnow_scan':
       return runScanTool(args);
     case 'winnow_archive_email':
-      return mutateEmail(args.id, 'archive', args.reason);
+      return mutateEmail(requireStringArgument(args, 'id'), 'archive', optionalStringArgument(args, 'reason'));
     case 'winnow_move_to_inbox':
-      return mutateEmail(args.id, 'moveToInbox', args.reason);
+      return mutateEmail(requireStringArgument(args, 'id'), 'moveToInbox', optionalStringArgument(args, 'reason'));
     case 'winnow_mark_read':
-      return mutateEmail(args.id, 'markRead', args.reason);
+      return mutateEmail(requireStringArgument(args, 'id'), 'markRead', optionalStringArgument(args, 'reason'));
     case 'winnow_mark_unread':
-      return mutateEmail(args.id, 'markUnread', args.reason);
+      return mutateEmail(requireStringArgument(args, 'id'), 'markUnread', optionalStringArgument(args, 'reason'));
     case 'winnow_unsubscribe_email':
-      return unsubscribeEmail(args.id);
+      return unsubscribeEmail(requireStringArgument(args, 'id'));
     default:
       throw Object.assign(new Error(`Unknown tool: ${name}`), { code: 'unknown_tool' });
   }
