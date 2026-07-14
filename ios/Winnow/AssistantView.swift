@@ -1,6 +1,11 @@
 import SwiftUI
 import UIKit
 
+struct AssistantComposerRequest: Identifiable, Equatable {
+    let id = UUID()
+    let text: String
+}
+
 struct AssistantMailboxView: View {
     @EnvironmentObject private var model: AppModel
     let openSettings: () -> Void
@@ -84,6 +89,7 @@ struct EmailAssistantThreadView<DetailContent: View>: View {
     private let emailItemID: String
     private let contextTitle: String?
     private let onMailboxChanged: () async -> Void
+    @Binding private var composerRequest: AssistantComposerRequest?
     private let detailContent: DetailContent
 
     init(
@@ -91,6 +97,7 @@ struct EmailAssistantThreadView<DetailContent: View>: View {
         account: String,
         emailItemID: String,
         contextTitle: String?,
+        composerRequest: Binding<AssistantComposerRequest?> = .constant(nil),
         onMailboxChanged: @escaping () async -> Void,
         @ViewBuilder detailContent: () -> DetailContent
     ) {
@@ -98,6 +105,7 @@ struct EmailAssistantThreadView<DetailContent: View>: View {
         self.account = account
         self.emailItemID = emailItemID
         self.contextTitle = contextTitle
+        _composerRequest = composerRequest
         self.onMailboxChanged = onMailboxChanged
         self.detailContent = detailContent()
     }
@@ -110,6 +118,7 @@ struct EmailAssistantThreadView<DetailContent: View>: View {
             emailItemID: emailItemID,
             contextTitle: contextTitle,
             presentation: .inlineEmail,
+            composerRequest: $composerRequest,
             onMailboxChanged: onMailboxChanged
         ) {
             detailContent
@@ -129,6 +138,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
     @StateObject private var viewModel: AssistantViewModel
     private let contextTitle: String?
     private let presentation: AssistantPresentation
+    @Binding private var composerRequest: AssistantComposerRequest?
     private let onMailboxChanged: () async -> Void
     private let leadingContent: LeadingContent
 
@@ -139,6 +149,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
         emailItemID: String?,
         contextTitle: String?,
         presentation: AssistantPresentation,
+        composerRequest: Binding<AssistantComposerRequest?> = .constant(nil),
         onMailboxChanged: @escaping () async -> Void,
         @ViewBuilder leadingContent: () -> LeadingContent
     ) {
@@ -150,6 +161,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
         ))
         self.contextTitle = contextTitle
         self.presentation = presentation
+        _composerRequest = composerRequest
         self.onMailboxChanged = onMailboxChanged
         self.leadingContent = leadingContent()
     }
@@ -159,6 +171,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
             viewModel: viewModel,
             contextTitle: contextTitle,
             presentation: presentation,
+            composerRequest: $composerRequest,
             onMailboxChanged: onMailboxChanged
         ) {
             leadingContent
@@ -175,6 +188,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
 
     let contextTitle: String?
     let presentation: AssistantPresentation
+    @Binding var composerRequest: AssistantComposerRequest?
     let onMailboxChanged: () async -> Void
     let leadingContent: LeadingContent
 
@@ -182,12 +196,14 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         viewModel: AssistantViewModel,
         contextTitle: String?,
         presentation: AssistantPresentation,
+        composerRequest: Binding<AssistantComposerRequest?> = .constant(nil),
         onMailboxChanged: @escaping () async -> Void,
         @ViewBuilder leadingContent: () -> LeadingContent
     ) {
         self.viewModel = viewModel
         self.contextTitle = contextTitle
         self.presentation = presentation
+        _composerRequest = composerRequest
         self.onMailboxChanged = onMailboxChanged
         self.leadingContent = leadingContent()
     }
@@ -255,6 +271,17 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                 }
                 .onChange(of: composerFocused) { _, focused in
                     guard focused else { return }
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(180))
+                        withAnimation { proxy.scrollTo("assistant-bottom", anchor: .bottom) }
+                    }
+                }
+                .onChange(of: composerRequest) { _, request in
+                    guard let request else { return }
+                    inlineThreadActivated = true
+                    composerText = request.text
+                    composerFocused = true
+                    composerRequest = nil
                     Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(180))
                         withAnimation { proxy.scrollTo("assistant-bottom", anchor: .bottom) }
@@ -389,7 +416,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
 
     private var suggestions: [String] {
         if viewModel.scope == .email {
-            return ["What matters here?", "Draft a reply", "Handle these in the future"]
+            return ["Why was this handled?", "Always archive messages like this", "Always keep messages like this"]
         }
         return ["Find my most recent order", "Where can I find my EIN?", "Show receipts from this month"]
     }

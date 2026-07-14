@@ -219,6 +219,28 @@ private struct MailRuleRow: View {
                     }
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
+                    if rule.type == "semantic" {
+                        Label("Classifier-cited rule", systemImage: "sparkles")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let activity = rule.activity {
+                        HStack(spacing: 6) {
+                            if activity.appliedCount30Days == 0 {
+                                Text("No tracked uses yet")
+                            } else {
+                                Text(rule.type == "semantic"
+                                     ? "\(activity.appliedCount30Days) classifier-cited in 30 days"
+                                     : "\(activity.appliedCount30Days) applied in 30 days")
+                            }
+                            if activity.appliedCount30Days > 0, let date = activity.lastAppliedDate {
+                                Text("•")
+                                Text("Last used \(date.formatted(date: .abbreviated, time: .omitted))")
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    }
                 }
                 Spacer(minLength: 8)
                 if isBusy {
@@ -252,7 +274,7 @@ private struct MailRuleRow: View {
     }
 }
 
-private struct MailRuleEditorView: View {
+struct MailRuleEditorView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     let rule: MailRule
@@ -269,13 +291,16 @@ private struct MailRuleEditorView: View {
         _draft = State(initialValue: MailRuleDraft(rule: rule))
     }
 
-    private var canReview: Bool {
+    private var originalDraft: MailRuleDraft { MailRuleDraft(rule: rule) }
+    private var hasMeaningChange: Bool { draft != originalDraft }
+
+    private var canTest: Bool {
         let matcherIsPresent = rule.belongsWithDefaults || (draft.type == "semantic"
             ? draft.match?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             : draft.matcherValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
         let accountIsScoped = !rule.isBaseline
             || draft.account?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        return matcherIsPresent && accountIsScoped && !isPreviewing && !isSaving && draft != MailRuleDraft(rule: rule)
+        return matcherIsPresent && accountIsScoped && !isPreviewing && !isSaving
     }
 
     var body: some View {
@@ -305,6 +330,33 @@ private struct MailRuleEditorView: View {
                         }
                     } else {
                         LabeledContent("Account", value: rule.accountTitle)
+                    }
+                }
+
+                if let activity = rule.activity {
+                    Section("Recent Activity") {
+                        if activity.recent.isEmpty {
+                            Text("No tracked uses yet; activity is recorded from this release forward.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(activity.recent.prefix(3)) { example in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(example.subject).font(.subheadline.weight(.semibold))
+                                    Text(example.from).font(.caption).foregroundStyle(.secondary)
+                                    HStack(spacing: 6) {
+                                        Text(rule.type == "semantic" ? "Classifier-cited" : "Matched")
+                                        if let date = example.displayDate {
+                                            Text("•")
+                                            Text(date.formatted(date: .abbreviated, time: .omitted))
+                                        }
+                                    }
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.tertiary)
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        }
                     }
                 }
 
@@ -352,14 +404,14 @@ private struct MailRuleEditorView: View {
                         reviewChange()
                     } label: {
                         HStack {
-                            Label("Preview & Review Change", systemImage: "checklist")
+                            Label("Test Rule", systemImage: "checklist")
                             Spacer()
                             if isPreviewing { ProgressView() }
                         }
                     }
-                    .disabled(!canReview)
+                    .disabled(!canTest)
                 } footer: {
-                    Text("Winnow validates every change and shows recent matches for exact rules before saving.")
+                    Text("Test the current rule against representative recent mail. Meaning-changing saves require a fresh test.")
                 }
             }
             .navigationTitle(rule.belongsWithDefaults ? "Customize Default" : "Edit Rule")
@@ -379,12 +431,18 @@ private struct MailRuleEditorView: View {
                     draft.matcherKind = "sender"
                 }
             }
+            .onChange(of: draft) { _, _ in
+                preview = nil
+            }
             .sheet(isPresented: $showingReview) {
                 if let preview {
                     MailRuleReviewView(
                         draft: draft,
                         preview: preview,
                         isSaving: isSaving,
+                        allowsSave: hasMeaningChange && canBindSave(preview),
+                        title: hasMeaningChange ? "Review Rule Change" : "Rule Test",
+                        saveTitle: preview.conflict == nil ? "Save Change" : "Replace Existing Rule",
                         cancel: { showingReview = false },
                         save: saveChange
                     )
@@ -415,22 +473,36 @@ private struct MailRuleEditorView: View {
     }
 
     private func saveChange() {
+        guard let reviewedPreview = preview else { return }
+        let candidate = draft.bindingExpectedGuards(from: reviewedPreview)
         Task {
             isSaving = true
-            let saved = await model.saveMailRule(draft, replacing: rule)
+            let saved = await model.saveMailRule(candidate, replacing: rule)
             isSaving = false
             if saved {
                 showingReview = false
                 dismiss()
+            } else {
+                showingReview = false
+                preview = nil
             }
         }
     }
+
+    private func canBindSave(_ preview: MailRulePreviewResponse) -> Bool {
+        let replacementIsBound = preview.conflict == nil || preview.replacementBinding != nil
+        let currentRuleIsBound = draft.id == nil || preview.expectedRule != nil
+        return replacementIsBound && currentRuleIsBound
+    }
 }
 
-private struct MailRuleReviewView: View {
+struct MailRuleReviewView: View {
     let draft: MailRuleDraft
     let preview: MailRulePreviewResponse
     let isSaving: Bool
+    let allowsSave: Bool
+    let title: String
+    let saveTitle: String
     let cancel: () -> Void
     let save: () -> Void
 
@@ -440,45 +512,92 @@ private struct MailRuleReviewView: View {
                 Section("Proposed Behavior") {
                     LabeledContent("Action", value: draft.effect == "archive" ? "Archive" : "Keep in Inbox")
                     LabeledContent("Account", value: draft.account ?? "Choose an account")
-                    if let matchCount = preview.matchCount {
+                    if let evaluatedCount = preview.evaluatedCount {
+                        LabeledContent("Examples evaluated", value: evaluatedCount.formatted())
+                    } else if let matchCount = preview.matchCount {
                         LabeledContent("Recent matches", value: matchCount.formatted())
                     }
-                    if draft.type == "semantic" {
-                        Text(preview.note ?? "Semantic rules are evaluated by Winnow during classification; preview validates the rule without guessing which messages match.")
+                    Text(sampleExplanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let conflict = preview.conflict {
+                    Section {
+                        Label("This save replaces an existing rule.", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(WinnowDesign.amber)
+                        LabeledContent("Rule", value: conflict.rule.description.isEmpty ? conflict.rule.matcherTitle : conflict.rule.description)
+                        LabeledContent("Current action", value: conflict.rule.actionTitle)
+                        if preview.replacementBinding == nil {
+                            Text("The rule changed or could not be bound to this preview. Test again before replacing it.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text("Existing Rule")
+                    }
+                }
+
+                if draft.id != nil, preview.expectedRule == nil {
+                    Section("Fresh Preview Required") {
+                        Text("Winnow could not bind this preview to the current rule version. Test the rule again before saving.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
 
-                if draft.type == "exact" {
-                    Section("Recent Match Samples") {
-                        if preview.matches.isEmpty {
-                            Text("No recent sample messages matched. The rule can still affect future mail.")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(preview.matches.prefix(10)) { match in
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(match.subject).font(.subheadline.weight(.semibold))
-                                    Text(match.from).font(.caption).foregroundStyle(.secondary)
-                                    if !match.account.isEmpty {
-                                        Text(match.account).font(.caption2).foregroundStyle(.tertiary)
-                                    }
-                                }
-                                .padding(.vertical, 2)
-                            }
-                        }
+                sampleSection("Representative Matches", examples: preview.matches, empty: "No representative matches were returned. The rule can still affect future mail.")
+                sampleSection("Representative Non-Matches", examples: preview.nonMatches, empty: "No representative non-matches were returned.")
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(allowsSave ? "Back" : "Done", action: cancel)
+                }
+                if allowsSave {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(saveTitle, action: save).disabled(isSaving)
                     }
                 }
             }
-            .navigationTitle("Review Rule")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Back", action: cancel) }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", action: save).disabled(isSaving)
+            .overlay { if isSaving { ProgressView("Saving…") } }
+        }
+    }
+
+    private var sampleExplanation: String {
+        let previewMode = preview.mode ?? draft.type
+        let isSemantic = draft.type == "semantic" || ["semantic", "sampled_estimate"].contains(previewMode)
+        let pool = preview.sampledAtMost.map { " from a pool of up to \($0.formatted()) recent tracked messages" } ?? ""
+        let base = isSemantic
+            ? "Winnow’s classifier evaluated representative recent examples\(pool). Matches and non-matches are estimates, not a guarantee of future classification."
+            : "Winnow checked this exact matcher against representative recent examples\(pool). Future mail may differ."
+        guard let note = preview.note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty else { return base }
+        return "\(base) \(note)"
+    }
+
+    private func sampleSection(_ title: String, examples: [MailRulePreviewMatch], empty: String) -> some View {
+        Section(title) {
+            if examples.isEmpty {
+                Text(empty).foregroundStyle(.secondary)
+            } else {
+                ForEach(examples.prefix(10)) { example in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(example.subject).font(.subheadline.weight(.semibold))
+                        Text(example.from).font(.caption).foregroundStyle(.secondary)
+                        if let reason = example.reason {
+                            Text(reason).font(.caption).foregroundStyle(.secondary)
+                        }
+                        HStack(spacing: 6) {
+                            if !example.account.isEmpty { Text(example.account) }
+                            if let confidence = example.confidencePercentText { Text(confidence) }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 2)
                 }
             }
-            .overlay { if isSaving { ProgressView("Saving…") } }
         }
     }
 }

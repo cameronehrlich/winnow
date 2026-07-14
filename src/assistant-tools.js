@@ -10,6 +10,7 @@ import {
 } from './store.js';
 import {
   disableUserRule,
+  getUserRuleConflict,
   listRulesForApi,
   normalizeUserRule,
   previewUserRule,
@@ -302,15 +303,22 @@ function boundedMessageForModel(message) {
   };
 }
 
-function proposalSummary(name, args) {
+function proposalSummary(name, args, { replacementRule = null } = {}) {
   if (name === 'unsubscribe.request') return `Unsubscribe from this sender using ${args.method.type === 'http' ? new URL(args.method.url).hostname : 'email'}`;
   if (name === 'mail.send_reply') return `Send this reply${args.draft.to?.length ? ` to ${args.draft.to.join(', ')}` : ''}`;
   if (name === 'mail.send_forward') {
     return `Forward this email to ${args.draft.to.join(', ')} ${args.draft.skipAttachments ? 'without' : 'including'} attachments`;
   }
-  if (name === 'rules.create' || name === 'rules.upsert') return args.type === 'exact'
-    ? `${args.effect === 'archive' ? 'Archive' : 'Keep'} future messages matching ${args.matcherKind} ${args.matcherValue}`
-    : `${args.effect === 'archive' ? 'Archive' : 'Keep'} messages matching the semantic rule: ${args.match}`;
+  if (name === 'rules.create' || name === 'rules.upsert') {
+    const base = args.type === 'exact'
+      ? `${args.effect === 'archive' ? 'Archive' : 'Keep'} future messages matching ${args.matcherKind} ${args.matcherValue}`
+      : `${args.effect === 'archive' ? 'Archive' : 'Keep'} messages matching the semantic rule: ${args.match}`;
+    const replacementName = replacementRule?.description
+      || replacementRule?.matcherValue
+      || replacementRule?.match
+      || replacementRule?.id;
+    return replacementName ? `${base}, replacing the existing rule “${replacementName}”` : base;
+  }
   if (name === 'rules.disable') return `Disable the ${args.effect} rule for ${args.matcherKind} ${args.matcherValue}`;
   if (name === 'rules.reset') return args.baselineRuleId
     ? `Reset the override for baseline rule ${args.baselineRuleId}`
@@ -354,6 +362,7 @@ export function createDefaultAssistantDependencies() {
 export async function prepareAssistantTool({ name, rawArguments, conversation, latestUserText, dependencies }) {
   const definition = DEFINITIONS.get(name);
   let args = enforceConversationScope(conversation, validateAssistantToolCall(name, rawArguments));
+  let replacementRule = null;
   if (!actionExplicitlyRequested(name, latestUserText)) {
     throw new AssistantToolError('action_not_requested', 'Email content cannot authorize an action; ask the user explicitly', 403);
   }
@@ -401,11 +410,13 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
     };
   }
   if (name === 'rules.preview') {
-    const preview = previewUserRule(args);
+    const preview = await previewUserRule(args, {
+      ...(dependencies.semanticRuleEvaluator ? { evaluator: dependencies.semanticRuleEvaluator } : {}),
+    });
     return {
       kind: 'result', risk: definition.risk,
       result: preview,
-      evidence: preview.evidence || [],
+      evidence: preview.matches || preview.evidence || [],
     };
   }
   if (name === 'unsubscribe.request') {
@@ -429,6 +440,28 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
   if ((name === 'rules.create' || name === 'rules.upsert') && conversation.scope === 'email') {
     args = { ...args, sourceEmailItemId: conversation.emailItemId };
   }
+  if (name === 'rules.create' || name === 'rules.upsert') {
+    const editedRule = args.id ? getUserRuleRecord(args.id) : null;
+    replacementRule = getUserRuleConflict(args, { source: 'assistant' });
+    if (editedRule) {
+      args = {
+        ...args,
+        expectedRule: {
+          ruleId: editedRule.id,
+          updatedAt: editedRule.updatedAt,
+        },
+      };
+    }
+    if (replacementRule) {
+      args = {
+        ...args,
+        expectedConflict: {
+          ruleId: replacementRule.id,
+          updatedAt: replacementRule.updatedAt,
+        },
+      };
+    }
+  }
   if (name === 'rules.disable' || name === 'rules.reset') {
     const rule = getUserRuleRecord(args.ruleId);
     if (!rule || rule.account !== args.account) throw new AssistantToolError('rule_not_found', 'Assistant rule not found', 404);
@@ -449,7 +482,10 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
       baselineRuleId: rule.baselineRuleId,
     };
   }
-  return { kind: 'proposal', risk: definition.risk, arguments: args, summary: proposalSummary(name, args) };
+  return {
+    kind: 'proposal', risk: definition.risk, arguments: args,
+    summary: proposalSummary(name, args, { replacementRule }),
+  };
 }
 
 export function assistantProposalDigest(proposal) {
@@ -475,6 +511,13 @@ export async function executeAssistantProposal(proposal, conversation, dependenc
       account: proposal.arguments.account,
       ruleId: proposal.arguments.ruleId,
     };
+  } else if (proposal.tool === 'rules.create' || proposal.tool === 'rules.upsert') {
+    const {
+      expectedConflict: _expectedConflict,
+      expectedRule: _expectedRule,
+      ...ruleArguments
+    } = proposal.arguments;
+    validationArguments = ruleArguments;
   }
   const args = enforceConversationScope(conversation, validateAssistantToolCall(
     proposal.tool,

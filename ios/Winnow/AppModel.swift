@@ -289,6 +289,16 @@ final class AppModel: ObservableObject {
         accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame })
     }
 
+    func mailRule(referencing reference: AppliedRuleReference, account: String) -> MailRule? {
+        let scopedRules = mailRules.filter { rule in
+            rule.account == nil || rule.account?.caseInsensitiveCompare(account) == .orderedSame
+        }
+        return scopedRules.first { rule in
+            rule.id == reference.id
+                || rule.id == "baseline:\(reference.id)"
+        } ?? scopedRules.first { $0.baselineRuleId == reference.id }
+    }
+
     func loadMailRules(showsError: Bool = true) async {
         guard isConfigured, !isLoadingMailRules else { return }
         isLoadingMailRules = true
@@ -304,6 +314,42 @@ final class AppModel: ObservableObject {
 
     func previewMailRule(_ draft: MailRuleDraft) async throws -> MailRulePreviewResponse {
         try await APIClient(configuration: configuration).previewMailRule(draft)
+    }
+
+    func createMailRule(_ draft: MailRuleDraft) async -> Bool {
+        do {
+            _ = try await APIClient(configuration: configuration).createMailRule(draft)
+            await loadMailRules(showsError: false)
+            toast = ToastMessage(text: "Rule created", symbol: "checkmark.circle.fill")
+            return true
+        } catch {
+            presentedError = PresentedError(title: "Couldn’t create rule", message: error.localizedDescription)
+            return false
+        }
+    }
+
+    func undoHandling(on item: EmailItem) async -> Bool {
+        guard !performingEmailIDs.contains(item.id) else { return false }
+        performingEmailIDs.insert(item.id)
+        defer { performingEmailIDs.remove(item.id) }
+
+        do {
+            let response = try await APIClient(configuration: configuration).undoHandling(emailID: item.id)
+            if let updated = response.item { replace(updated) }
+            publishEmailState()
+            await waitForRefreshToFinish()
+            await refresh(silent: true)
+            let result = switch item.undoAction {
+            case .moveToInbox: "Moved to Inbox; it remains read"
+            case .archive: "Archived and marked read"
+            default: "Handling undone for this email"
+            }
+            toast = ToastMessage(text: result, symbol: "arrow.uturn.backward.circle")
+            return true
+        } catch {
+            presentedError = PresentedError(title: "Couldn’t undo handling", message: error.localizedDescription)
+            return false
+        }
     }
 
     func saveMailRule(_ draft: MailRuleDraft, replacing rule: MailRule) async -> Bool {
@@ -335,6 +381,7 @@ final class AppModel: ObservableObject {
             if enabled {
                 var draft = MailRuleDraft(rule: rule)
                 draft.enabled = true
+                draft.expectedRule = MailRuleVersionBinding(rule: rule)
                 _ = try await client.updateMailRule(id: rule.id, candidate: draft)
             } else {
                 _ = try await client.disableMailRule(id: rule.id)

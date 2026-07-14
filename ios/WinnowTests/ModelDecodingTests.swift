@@ -24,10 +24,56 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertTrue(item.gmailURL?.absoluteString.contains("authuser=me@example.com") == true)
         XCTAssertEqual(item.gmailDestination?.accountHint, "me@example.com")
         XCTAssertEqual(GmailDestination.nativeAppURL.scheme, "googlegmail")
+        XCTAssertNil(item.handlingDecision)
+        XCTAssertNil(item.undoAction)
         XCTAssertEqual(
             item.nativeGmailURL(accountID: 2)?.absoluteString,
             "googlegmail:///cv=t1/accountId=2"
         )
+    }
+
+    func testEmailDecodesTypedHandlingDecisionAndRuleAttribution() throws {
+        let json = #"""
+        {
+          "id":"abc","mailboxState":"archived",
+          "undoAction":"move-to-inbox",
+          "handlingDecision":{
+            "effect":"archive","basis":"semantic_rule",
+            "explanation":"Matched routine product announcements.","confidence":93,
+            "handledAt":"2026-07-13T12:00:00.000Z",
+            "appliedRule":{
+              "id":"rule-1","description":"Routine announcements","scope":"user",
+              "source":"assistant","editable":true,
+              "attribution":"model_cited"
+            }
+          }
+        }
+        """#.data(using: .utf8)!
+
+        let item = try JSONDecoder().decode(EmailItem.self, from: json)
+        XCTAssertEqual(item.handlingDecision?.effect, .archive)
+        XCTAssertEqual(item.handlingDecision?.basis, .semanticRule)
+        XCTAssertEqual(item.handlingDecision?.confidence, 93)
+        XCTAssertEqual(item.handlingDecision?.appliedRule?.id, "rule-1")
+        XCTAssertEqual(item.handlingDecision?.appliedRule?.displayTitle, "Routine announcements")
+        XCTAssertEqual(item.handlingDecision?.appliedRule?.attributionDescription, "Classifier-cited rule")
+        XCTAssertEqual(item.undoAction, .moveToInbox)
+    }
+
+    func testEmailDecodesAllServerHandlingBases() throws {
+        for basis in ["server_automation", "ephemeral"] {
+            let json = #"{"id":"abc","handlingDecision":{"effect":"archive","basis":"\#(basis)","handledAt":"2026-07-13T12:00:00.000Z"}}"#.data(using: .utf8)!
+            let item = try JSONDecoder().decode(EmailItem.self, from: json)
+            XCTAssertNotNil(item.handlingDecision?.basis)
+        }
+    }
+
+    func testEmailToleratesFutureDecisionBasisAndUndoAction() throws {
+        let json = #"{"id":"abc","undoAction":"future-action","handlingDecision":{"effect":"keep","basis":"future_basis","handledAt":"2026-07-13T12:00:00.000Z"}}"#.data(using: .utf8)!
+        let item = try JSONDecoder().decode(EmailItem.self, from: json)
+        XCTAssertEqual(item.handlingDecision?.effect, .keep)
+        XCTAssertNil(item.handlingDecision?.basis)
+        XCTAssertNil(item.undoAction)
     }
 
     func testAccountDecodesAvatarAndGmailAppSlot() throws {
@@ -190,7 +236,7 @@ final class ModelDecodingTests: XCTestCase {
         let json = #"""
         {"rules":[
           {"id":"baseline:default-news","account":null,"type":"semantic","effect":"archive","match":"Routine newsletters","description":"Routine newsletters","enabled":true,"scope":"baseline","source":"baseline","editable":false,"baselineRuleId":"default-news"},
-          {"id":"override-news","account":"me@example.com","type":"semantic","effect":"keep","description":"Keep newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news"},
+          {"id":"override-news","account":"me@example.com","type":"semantic","effect":"keep","description":"Keep newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news","activity":{"appliedCount30Days":12,"lastAppliedAt":"2026-07-12T10:00:00.000Z","recent":[{"emailItemId":"email-1","from":"News","subject":"Weekly news","date":"2026-07-12T10:00:00.000Z"}]}},
           {"id":"server-hook","account":"work@example.com","type":"exact","effect":"archive","matcherKind":"sender","matcherValue":"robot@example.com","description":"Server workflow","enabled":true,"scope":"user","source":"import","editable":false}
         ]}
         """#.data(using: .utf8)!
@@ -204,6 +250,10 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertTrue(response.rules[1].isBaselineCustomization)
         XCTAssertTrue(response.rules[1].canReset)
         XCTAssertFalse(response.rules[1].canToggle)
+        XCTAssertEqual(response.rules[1].activity?.appliedCount30Days, 12)
+        XCTAssertNotNil(response.rules[1].activity?.lastAppliedDate)
+        XCTAssertEqual(response.rules[1].activity?.recent.first?.subject, "Weekly news")
+        XCTAssertNotNil(response.rules[1].activity?.recent.first?.displayDate)
         XCTAssertTrue(response.rules[2].isLockedAutomation)
         XCTAssertEqual(response.rules[2].matcherTitle, "Sender: robot@example.com")
     }
@@ -227,6 +277,47 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(preview.note, "Semantic rules are evaluated by the classifier.")
     }
 
+    func testRicherSemanticPreviewDecodesExamplesAndConflict() throws {
+        let json = #"""
+        {
+          "candidate":{"id":"candidate","account":"me@example.com","type":"semantic","effect":"archive","match":"Routine receipts","description":"Receipts","enabled":true,"scope":"user","source":"api","editable":true},
+          "mode":"semantic","evaluatedCount":18,"sampledAtMost":100,
+          "matches":[{"emailItemId":"email-1","account":"me@example.com","messageId":"m1","threadId":"t1","from":"Store","subject":"Receipt","snippet":"Paid","confidence":91.5,"reason":"Completed purchase receipt"}],
+          "nonMatches":[{"emailItemId":"email-2","account":"me@example.com","messageId":"m2","threadId":"t2","from":"Store","subject":"Payment failed","confidence":88,"reason":"Requires action"}],
+          "sampledAt":"2026-07-13T12:00:00.000Z","model":"classifier-v1",
+          "conflict":{"rule":{"id":"existing","account":"me@example.com","type":"semantic","effect":"keep","match":"Routine receipts","description":"Keep receipts","enabled":true,"scope":"user","source":"assistant","editable":true,"updatedAt":"2026-07-13T11:59:00.000Z"}},
+          "expectedRule":{"ruleId":"candidate","updatedAt":"2026-07-13T11:58:00.000Z"}
+        }
+        """#.data(using: .utf8)!
+
+        let preview = try JSONDecoder().decode(MailRulePreviewResponse.self, from: json)
+        XCTAssertEqual(preview.mode, "semantic")
+        XCTAssertEqual(preview.evaluatedCount, 18)
+        XCTAssertEqual(preview.matches.first?.confidence, 91.5)
+        XCTAssertEqual(preview.matches.first?.confidencePercentText, "91.5%")
+        XCTAssertEqual(preview.nonMatches.first?.confidencePercentText, "88%")
+        XCTAssertEqual(preview.nonMatches.first?.emailItemId, "email-2")
+        XCTAssertEqual(preview.conflict?.rule.id, "existing")
+        XCTAssertEqual(preview.replacementBinding?.ruleId, "existing")
+        XCTAssertEqual(preview.replacementBinding?.updatedAt, "2026-07-13T11:59:00.000Z")
+        XCTAssertEqual(preview.expectedRule?.ruleId, "candidate")
+        XCTAssertEqual(preview.expectedRule?.updatedAt, "2026-07-13T11:58:00.000Z")
+
+        let candidate = MailRuleDraft(
+            account: "me@example.com", type: "semantic", effect: "archive",
+            match: "Routine receipts", description: "Receipts"
+        ).bindingExpectedGuards(from: preview)
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(candidate)) as? [String: Any]
+        )
+        let expectedConflict = try XCTUnwrap(payload["expectedConflict"] as? [String: Any])
+        XCTAssertEqual(expectedConflict["ruleId"] as? String, "existing")
+        XCTAssertEqual(expectedConflict["updatedAt"] as? String, "2026-07-13T11:59:00.000Z")
+        let expectedRule = try XCTUnwrap(payload["expectedRule"] as? [String: Any])
+        XCTAssertEqual(expectedRule["ruleId"] as? String, "candidate")
+        XCTAssertEqual(expectedRule["updatedAt"] as? String, "2026-07-13T11:58:00.000Z")
+    }
+
     func testExactRuleDraftEncodesDefaultFieldAndOmitsSemanticMatch() throws {
         let json = #"{"id":"rule-1","account":"me@example.com","type":"semantic","effect":"archive","match":"Routine receipts","description":"Receipts","enabled":true,"scope":"user","source":"api","editable":true}"#.data(using: .utf8)!
         let rule = try JSONDecoder().decode(MailRule.self, from: json)
@@ -239,6 +330,7 @@ final class ModelDecodingTests: XCTestCase {
         )
         XCTAssertEqual(payload["matcherKind"] as? String, "sender")
         XCTAssertEqual(payload["matcherValue"] as? String, "billing@example.com")
+        XCTAssertEqual(payload["id"] as? String, "rule-1")
         XCTAssertNil(payload["match"])
     }
 
@@ -268,18 +360,39 @@ final class ModelDecodingTests: XCTestCase {
                 XCTAssertEqual(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "me@example.com")
                 return (200, #"{"rules":[]}"#)
             case ("POST", "/v1/rules/preview"):
-                XCTAssertNotNil(body?["candidate"] as? [String: Any])
+                let candidate = body?["candidate"] as? [String: Any]
+                XCTAssertNotNil(candidate)
+                XCTAssertNil(candidate?["id"])
+                XCTAssertEqual(body?["limit"] as? Int, 5)
                 return (200, #"{"matchCount":0,"evidence":[]}"#)
             case ("POST", "/v1/rules"):
+                if body?["sourceEmailItemId"] as? String == "email-source" {
+                    XCTAssertNil(body?["id"])
+                    XCTAssertEqual(body?["matcherKind"] as? String, "sender")
+                    XCTAssertEqual(body?["account"] as? String, "me@example.com")
+                    let expectedConflict = body?["expectedConflict"] as? [String: Any]
+                    XCTAssertEqual(expectedConflict?["ruleId"] as? String, "existing-sender")
+                    XCTAssertEqual(expectedConflict?["updatedAt"] as? String, "2026-07-13T12:00:00.000Z")
+                    return (201, #"{"rule":{"id":"created","account":"me@example.com","type":"exact","effect":"archive","matcherKind":"sender","matcherValue":"billing@example.com","description":"Billing","enabled":true,"scope":"user","source":"api","editable":true,"sourceEmailItemId":"email-source"}}"#)
+                }
                 XCTAssertEqual(body?["baselineRuleId"] as? String, "default-news")
                 XCTAssertEqual(body?["account"] as? String, "me@example.com")
+                XCTAssertNil(body?["id"])
                 XCTAssertNil(body?["match"])
-                return (200, #"{"rule":{"id":"override-news","account":null,"type":"semantic","effect":"keep","description":"Routine newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news"}}"#)
+                let expectedConflict = body?["expectedConflict"] as? [String: Any]
+                XCTAssertEqual(expectedConflict?["ruleId"] as? String, "existing-default")
+                XCTAssertEqual(expectedConflict?["updatedAt"] as? String, "2026-07-13T11:00:00.000Z")
+                return (200, #"{"rule":{"id":"override-news","account":null,"type":"semantic","effect":"keep","description":"Routine newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news","updatedAt":"2026-07-13T10:00:00.000Z"}}"#)
             case ("PATCH", "/v1/rules/override-news"):
                 XCTAssertEqual(body?["effect"] as? String, "keep")
+                let expectedRule = body?["expectedRule"] as? [String: Any]
+                XCTAssertEqual(expectedRule?["ruleId"] as? String, "override-news")
+                XCTAssertEqual(expectedRule?["updatedAt"] as? String, "2026-07-13T10:00:00.000Z")
                 return (200, #"{"rule":{"id":"override-news","type":"semantic","effect":"keep","description":"Routine newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news"}}"#)
             case ("POST", "/v1/rules/override-news/disable"), ("POST", "/v1/rules/override-news/reset"):
                 return (200, #"{"ok":true}"#)
+            case ("POST", "/v1/emails/email-source/undo-handling"):
+                return (200, #"{"ok":true,"action":"undo-handling","item":{"id":"email-source","mailboxState":"inbox"}}"#)
             default:
                 XCTFail("Unexpected rule request: \(method) \(path)")
                 return (404, #"{"error":"unexpected"}"#)
@@ -291,13 +404,77 @@ final class ModelDecodingTests: XCTestCase {
         let preview = try await client.previewMailRule(draft)
         XCTAssertTrue(listedRules.isEmpty)
         XCTAssertEqual(preview.matchCount, 0)
+        draft.expectedConflict = MailRuleVersionBinding(
+            ruleId: "existing-default",
+            updatedAt: "2026-07-13T11:00:00.000Z"
+        )
         let customized = try await client.customizeBaselineRule(draft)
         XCTAssertEqual(customized.baselineRuleId, "default-news")
-        _ = try await client.updateMailRule(id: customized.id, candidate: MailRuleDraft(rule: customized))
+        var sourceDraft = MailRuleDraft(
+            account: "me@example.com", type: "exact", effect: "archive",
+            matcherKind: "sender", matcherValue: "billing@example.com",
+            description: "Billing", sourceEmailItemId: "email-source"
+        )
+        sourceDraft.expectedConflict = MailRuleVersionBinding(
+            ruleId: "existing-sender",
+            updatedAt: "2026-07-13T12:00:00.000Z"
+        )
+        let created = try await client.createMailRule(sourceDraft)
+        XCTAssertEqual(created.sourceEmailItemId, "email-source")
+        var updateDraft = MailRuleDraft(rule: customized)
+        updateDraft.expectedRule = try XCTUnwrap(MailRuleVersionBinding(rule: customized))
+        _ = try await client.updateMailRule(id: customized.id, candidate: updateDraft)
         let disabled = try await client.disableMailRule(id: customized.id)
         let reset = try await client.resetMailRule(id: customized.id)
         XCTAssertTrue(disabled.ok)
         XCTAssertTrue(reset.ok)
+        let undone = try await client.undoHandling(emailID: "email-source")
+        XCTAssertEqual(undone.action, "undo-handling")
+        XCTAssertEqual(undone.item?.mailboxState, "inbox")
+    }
+
+    func testExistingBaselineCustomizationPOSTRetainsRuleID() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            session: URLSession(configuration: configuration)
+        )
+        let json = #"{"id":"override-news","account":"me@example.com","type":"semantic","effect":"keep","match":"Routine newsletters","description":"Keep newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news","updatedAt":"2026-07-13T11:00:00.000Z"}"#.data(using: .utf8)!
+        let existing = try JSONDecoder().decode(MailRule.self, from: json)
+
+        MailRuleURLProtocol.handler = { request in
+            let body = try XCTUnwrap(MailRuleURLProtocol.bodyData(from: request))
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(request.httpMethod, "POST")
+            switch request.url?.path {
+            case "/v1/rules/preview":
+                let candidate = try XCTUnwrap(payload["candidate"] as? [String: Any])
+                XCTAssertEqual(candidate["id"] as? String, "override-news")
+                XCTAssertNil(candidate["expectedRule"])
+                return (200, #"{"candidate":{"id":"override-news","account":"me@example.com","type":"semantic","effect":"archive","match":"Routine newsletters","description":"Keep newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news"},"mode":"semantic","matches":[],"nonMatches":[],"expectedRule":{"ruleId":"override-news","updatedAt":"2026-07-13T11:00:00.000Z"}}"#)
+            case "/v1/rules":
+                XCTAssertEqual(payload["id"] as? String, "override-news")
+                XCTAssertEqual(payload["baselineRuleId"] as? String, "default-news")
+                XCTAssertEqual(payload["account"] as? String, "me@example.com")
+                let expectedRule = try XCTUnwrap(payload["expectedRule"] as? [String: Any])
+                XCTAssertEqual(expectedRule["ruleId"] as? String, "override-news")
+                XCTAssertEqual(expectedRule["updatedAt"] as? String, "2026-07-13T11:00:00.000Z")
+                return (200, #"{"rule":{"id":"override-news","account":"me@example.com","type":"semantic","effect":"archive","description":"Keep newsletters","enabled":true,"scope":"user","source":"api","editable":true,"baselineRuleId":"default-news","updatedAt":"2026-07-13T12:00:00.000Z"}}"#)
+            default:
+                XCTFail("Unexpected path: \(request.url?.path ?? "nil")")
+                return (404, #"{"error":"unexpected"}"#)
+            }
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+
+        var draft = MailRuleDraft(rule: existing)
+        draft.effect = "archive"
+        let preview = try await client.previewMailRule(draft)
+        XCTAssertEqual(preview.expectedRule?.ruleId, existing.id)
+        let updated = try await client.customizeBaselineRule(draft.bindingExpectedGuards(from: preview))
+        XCTAssertEqual(updated.id, existing.id)
+        XCTAssertEqual(updated.effect, "archive")
     }
 }
 

@@ -8,17 +8,24 @@ import { reloadConfig } from '../src/config.js';
 import { getPushCapabilities } from '../src/push.js';
 import {
   appendEmailEvent,
+  claimHandlingUndo,
   closeStoreForTests,
   configureDatabaseForTests,
+  getEmailItem,
+  listEvents,
+  listUserRuleRecords,
+  updateEmailItemState,
   upsertEmailItemFromResult,
 } from '../src/store.js';
+import { SemanticPreviewError } from '../src/semantic-rule-preview.js';
 
 let tempDir;
 let server;
 let baseUrl;
+let apiDependencies;
 
 async function startServer() {
-  server = createApiServer();
+  server = createApiServer(apiDependencies);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   baseUrl = `http://${address.address}:${address.port}`;
@@ -46,6 +53,21 @@ api:
 `, 'utf8');
   reloadConfig();
   configureDatabaseForTests(join(tempDir, 'winnow.db'));
+  apiDependencies = {
+    semanticRuleEvaluator: async ({ messages }) => ({
+      model: 'test-model',
+      sampledAt: '2026-07-13T20:00:00.000Z',
+      evaluations: messages.map(message => ({
+        emailItemId: message.id, matches: true, confidence: 91, reason: 'Representative match',
+      })),
+    }),
+    archiveEmail: async ({ emailItemId, reason }) => updateEmailItemState(emailItemId, {
+      triageState: 'manual_archived', mailboxState: 'archived', readState: 'read', reason,
+    }),
+    moveEmailToInbox: async ({ emailItemId, reason }) => updateEmailItemState(emailItemId, {
+      triageState: 'restored', mailboxState: 'inbox', reason,
+    }),
+  };
   const item = upsertEmailItemFromResult({
     account: 'me@example.com',
     messageId: 'm1',
@@ -78,7 +100,6 @@ afterEach(async () => {
   delete process.env.WINNOW_CONFIG_PATH;
   delete process.env.SLACK_BOT_TOKEN;
   delete process.env.SLACK_APP_TOKEN;
-  reloadConfig();
 });
 
 describe('local API', () => {
@@ -403,7 +424,10 @@ describe('local API', () => {
 
     const updated = await fetch(`${baseUrl}/v1/rules/${rule.id}`, {
       method: 'PATCH', headers,
-      body: JSON.stringify({ effect: 'keep' }),
+      body: JSON.stringify({
+        effect: 'keep',
+        expectedRule: { ruleId: rule.id, updatedAt: rule.updatedAt },
+      }),
     });
     assert.equal(updated.status, 200);
     assert.equal((await updated.json()).rule.effect, 'keep');
@@ -415,5 +439,307 @@ describe('local API', () => {
     const reset = await fetch(`${baseUrl}/v1/rules/${rule.id}/reset`, { method: 'POST', headers });
     assert.equal(reset.status, 200);
     assert.equal((await reset.json()).reset, true);
+  });
+
+  it('exposes handling decisions and only undoes while scan state is still current', async () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm1', threadId: 't1',
+      from: 'Sender <sender@example.com>', subject: 'Hello', summary: 'A useful email',
+      archive: true, readState: 'read', confidence: 100,
+      handlingDecision: {
+        effect: 'archive', basis: 'exact_rule', explanation: 'Matched sender rule',
+        confidence: 100, handledAt: '2026-07-13T20:00:00.000Z',
+        appliedRule: {
+          id: 'rule-sender', description: 'Sender rule', scope: 'user', source: 'assistant',
+          editable: true, attribution: 'deterministic',
+        },
+      },
+    });
+    const headers = { Authorization: 'Bearer test-token' };
+    const fetched = await fetch(`${baseUrl}/v1/emails/${encodeURIComponent(item.id)}`, { headers });
+    const fetchedItem = (await fetched.json()).item;
+    assert.equal(fetchedItem.handlingDecision.appliedRule.id, 'rule-sender');
+    assert.equal(fetchedItem.undoAction, 'move-to-inbox');
+
+    const undone = await fetch(`${baseUrl}/v1/emails/${encodeURIComponent(item.id)}/undo-handling`, {
+      method: 'POST', headers,
+    });
+    assert.equal(undone.status, 200);
+    const body = await undone.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.action, 'undo-handling');
+    assert.equal(body.item.mailboxState, 'inbox');
+    assert.equal(body.item.undoAction, null);
+    assert.match(body.item.reason, /future rule behavior is unchanged/i);
+
+    const repeated = await fetch(`${baseUrl}/v1/emails/${encodeURIComponent(item.id)}/undo-handling`, {
+      method: 'POST', headers,
+    });
+    assert.equal(repeated.status, 409);
+    assert.equal((await repeated.json()).error, 'handling_not_undoable');
+  });
+
+  it('requires an exact preview binding before replacing a conflicting rule', async () => {
+    const headers = { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' };
+    const original = await fetch(`${baseUrl}/v1/rules`, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        account: 'me@example.com', type: 'exact', effect: 'archive',
+        matcherKind: 'domain', matcherValue: 'example.com', description: 'Original domain rule',
+      }),
+    });
+    const originalRule = (await original.json()).rule;
+    const candidate = {
+      account: 'me@example.com', type: 'exact', effect: 'keep',
+      matcherKind: 'domain', matcherValue: 'example.com', description: 'Replacement domain rule',
+    };
+    const unbound = await fetch(`${baseUrl}/v1/rules`, {
+      method: 'POST', headers, body: JSON.stringify(candidate),
+    });
+    assert.equal(unbound.status, 409);
+    assert.equal((await unbound.json()).error, 'rule_conflict_confirmation_required');
+
+    const previewResponse = await fetch(`${baseUrl}/v1/rules/preview`, {
+      method: 'POST', headers, body: JSON.stringify({ candidate }),
+    });
+    const preview = await previewResponse.json();
+    assert.equal(preview.conflict.rule.id, originalRule.id);
+    const replaced = await fetch(`${baseUrl}/v1/rules`, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        ...candidate,
+        expectedConflict: {
+          ruleId: preview.conflict.rule.id,
+          updatedAt: preview.conflict.rule.updatedAt,
+        },
+      }),
+    });
+    assert.equal(replaced.status, 201);
+    assert.equal((await replaced.json()).rule.effect, 'keep');
+  });
+
+  it('revision-binds PATCH matcher changes and atomically merges a confirmed target', async () => {
+    const headers = { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' };
+    const create = async (matcherValue, effect) => {
+      const response = await fetch(`${baseUrl}/v1/rules`, {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          account: 'me@example.com', type: 'exact', effect,
+          matcherKind: 'sender', matcherValue,
+        }),
+      });
+      return (await response.json()).rule;
+    };
+    const edited = await create('first@example.com', 'archive');
+    const target = await create('second@example.com', 'keep');
+    const candidate = {
+      id: edited.id, account: edited.account, type: 'exact', effect: 'archive',
+      matcherKind: 'sender', matcherValue: 'second@example.com', description: 'Merged rule', enabled: true,
+    };
+    const previewResponse = await fetch(`${baseUrl}/v1/rules/preview`, {
+      method: 'POST', headers, body: JSON.stringify({ candidate }),
+    });
+    assert.equal(previewResponse.status, 200);
+    const preview = await previewResponse.json();
+    assert.deepEqual(preview.expectedRule, { ruleId: edited.id, updatedAt: edited.updatedAt });
+    assert.equal(preview.conflict.rule.id, target.id);
+
+    const missingRevision = await fetch(`${baseUrl}/v1/rules/${edited.id}`, {
+      method: 'PATCH', headers, body: JSON.stringify(candidate),
+    });
+    assert.equal(missingRevision.status, 409);
+    assert.equal((await missingRevision.json()).error, 'rule_revision_confirmation_required');
+
+    const updated = await fetch(`${baseUrl}/v1/rules/${edited.id}`, {
+      method: 'PATCH', headers,
+      body: JSON.stringify({
+        ...candidate,
+        expectedRule: preview.expectedRule,
+        expectedConflict: {
+          ruleId: preview.conflict.rule.id,
+          updatedAt: preview.conflict.rule.updatedAt,
+        },
+      }),
+    });
+    assert.equal(updated.status, 200);
+    const saved = (await updated.json()).rule;
+    assert.equal(saved.id, edited.id);
+    assert.equal(saved.matcherValue, 'second@example.com');
+    assert.equal(listUserRuleRecords({ account: 'me@example.com' }).some(rule => rule.id === target.id), false);
+
+    const stale = await fetch(`${baseUrl}/v1/rules/${edited.id}`, {
+      method: 'PATCH', headers,
+      body: JSON.stringify({ description: 'Stale edit', expectedRule: preview.expectedRule }),
+    });
+    assert.equal(stale.status, 409);
+    assert.equal((await stale.json()).error, 'rule_revision_changed');
+  });
+
+  it('atomically rejects a concurrent undo while the first Gmail operation is in flight', async () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-concurrent-undo', threadId: 't-concurrent-undo',
+      from: 'Sender <sender@example.com>', subject: 'Concurrent undo', archive: true,
+      handlingDecision: {
+        id: 'decision-concurrent-undo', effect: 'archive', basis: 'classifier',
+        explanation: 'Archived by Winnow', confidence: 90, handledAt: new Date().toISOString(),
+      },
+    });
+    let releaseOperation;
+    let markStarted;
+    const operationStarted = new Promise(resolve => { markStarted = resolve; });
+    const operationGate = new Promise(resolve => { releaseOperation = resolve; });
+    apiDependencies.moveEmailToInbox = async ({ emailItemId, reason }) => {
+      markStarted();
+      await operationGate;
+      return updateEmailItemState(emailItemId, {
+        triageState: 'restored', mailboxState: 'inbox', reason,
+      });
+    };
+    const headers = { Authorization: 'Bearer test-token' };
+    const url = `${baseUrl}/v1/emails/${encodeURIComponent(item.id)}/undo-handling`;
+    const firstRequest = fetch(url, { method: 'POST', headers });
+    await operationStarted;
+    const concurrent = await fetch(url, { method: 'POST', headers });
+    assert.equal(concurrent.status, 409);
+    assert.equal((await concurrent.json()).error, 'handling_not_undoable');
+    releaseOperation();
+    const first = await firstRequest;
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).item.mailboxState, 'inbox');
+  });
+
+  it('reclaims a stale undo lease after a store restart', async () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-stale-undo', threadId: 't-stale-undo',
+      from: 'Sender <sender@example.com>', subject: 'Stale undo', archive: true,
+      handlingDecision: {
+        id: 'decision-stale-undo', effect: 'archive', basis: 'classifier',
+        explanation: 'Archived by Winnow', confidence: 90, handledAt: '2026-07-13T20:00:00.000Z',
+      },
+    });
+    const claim = claimHandlingUndo(item.id, 'decision-stale-undo', 'crashed-process', {
+      now: new Date('2020-01-01T00:00:00.000Z'),
+    });
+    assert.equal(claim.claimed, true);
+    closeStoreForTests();
+    configureDatabaseForTests(join(tempDir, 'winnow.db'));
+    let executions = 0;
+    apiDependencies.moveEmailToInbox = async ({ emailItemId, reason }) => {
+      executions += 1;
+      return updateEmailItemState(emailItemId, {
+        triageState: 'restored', mailboxState: 'inbox', reason,
+      });
+    };
+    const response = await fetch(`${baseUrl}/v1/emails/${encodeURIComponent(item.id)}/undo-handling`, {
+      method: 'POST', headers: { Authorization: 'Bearer test-token' },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(executions, 1);
+    assert.equal(getEmailItem(item.id).handlingUndoStatus, 'completed');
+  });
+
+  it('completes a stale undo claim without repeating an already-applied mailbox action', async () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-crash-after-state', threadId: 't-crash-after-state',
+      from: 'Sender <sender@example.com>', subject: 'Crash after state', archive: true,
+      handlingDecision: {
+        id: 'decision-crash-after-state', effect: 'archive', basis: 'classifier',
+        explanation: 'Archived by Winnow', confidence: 90, handledAt: '2026-07-13T20:00:00.000Z',
+      },
+    });
+    assert.equal(claimHandlingUndo(item.id, 'decision-crash-after-state', 'crashed-process', {
+      now: new Date('2020-01-01T00:00:00.000Z'),
+    }).claimed, true);
+    updateEmailItemState(item.id, { triageState: 'restored', mailboxState: 'inbox' });
+    closeStoreForTests();
+    configureDatabaseForTests(join(tempDir, 'winnow.db'));
+    let executions = 0;
+    apiDependencies.moveEmailToInbox = async () => {
+      executions += 1;
+      throw new Error('must not repeat an already applied operation');
+    };
+    const response = await fetch(`${baseUrl}/v1/emails/${encodeURIComponent(item.id)}/undo-handling`, {
+      method: 'POST', headers: { Authorization: 'Bearer test-token' },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(executions, 0);
+    assert.equal(getEmailItem(item.id).handlingUndoStatus, 'completed');
+  });
+
+  it('returns a stable retryable semantic-preview error without mutations', async () => {
+    const rulesBefore = listUserRuleRecords().length;
+    const eventsBefore = listEvents({ limit: 500 }).length;
+    apiDependencies.semanticRuleEvaluator = async () => {
+      throw new SemanticPreviewError();
+    };
+    const response = await fetch(`${baseUrl}/v1/rules/preview`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        candidate: {
+          account: 'me@example.com', type: 'semantic', effect: 'archive', match: 'Routine receipts',
+        },
+      }),
+    });
+    assert.equal(response.status, 503);
+    const body = await response.json();
+    assert.equal(body.error, 'semantic_preview_unavailable');
+    assert.equal(body.retryable, true);
+    assert.equal(listUserRuleRecords().length, rulesBefore);
+    assert.equal(listEvents({ limit: 500 }).length, eventsBefore);
+  });
+
+  it('serves semantic sampled previews and forward-only rule activity', async () => {
+    const headers = { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' };
+    const semanticPreview = await fetch(`${baseUrl}/v1/rules/preview`, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        candidate: {
+          account: 'me@example.com', type: 'semantic', effect: 'archive', match: 'Routine messages',
+        },
+      }),
+    });
+    assert.equal(semanticPreview.status, 200);
+    const preview = await semanticPreview.json();
+    assert.equal(preview.mode, 'semantic');
+    assert.equal(preview.model, 'test-model');
+    assert.equal(preview.matches[0].emailItemId.length > 0, true);
+
+    const created = await fetch(`${baseUrl}/v1/rules`, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        account: 'me@example.com', type: 'exact', effect: 'archive',
+        matcherKind: 'sender', matcherValue: 'sender@example.com',
+      }),
+    });
+    const rule = (await created.json()).rule;
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm1', threadId: 't1',
+      from: 'Sender <sender@example.com>', subject: 'Hello', archive: true,
+      handlingDecision: {
+        effect: 'archive', basis: 'exact_rule', explanation: 'Matched', confidence: 100,
+        handledAt: new Date().toISOString(),
+        appliedRule: {
+          id: rule.id, description: 'Sender', scope: 'user', source: 'api', editable: true,
+          attribution: 'deterministic', effect: 'archive', revision: rule.updatedAt,
+        },
+      },
+    });
+    const listed = await fetch(`${baseUrl}/v1/rules?account=me%40example.com`, { headers });
+    const listedRule = (await listed.json()).rules.find(candidate => candidate.id === rule.id);
+    assert.equal(listedRule.activity.appliedCount30Days, 1);
+    assert.equal(listedRule.activity.recent[0].messageId, 'm1');
+
+    const edited = await fetch(`${baseUrl}/v1/rules/${rule.id}`, {
+      method: 'PATCH', headers, body: JSON.stringify({
+        effect: 'keep',
+        expectedRule: { ruleId: rule.id, updatedAt: rule.updatedAt },
+      }),
+    });
+    assert.equal(edited.status, 200);
+    const relisted = await fetch(`${baseUrl}/v1/rules?account=me%40example.com`, { headers });
+    const currentRevision = (await relisted.json()).rules.find(candidate => candidate.id === rule.id);
+    assert.equal(currentRevision.activity.appliedCount30Days, 0);
+    assert.equal(currentRevision.activity.recent.length, 0);
   });
 });

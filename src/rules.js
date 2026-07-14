@@ -6,6 +6,7 @@ import {
   upsertUserRule,
 } from './user-rules.js';
 import { getUserRuleRecord } from './store.js';
+import { ruleRevision } from './rule-revisions.js';
 
 export function loadBaselineRules() {
   return {
@@ -14,6 +15,10 @@ export function loadBaselineRules() {
       match: rule.match,
       archive: rule.effect === 'archive',
       source: 'baseline',
+      description: rule.match,
+      scope: 'baseline',
+      editable: false,
+      revision: ruleRevision({ ...rule, source: 'baseline' }),
     })),
   };
 }
@@ -30,6 +35,12 @@ export function loadAllRules(account) {
       match: rule.match,
       archive: rule.effect === 'archive',
       source: rule.source,
+      description: rule.description || rule.match,
+      scope: rule.source === 'baseline'
+        ? 'baseline'
+        : (['operator', 'legacy'].includes(rule.source) ? 'server' : 'user'),
+      editable: !['baseline', 'operator', 'legacy'].includes(rule.source),
+      revision: ruleRevision(rule),
     })),
   };
 }
@@ -39,7 +50,7 @@ export function formatRulesForPrompt(rules) {
     const action = rule.archive === true
       ? 'archive'
       : (rule.archive === false ? 'keep in inbox' : (rule.priority === 'low' ? 'archive' : 'keep in inbox'));
-    return `- ${rule.match} → ${action}`;
+    return `- [rule:${rule.id}] ${rule.match} → ${action}`;
   }).join('\n');
 }
 

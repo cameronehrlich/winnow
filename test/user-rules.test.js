@@ -6,6 +6,11 @@ import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { reloadConfig } from '../src/config.js';
 import { loadAllRules } from '../src/rules.js';
+import { ruleRevision } from '../src/rule-revisions.js';
+import {
+  evaluateSemanticRulePreview,
+  SemanticPreviewError,
+} from '../src/semantic-rule-preview.js';
 import {
   ASSISTANT_TOOL_DEFINITIONS,
   executeAssistantProposal,
@@ -15,7 +20,9 @@ import {
   closeStoreForTests,
   configureDatabaseForTests,
   getUserRuleRecord,
+  listEvents,
   listUserRuleRecords,
+  upsertEmailItemFromResult,
 } from '../src/store.js';
 import {
   disableUserRule,
@@ -26,6 +33,7 @@ import {
   listOperatorActionRules,
   listRulesForApi,
   planUserRuleImport,
+  previewUserRule,
   resetUserRule,
   upsertUserRule,
 } from '../src/user-rules.js';
@@ -97,17 +105,126 @@ describe('unified user rules', () => {
     assert.ok(after.some(rule => rule.id === 'operator-hook'));
   });
 
-  it('replaces exact conflicts deterministically instead of stacking opposites', () => {
+  it('requires preview-bound consent before replacing an exact conflict', async () => {
     const first = upsertUserRule({
       account: 'me@example.com', type: 'exact', effect: 'archive',
       matcherKind: 'sender', matcherValue: 'Sender@Example.com',
     }, { source: 'assistant' });
-    const replacement = upsertUserRule({
+    const candidate = {
       account: 'me@example.com', type: 'exact', effect: 'keep',
       matcherKind: 'sender', matcherValue: 'sender@example.com',
+    };
+    assert.throws(
+      () => upsertUserRule(candidate, { source: 'api' }),
+      error => error.code === 'rule_conflict_confirmation_required',
+    );
+    const preview = await previewUserRule(candidate);
+    const replacement = upsertUserRule({
+      ...candidate,
+      expectedConflict: {
+        ruleId: preview.conflict.rule.id,
+        updatedAt: preview.conflict.rule.updatedAt,
+      },
     }, { source: 'api' });
     assert.equal(replacement.id, first.id);
     assert.equal(replacement.effect, 'keep');
+    assert.equal(listEffectiveExactRules('me@example.com').length, 1);
+  });
+
+  it('rejects stale or disappeared replacement bindings', async () => {
+    const existing = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'archive',
+      matcherKind: 'domain', matcherValue: 'example.com',
+    });
+    const candidate = {
+      account: 'me@example.com', type: 'exact', effect: 'keep',
+      matcherKind: 'domain', matcherValue: 'example.com',
+    };
+    const preview = await previewUserRule(candidate);
+    assert.equal(preview.conflict.rule.id, existing.id);
+    upsertUserRule({
+      id: existing.id, account: existing.account, type: existing.type, effect: existing.effect,
+      matcherKind: existing.matcherKind, matcherValue: existing.matcherValue,
+      description: 'Changed after preview',
+      expectedRule: { ruleId: existing.id, updatedAt: existing.updatedAt },
+    });
+    assert.throws(
+      () => upsertUserRule({
+        ...candidate,
+        expectedConflict: {
+          ruleId: preview.conflict.rule.id,
+          updatedAt: preview.conflict.rule.updatedAt,
+        },
+      }),
+      error => error.code === 'rule_conflict_changed',
+    );
+  });
+
+  it('revision-binds existing rule edits and preserves identity across matcher changes', async () => {
+    const existing = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'archive',
+      matcherKind: 'sender', matcherValue: 'old@example.com', description: 'Old sender',
+    });
+    const candidate = {
+      id: existing.id, account: existing.account, type: 'exact', effect: 'archive',
+      matcherKind: 'sender', matcherValue: 'new@example.com', description: 'New sender',
+    };
+    const preview = await previewUserRule(candidate);
+    assert.deepEqual(preview.expectedRule, {
+      ruleId: existing.id,
+      updatedAt: existing.updatedAt,
+    });
+    assert.throws(
+      () => upsertUserRule(candidate),
+      error => error.code === 'rule_revision_confirmation_required',
+    );
+    const saved = upsertUserRule({ ...candidate, expectedRule: preview.expectedRule });
+    assert.equal(saved.id, existing.id);
+    assert.equal(saved.matcherValue, 'new@example.com');
+    assert.equal(getUserRuleRecord(existing.id).matcherValue, 'new@example.com');
+
+    const typeCandidate = {
+      id: saved.id, account: saved.account, type: 'semantic', effect: 'keep',
+      match: 'Messages from the newly grouped sender', description: 'Semantic replacement',
+    };
+    const typePreview = await previewUserRule(typeCandidate);
+    const changedType = upsertUserRule({
+      ...typeCandidate,
+      expectedRule: typePreview.expectedRule,
+    });
+    assert.equal(changedType.id, existing.id);
+    assert.equal(changedType.type, 'semantic');
+    assert.equal(changedType.match, typeCandidate.match);
+    assert.equal(changedType.matcherKind, undefined);
+  });
+
+  it('atomically merges an existing rule into a separately confirmed conflict target', async () => {
+    const edited = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'archive',
+      matcherKind: 'sender', matcherValue: 'first@example.com', description: 'First',
+    });
+    const target = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'keep',
+      matcherKind: 'sender', matcherValue: 'second@example.com', description: 'Second',
+    });
+    const candidate = {
+      id: edited.id, account: edited.account, type: 'exact', effect: 'archive',
+      matcherKind: 'sender', matcherValue: 'second@example.com', description: 'Merged',
+    };
+    const preview = await previewUserRule(candidate);
+    assert.equal(preview.expectedRule.ruleId, edited.id);
+    assert.equal(preview.conflict.rule.id, target.id);
+    const saved = upsertUserRule({
+      ...candidate,
+      expectedRule: preview.expectedRule,
+      expectedConflict: {
+        ruleId: preview.conflict.rule.id,
+        updatedAt: preview.conflict.rule.updatedAt,
+      },
+    });
+    assert.equal(saved.id, edited.id);
+    assert.equal(saved.matcherValue, 'second@example.com');
+    assert.equal(getUserRuleRecord(target.id), null);
     assert.equal(listEffectiveExactRules('me@example.com').length, 1);
   });
 
@@ -130,11 +247,21 @@ describe('unified user rules', () => {
     assert.deepEqual(listEffectiveExactRules('me@example.com').map(rule => rule.id), [newer.id, older.id]);
   });
 
-  it('customizes a read-only baseline through an override and reset restores it', () => {
+  it('customizes a read-only baseline through an override and reset restores it', async () => {
     importUserRules('me@example.com', { dryRun: false });
-    const override = upsertUserRule({
+    const candidate = {
       account: 'me@example.com', type: 'semantic', effect: 'keep',
       baselineRuleId: 'baseline-news',
+    };
+    const preview = await previewUserRule(candidate, {
+      evaluator: async () => ({ model: 'test', evaluations: [] }),
+    });
+    const override = upsertUserRule({
+      ...candidate,
+      expectedConflict: {
+        ruleId: preview.conflict.rule.id,
+        updatedAt: preview.conflict.rule.updatedAt,
+      },
     });
     assert.equal(override.match, 'Baseline newsletter guidance');
     assert.equal(listRulesForApi('me@example.com').rules.filter(rule => (
@@ -165,6 +292,7 @@ describe('unified user rules', () => {
       () => upsertUserRule({
         id: override.id, account: override.account, type: override.type,
         effect: override.effect, baselineRuleId: override.baselineRuleId, enabled: false,
+        expectedRule: { ruleId: override.id, updatedAt: override.updatedAt },
       }),
       /baseline overrides cannot be disabled/i,
     );
@@ -242,6 +370,62 @@ rules:
     assert.equal(migrated[0].effect, 'keep');
   });
 
+  it('binds assistant replacement confirmation to the previewed rule revision', async () => {
+    const existing = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'archive',
+      matcherKind: 'sender', matcherValue: 'alerts@example.com',
+      description: 'Archive alerts',
+    });
+    const conversation = { id: 'conversation-replace', scope: 'mailbox', account: 'me@example.com' };
+    const prepared = await prepareAssistantTool({
+      name: 'rules.upsert',
+      rawArguments: {
+        account: 'me@example.com', type: 'exact', effect: 'keep',
+        matcherKind: 'sender', matcherValue: 'alerts@example.com',
+        description: 'Keep alerts',
+      },
+      conversation,
+      latestUserText: 'Keep future alerts from this sender',
+      dependencies: {},
+    });
+    assert.deepEqual(prepared.arguments.expectedConflict, {
+      ruleId: existing.id,
+      updatedAt: existing.updatedAt,
+    });
+    assert.match(prepared.summary, /replacing the existing rule.*Archive alerts/i);
+    const replaced = await executeAssistantProposal({
+      tool: 'rules.upsert', arguments: prepared.arguments,
+    }, conversation, {});
+    assert.equal(replaced.id, existing.id);
+    assert.equal(replaced.effect, 'keep');
+
+    const current = getUserRuleRecord(replaced.id);
+    const editPrepared = await prepareAssistantTool({
+      name: 'rules.upsert',
+      rawArguments: {
+        id: current.id,
+        account: current.account,
+        type: 'exact',
+        effect: 'archive',
+        matcherKind: 'sender',
+        matcherValue: 'updated-alerts@example.com',
+        description: 'Updated alerts',
+      },
+      conversation,
+      latestUserText: 'Update this rule to archive future messages from the new sender',
+      dependencies: {},
+    });
+    assert.deepEqual(editPrepared.arguments.expectedRule, {
+      ruleId: current.id,
+      updatedAt: current.updatedAt,
+    });
+    const edited = await executeAssistantProposal({
+      tool: 'rules.upsert', arguments: editPrepared.arguments,
+    }, conversation, {});
+    assert.equal(edited.id, current.id);
+    assert.equal(edited.matcherValue, 'updated-alerts@example.com');
+  });
+
   it('does not let YAML import overwrite newer persisted intent or repeat after completion', () => {
     const existing = upsertUserRule({
       account: 'me@example.com', type: 'semantic', effect: 'archive',
@@ -257,6 +441,7 @@ rules:
     const edited = upsertUserRule({
       id: existing.id, account: existing.account, type: existing.type,
       effect: 'keep', match: existing.match, description: 'Edited after migration',
+      expectedRule: { ruleId: existing.id, updatedAt: existing.updatedAt },
     });
     const repeated = importUserRules('me@example.com', { dryRun: false });
     assert.equal(repeated.alreadyImported, true);
@@ -290,5 +475,129 @@ rules:
     assert.equal(listRulesForApi('me@example.com').migrationPending, true);
     assert.equal(loadAllRules('me@example.com').rules.find(rule => rule.id === 'baseline-news').match,
       'A personalized newsletter definition');
+  });
+
+  it('previews exact matches and non-matches with deterministic replacement disclosure', async () => {
+    const existing = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'keep',
+      matcherKind: 'sender', matcherValue: 'sender@example.com',
+    });
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-match', threadId: 't-match',
+      from: 'Sender <sender@example.com>', subject: 'Matches', archive: false,
+    });
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-no-match', threadId: 't-no-match',
+      from: 'Other <other@example.com>', subject: 'Does not match', archive: false,
+    });
+
+    const preview = await previewUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'archive',
+      matcherKind: 'sender', matcherValue: 'sender@example.com',
+    });
+    assert.equal(preview.mode, 'exact');
+    assert.equal(preview.evaluatedCount, 2);
+    assert.equal(preview.matches.length, 1);
+    assert.equal(preview.nonMatches.length, 1);
+    assert.equal(preview.conflict.rule.id, existing.id);
+    assert.match(preview.note, /would match 1 of 2/i);
+  });
+
+  it('bounds semantic preview to stored metadata and leaves Gmail, events, and rules untouched', async () => {
+    for (let index = 0; index < 35; index++) {
+      upsertEmailItemFromResult({
+        account: 'me@example.com', messageId: `m-semantic-${index}`, threadId: `t-semantic-${index}`,
+        from: `Sender ${index} <sender${index}@example.com>`, subject: `Message ${index}`,
+        summary: index % 2 ? 'Routine receipt' : 'Human request', snippet: `Snippet ${index}`,
+        archive: false,
+      });
+    }
+    const rulesBefore = listUserRuleRecords().length;
+    const eventsBefore = listEvents({ limit: 500 }).length;
+    let sampledMessages;
+    const preview = await previewUserRule({
+      account: 'me@example.com', type: 'semantic', effect: 'archive', match: 'Routine receipts',
+    }, {
+      limit: 3,
+      evaluator: async ({ messages }) => {
+        sampledMessages = messages;
+        return {
+          model: 'test-model',
+          sampledAt: '2026-07-13T20:00:00.000Z',
+          evaluations: messages.map((message, index) => ({
+            emailItemId: message.id,
+            matches: index % 2 === 0,
+            confidence: 90 - index,
+            reason: index % 2 === 0 ? 'Looks like a receipt' : 'Looks like a request',
+          })),
+        };
+      },
+    });
+
+    assert.equal(sampledMessages.length, 30);
+    assert.equal(preview.mode, 'semantic');
+    assert.equal(preview.evaluatedCount, 30);
+    assert.equal(preview.matches.length, 3);
+    assert.equal(preview.nonMatches.length, 3);
+    assert.equal(preview.model, 'test-model');
+    assert.match(preview.note, /stored subject, summary, and snippet fields only/i);
+    assert.match(preview.note, /not production-equivalent/i);
+    assert.match(preview.note, /does not guarantee/i);
+    assert.match(preview.note, /no Gmail, event, or rule state was changed/i);
+    assert.equal(listUserRuleRecords().length, rulesBefore);
+    assert.equal(listEvents({ limit: 500 }).length, eventsBefore);
+  });
+
+  it('bounds semantic provider latency with a typed retryable error', async () => {
+    const request = {
+      candidate: { match: 'Routine receipts' },
+      messages: [{
+        id: 'message-timeout', from: 'Sender <sender@example.com>', subject: 'Receipt',
+        summary: 'Routine receipt', snippet: 'A receipt',
+      }],
+    };
+    await assert.rejects(
+      evaluateSemanticRulePreview({
+        ...request,
+        timeoutMs: 5,
+        generateContent: () => new Promise(() => {}),
+      }),
+      error => (
+        error instanceof SemanticPreviewError
+        && error.code === 'semantic_preview_unavailable'
+        && error.retryable === true
+      ),
+    );
+    await assert.rejects(
+      evaluateSemanticRulePreview({
+        ...request,
+        generateContent: async () => ({ response: { text: () => '{"results":[]}' } }),
+      }),
+      error => error instanceof SemanticPreviewError && error.retryable === true,
+    );
+  });
+
+  it('aggregates raw baseline attribution across accounts in the accountless rule list', () => {
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-baseline', threadId: 't-baseline',
+      from: 'News <news@example.com>', subject: 'Newsletter', archive: true,
+      handlingDecision: {
+        effect: 'archive', basis: 'baseline', explanation: 'Baseline newsletter guidance',
+        confidence: 94, handledAt: new Date().toISOString(),
+        appliedRule: {
+          id: 'baseline-news', description: 'Baseline newsletter guidance', scope: 'baseline',
+          source: 'baseline', editable: false, attribution: 'model_cited',
+          effect: 'archive',
+          revision: ruleRevision({
+            id: 'baseline-news', type: 'semantic', effect: 'archive',
+            match: 'Baseline newsletter guidance', source: 'baseline',
+          }),
+        },
+      },
+    });
+
+    const baseline = listRulesForApi().rules.find(rule => rule.id === 'baseline:baseline-news');
+    assert.equal(baseline.activity.appliedCount30Days, 1);
+    assert.equal(baseline.activity.recent[0].messageId, 'm-baseline');
   });
 });

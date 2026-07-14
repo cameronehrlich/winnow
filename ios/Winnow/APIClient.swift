@@ -56,6 +56,7 @@ private struct APIErrorEnvelope: Decodable {
 
 private struct MailRulePreviewRequest: Encodable {
     let candidate: MailRuleDraft
+    let limit: Int
 }
 
 struct APIClient {
@@ -94,11 +95,14 @@ struct APIClient {
         return response.rules
     }
 
-    func previewMailRule(_ candidate: MailRuleDraft) async throws -> MailRulePreviewResponse {
+    func previewMailRule(_ candidate: MailRuleDraft, limit: Int = 5) async throws -> MailRulePreviewResponse {
         try await request(
             path: "/v1/rules/preview",
             method: "POST",
-            body: try JSONEncoder().encode(MailRulePreviewRequest(candidate: candidate))
+            body: try JSONEncoder().encode(MailRulePreviewRequest(
+                candidate: candidate,
+                limit: min(max(limit, 1), 25)
+            ))
         )
     }
 
@@ -123,7 +127,20 @@ struct APIClient {
             "type": "semantic",
             "effect": candidate.effect,
         ]
+        if let id = candidate.id { payload["id"] = id }
         if let baselineRuleId = candidate.baselineRuleId { payload["baselineRuleId"] = baselineRuleId }
+        if let expectedConflict = candidate.expectedConflict {
+            payload["expectedConflict"] = [
+                "ruleId": expectedConflict.ruleId,
+                "updatedAt": expectedConflict.updatedAt,
+            ]
+        }
+        if let expectedRule = candidate.expectedRule {
+            payload["expectedRule"] = [
+                "ruleId": expectedRule.ruleId,
+                "updatedAt": expectedRule.updatedAt,
+            ]
+        }
         if !candidate.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             payload["description"] = candidate.description
         }
@@ -217,6 +234,11 @@ struct APIClient {
     func perform(_ action: EmailAction, emailID: String) async throws -> ActionResponse {
         let encodedID = emailID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? emailID
         return try await request(path: "/v1/emails/\(encodedID)/\(action.rawValue)", method: "POST")
+    }
+
+    func undoHandling(emailID: String) async throws -> UndoHandlingResponse {
+        let encodedID = emailID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? emailID
+        return try await request(path: "/v1/emails/\(encodedID)/undo-handling", method: "POST")
     }
 
     func registerPushDevice(

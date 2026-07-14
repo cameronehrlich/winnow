@@ -1,19 +1,22 @@
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { loadConfig, getAccounts } from './config.js';
 import { archiveEmail, markEmailRead, markEmailUnread, moveEmailToInbox } from './actions.js';
+import { handlingDecisionKey, handlingUndoAction } from './handling-decisions.js';
 import { scan } from './scan.js';
 import { findUnsubscribeForEmail, getUnsubscribes, recordUnsubscribe } from './state.js';
 import { followUnsubscribeLink } from './slack-actions.js';
 import { handleMcpMessage } from './mcp.js';
 import { getRuntimeStatus, listAccountStatus } from './status.js';
 import { getPushCapabilities } from './push.js';
+import { SemanticPreviewError } from './semantic-rule-preview.js';
 import {
   disableUserRule,
   importUserRules,
   listRulesForApi,
   planUserRuleImport,
   previewUserRule,
+  RuleConflictError,
   resetUserRule,
   updateUserRule,
   upsertUserRule,
@@ -27,6 +30,7 @@ import {
   submitAssistantMessage,
 } from './assistant.js';
 import {
+  claimHandlingUndo,
   deletePushDevice,
   ensureStore,
   getDailyActionSummary,
@@ -35,18 +39,20 @@ import {
   listEmailItems,
   listEvents,
   registerPushDevice,
+  finishHandlingUndo,
   storeEvents,
 } from './store.js';
 
 const MAX_JSON_BODY_BYTES = 1024 * 1024;
 const EMAIL_STATES = ['all', 'inbox', 'archived'];
-const EMAIL_ACTIONS = ['archive', 'move-to-inbox', 'mark-read', 'mark-unread', 'unsubscribe'];
+const EMAIL_ACTIONS = ['archive', 'move-to-inbox', 'mark-read', 'mark-unread', 'unsubscribe', 'undo-handling'];
 
 class HttpError extends Error {
-  constructor(status, code, message = code) {
+  constructor(status, code, message = code, details = {}) {
     super(message);
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -159,6 +165,29 @@ function ruleRequest(callback) {
   try {
     return callback();
   } catch (err) {
+    if (err instanceof SemanticPreviewError) {
+      throw new HttpError(503, err.code, err.message, { retryable: err.retryable });
+    }
+    if (err instanceof RuleConflictError) {
+      throw new HttpError(409, err.code, err.message);
+    }
+    if (err instanceof TypeError || err instanceof RangeError) {
+      throw new HttpError(400, 'invalid_rule', err.message);
+    }
+    throw err;
+  }
+}
+
+async function asyncRuleRequest(callback) {
+  try {
+    return await callback();
+  } catch (err) {
+    if (err instanceof SemanticPreviewError) {
+      throw new HttpError(503, err.code, err.message, { retryable: err.retryable });
+    }
+    if (err instanceof RuleConflictError) {
+      throw new HttpError(409, err.code, err.message);
+    }
     if (err instanceof TypeError || err instanceof RangeError) {
       throw new HttpError(400, 'invalid_rule', err.message);
     }
@@ -202,13 +231,20 @@ function unsubscribeEntryFor(item, entries = getUnsubscribes().entries || []) {
 function mobileEmailItem(item, entries) {
   if (!item) return item;
   const entry = unsubscribeEntryFor(item, entries);
+  const {
+    handlingUndoDecisionId: _handlingUndoDecisionId,
+    handlingUndoStatus: _handlingUndoStatus,
+    handlingUndoUpdatedAt: _handlingUndoUpdatedAt,
+    ...publicItem
+  } = item;
   return {
-    ...item,
+    ...publicItem,
+    undoAction: handlingUndoAction(item),
     unsubscribeState: entry?.status || (item.unsubscribeLink ? 'available' : 'unavailable'),
   };
 }
 
-async function handleAuthed(req, res, url) {
+async function handleAuthed(req, res, url, dependencies = {}) {
   if (req.method === 'GET' && url.pathname === '/v1/bootstrap') {
     const accounts = listAccountStatus();
     sendJson(res, 200, {
@@ -280,7 +316,10 @@ async function handleAuthed(req, res, url) {
     }
     const limit = body.limit === undefined ? 10 : Number(body.limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 25) throw new HttpError(400, 'invalid_limit');
-    sendJson(res, 200, ruleRequest(() => previewUserRule(body.candidate, { limit })));
+    sendJson(res, 200, await asyncRuleRequest(() => previewUserRule(body.candidate, {
+      limit,
+      ...(dependencies.semanticRuleEvaluator ? { evaluator: dependencies.semanticRuleEvaluator } : {}),
+    })));
     return;
   }
 
@@ -380,6 +419,63 @@ async function handleAuthed(req, res, url) {
     const item = getEmailItem(emailMatch.id);
     if (!item) sendJson(res, 404, { error: 'email_not_found' });
     else sendJson(res, 200, { item: mobileEmailItem(item) });
+    return;
+  }
+
+  const undoHandlingMatch = route(url.pathname, '/v1/emails/:id/undo-handling');
+  if (req.method === 'POST' && undoHandlingMatch) {
+    const item = getEmailItem(undoHandlingMatch.id);
+    if (!item) {
+      sendJson(res, 404, { error: 'email_not_found' });
+      return;
+    }
+    const decisionId = handlingDecisionKey(item);
+    const claimToken = randomUUID();
+    const claim = claimHandlingUndo(item.id, decisionId, claimToken);
+    if (claim.completed) {
+      sendJson(res, 200, {
+        ok: true,
+        action: 'undo-handling',
+        item: mobileEmailItem(claim.item || getEmailItem(item.id) || item),
+      });
+      return;
+    }
+    if (!claim.claimed) {
+      sendJson(res, 409, {
+        error: 'handling_not_undoable',
+        item: mobileEmailItem(claim.item || getEmailItem(item.id) || item),
+      });
+      return;
+    }
+    const undoAction = claim.action;
+    const handler = undoAction === 'archive'
+      ? (dependencies.archiveEmail || archiveEmail)
+      : (dependencies.moveEmailToInbox || moveEmailToInbox);
+    try {
+      const updated = await handler({
+        emailItemId: item.id,
+        account: item.account,
+        threadId: item.threadId,
+        messageId: item.messageId,
+        source: 'api',
+        reason: 'Undid original Winnow handling; future rule behavior is unchanged',
+      });
+      finishHandlingUndo(item.id, decisionId, claimToken, { completed: true });
+      sendJson(res, 200, {
+        ok: true,
+        action: 'undo-handling',
+        item: mobileEmailItem(getEmailItem(item.id) || updated || item),
+      });
+    } catch (err) {
+      finishHandlingUndo(item.id, decisionId, claimToken, { completed: false });
+      console.error(`[winnow/api] undo handling failed for ${item.id}: ${err.message}`);
+      sendJson(res, 502, {
+        ok: false,
+        error: 'email_action_failed',
+        action: 'undo-handling',
+        item: mobileEmailItem(getEmailItem(item.id) || item),
+      });
+    }
     return;
   }
 
@@ -632,7 +728,7 @@ async function handleMcp(req, res) {
   sendJson(res, 200, response);
 }
 
-export function createApiServer() {
+export function createApiServer(dependencies = {}) {
   ensureStore();
   return http.createServer(async (req, res) => {
     try {
@@ -656,10 +752,10 @@ export function createApiServer() {
         return;
       }
       if (!requireAuth(req, res)) return;
-      await handleAuthed(req, res, url);
+      await handleAuthed(req, res, url, dependencies);
     } catch (err) {
       if (err instanceof HttpError || err instanceof AssistantError) {
-        sendJson(res, err.status, { error: err.code, message: err.message });
+        sendJson(res, err.status, { error: err.code, message: err.message, ...(err.details || {}) });
         return;
       }
       console.error(`[winnow/api] Unexpected request error: ${err.stack || err.message}`);

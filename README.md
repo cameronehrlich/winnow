@@ -299,6 +299,19 @@ The iOS Rules screen shows personal rules and versioned Winnow defaults together
 account-level override; Reset removes that override and restores the shipped default. Ask Winnow reads existing rules,
 previews a candidate, and requires confirmation before creating, updating, disabling, or resetting anything.
 
+Rule rows show forward-only activity for the current rule revision; changing a rule starts a fresh activity view.
+Exact-rule activity is deterministic, while semantic-rule activity is explicitly labeled classifier-cited.
+The editor can test a rule against bounded recent
+mail before saving: exact tests are deterministic samples, while semantic tests are read-only estimates based only on
+stored sender, subject, summary, and snippet data. Tests never scan or mutate Gmail, run hooks, post to Slack, or save
+the candidate rule. Editing binds the save to the previewed rule ID and revision, and replacing a separate conflicting
+rule also binds to that conflict's ID and revision; either changed binding is rejected.
+
+Email details expose the stored handling decision for newly processed mail. A user can reverse that decision for the
+single email while it is still current, adjust the attributed future-mail rule, or create a confirmed sender, domain,
+or semantic rule from the message. Undo never changes the future-mail rule. A short durable lease prevents duplicate
+undo work, while stale leases can be safely recovered after a daemon restart.
+
 ```bash
 # List rules
 winnow rules -a you@gmail.com
@@ -477,9 +490,10 @@ POST /v1/emails/:id/move-to-inbox
 POST /v1/emails/:id/mark-read
 POST /v1/emails/:id/mark-unread
 POST /v1/emails/:id/unsubscribe
+POST /v1/emails/:id/undo-handling
 ```
 
-Successful actions return `{ ok, action, item }`, with the refreshed item included so clients do not need to guess local state. Items also expose `unsubscribeState` (`available`, `succeeded`, `attempted`, `failed`, or `unavailable`). Unsubscribe responses add `outcome` and `requiresManualAction`; mailto links are reported as attempted/manual rather than falsely reported as complete, and repeated completed attempts are deduplicated across the API and Slack. `GET /v1/summaries/lifetime` returns all-time action counters plus bounded recent activity for the Stats tab. `GET /v1/bootstrap` returns the configured accounts, defaults, and server capabilities. APNs device registration is scaffolded, but push delivery remains disabled until credentials and dispatch are deliberately enabled; the V1 app should refresh or poll.
+Successful actions return `{ ok, action, item }`, with the refreshed item included so clients do not need to guess local state. Newly processed items can include a typed `handlingDecision` and a server-computed `undoAction`; undo returns `409 handling_not_undoable` after the original scan state has changed. Items also expose `unsubscribeState` (`available`, `succeeded`, `attempted`, `failed`, or `unavailable`). Unsubscribe responses add `outcome` and `requiresManualAction`; mailto links are reported as attempted/manual rather than falsely reported as complete, and repeated completed attempts are deduplicated across the API and Slack. `GET /v1/summaries/lifetime` returns all-time action counters plus bounded recent activity for the Stats tab. `GET /v1/bootstrap` returns the configured accounts, defaults, and server capabilities. APNs device registration is scaffolded, but push delivery remains disabled until credentials and dispatch are deliberately enabled; the V1 app should refresh or poll.
 
 `POST /v1/scans` defaults to `dryRun: true`; pass `{"dryRun": false}` only when an API client should apply Gmail/Slack side effects.
 The same bearer token also protects `/mcp`, a Streamable-HTTP-style JSON-RPC endpoint exposing Winnow status, account routing, email lists, summaries, events, dry-run scans, and email actions as MCP tools.
