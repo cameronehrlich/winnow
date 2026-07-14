@@ -13,11 +13,13 @@ import {
   getLifetimeActionSummary,
   getMailboxCounts,
   getRuleActivity,
+  listEmailItems,
   listRecentTrackedEmailItems,
   listPushDevices,
   listDeliveryRecords,
   registerPushDevice,
   recordDelivery,
+  updateEmailItemState,
   upsertEmailItemFromResult,
 } from '../src/store.js';
 
@@ -36,6 +38,35 @@ afterEach(() => {
 });
 
 describe('daily action summary', () => {
+  it('lists one newest representative per Gmail thread', () => {
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-old', threadId: 't-shared', archive: true,
+      subject: 'Original',
+    }, { timestamp: '2026-07-13T10:00:00.000Z' });
+    const latest = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-new', threadId: 't-shared', archive: false,
+      subject: 'Re: Original', readState: 'unread',
+    }, { timestamp: '2026-07-13T11:00:00.000Z' });
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-other', threadId: 't-other', archive: true,
+      subject: 'Other',
+    }, { timestamp: '2026-07-13T09:00:00.000Z' });
+
+    const inbox = listEmailItems({ state: 'inbox' });
+    assert.deepEqual(inbox.items.map(item => item.messageId), ['m-new']);
+    assert.equal(inbox.items[0].trackedThreadMessageCount, 2);
+
+    const archived = listEmailItems({ state: 'archived' });
+    assert.deepEqual(archived.items.map(item => item.messageId), ['m-other']);
+    assert.deepEqual(getMailboxCounts(), { inbox: 1, archived: 1 });
+
+    updateEmailItemState(latest.id, { mailboxState: 'archived', readState: 'read' });
+    const moved = listEmailItems({ state: 'archived' });
+    assert.deepEqual(moved.items.map(item => item.messageId), ['m-new', 'm-other']);
+    assert.equal(moved.items[0].trackedThreadMessageCount, 2);
+    assert.deepEqual(getMailboxCounts(), { inbox: 0, archived: 2 });
+  });
+
   it('normalizes folded subjects and rejects punctuation-only sender names', () => {
     const item = upsertEmailItemFromResult({
       account: 'me@example.com',

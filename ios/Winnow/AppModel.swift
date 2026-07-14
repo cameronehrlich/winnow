@@ -475,11 +475,19 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(newestDate, forKey: viewedKey(for: mailbox))
     }
 
-    private func replace(_ item: EmailItem) {
+    private func replace(_ incomingItem: EmailItem) {
+        var item = incomingItem
         guard let index = emails.firstIndex(where: { $0.id == item.id }) else {
             emails.insert(item, at: 0)
             return
         }
+        // Mutation endpoints return one row, while mailbox lists include the
+        // thread rollup count. Preserve that richer list metadata until the
+        // refresh immediately following the action supplies it again.
+        item.trackedThreadMessageCount = max(
+            item.trackedThreadMessageCount,
+            emails[index].trackedThreadMessageCount
+        )
         emails[index] = item
     }
 

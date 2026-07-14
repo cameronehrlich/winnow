@@ -12,7 +12,8 @@ final class ModelDecodingTests: XCTestCase {
           "confidence":88,"ephemeral":false,"lowConfidenceKept":false,"triageState":"kept",
           "mailboxState":"inbox","archive":false,"unsubscribeLink":"https://example.com/unsubscribe",
           "createdAt":"2026-07-12T08:00:00.000Z","processedAt":"2026-07-12T08:00:00.000Z",
-          "updatedAt":"2026-07-12T08:00:00.000Z","readState":"unread","isRead":false
+          "updatedAt":"2026-07-12T08:00:00.000Z","readState":"unread","isRead":false,
+          "trackedThreadMessageCount":3
         }
         """#.data(using: .utf8)!
 
@@ -21,6 +22,8 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertTrue(item.isUnread)
         XCTAssertEqual(item.meaningfulAction, "Reply")
         XCTAssertTrue(item.canLoadFullContent)
+        XCTAssertTrue(item.isConversation)
+        XCTAssertEqual(item.trackedThreadMessageCount, 3)
         XCTAssertNil(item.handlingDecision)
         XCTAssertNil(item.undoAction)
     }

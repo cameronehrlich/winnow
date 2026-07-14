@@ -274,6 +274,12 @@ struct EmailCard: View {
                             .lineLimit(2)
                     }
 
+                    if item.isConversation {
+                        Label("Conversation", systemImage: "bubble.left.and.bubble.right")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(WinnowDesign.accent)
+                    }
+
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 78)

@@ -585,6 +585,7 @@ function rowToEmailItem(row) {
     createdAt: row.created_at,
     processedAt: row.processed_at,
     updatedAt: row.updated_at,
+    trackedThreadMessageCount: Math.max(1, Number(row.tracked_thread_message_count) || 1),
   };
 }
 
@@ -782,24 +783,46 @@ export function finishHandlingUndo(emailItemId, decisionId, claimToken, { comple
 
 export function listEmailItems({ state = 'all', account = '', cursor = '', limit = 50 } = {}) {
   const boundedLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
-  const filters = [];
+  const sourceFilters = [];
+  const pageFilters = ['thread_rank = 1'];
   const params = {};
 
   if (account) {
-    filters.push('account = @account');
+    sourceFilters.push('account = @account');
     params.account = account;
   }
-  if (state === 'inbox') filters.push("mailbox_state = 'inbox'");
-  else if (state === 'archived') filters.push("mailbox_state = 'archived'");
+  if (state === 'inbox') pageFilters.push("mailbox_state = 'inbox'");
+  else if (state === 'archived') pageFilters.push("mailbox_state = 'archived'");
   if (cursor) {
-    filters.push('processed_at < @cursor');
+    pageFilters.push('processed_at < @cursor');
     params.cursor = cursor;
   }
 
-  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  const sourceWhere = sourceFilters.length ? `WHERE ${sourceFilters.join(' AND ')}` : '';
+  const pageWhere = `WHERE ${pageFilters.join(' AND ')}`;
   const rows = getDb().prepare(`
-    SELECT * FROM email_items
-    ${where}
+    WITH ranked_threads AS (
+      SELECT email_items.*,
+        COUNT(*) OVER (
+          PARTITION BY account,
+            CASE
+              WHEN gmail_thread_id IS NULL OR gmail_thread_id = '' THEN 'message:' || id
+              ELSE 'thread:' || gmail_thread_id
+            END
+        ) AS tracked_thread_message_count,
+        ROW_NUMBER() OVER (
+          PARTITION BY account,
+            CASE
+              WHEN gmail_thread_id IS NULL OR gmail_thread_id = '' THEN 'message:' || id
+              ELSE 'thread:' || gmail_thread_id
+            END
+          ORDER BY processed_at DESC, id DESC
+        ) AS thread_rank
+      FROM email_items
+      ${sourceWhere}
+    )
+    SELECT * FROM ranked_threads
+    ${pageWhere}
     ORDER BY processed_at DESC, id DESC
     LIMIT @limit
   `).all({ ...params, limit: boundedLimit + 1 });
@@ -1186,10 +1209,25 @@ export function listPushDevices() {
 
 export function getMailboxCounts() {
   const rows = getDb().prepare(`
+    WITH ranked_threads AS (
+      SELECT mailbox_state, read_state,
+        ROW_NUMBER() OVER (
+          PARTITION BY account,
+            CASE
+              WHEN gmail_thread_id IS NULL OR gmail_thread_id = '' THEN 'message:' || id
+              ELSE 'thread:' || gmail_thread_id
+            END
+          ORDER BY processed_at DESC, id DESC
+        ) AS thread_rank
+      FROM email_items
+    )
     SELECT mailbox_state, COUNT(*) AS count
-    FROM email_items
-    WHERE mailbox_state = 'archived'
-       OR (mailbox_state = 'inbox' AND read_state = 'unread')
+    FROM ranked_threads
+    WHERE thread_rank = 1
+      AND (
+        mailbox_state = 'archived'
+        OR (mailbox_state = 'inbox' AND read_state = 'unread')
+      )
     GROUP BY mailbox_state
   `).all();
   const counts = { inbox: 0, archived: 0 };

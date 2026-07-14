@@ -142,6 +142,7 @@ describe('local API', () => {
     assert.equal(emailJson.items[0].subject, 'Hello');
     assert.equal(emailJson.items[0].readState, 'unread');
     assert.equal(emailJson.items[0].isRead, false);
+    assert.equal(emailJson.items[0].trackedThreadMessageCount, 1);
 
     const summary = await fetch(`${baseUrl}/v1/summaries/daily?date=2026-06-29`, { headers });
     assert.equal(summary.status, 200);
@@ -156,6 +157,24 @@ describe('local API', () => {
     assert.equal(lifetimeJson.counters.processed, 1);
     assert.ok(lifetimeJson.recentActivity.length > 0);
     assert.equal(lifetimeJson.recentActivity[0].emailItemId, emailJson.items[0].id);
+  });
+
+  it('collapses a Gmail conversation to its newest list item', async () => {
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm2', threadId: 't1',
+      from: 'Sender <sender@example.com>', subject: 'Re: Hello', summary: 'Newest reply',
+      archive: false, readState: 'unread',
+    }, { timestamp: '2026-06-29T17:00:00.000Z' });
+
+    const response = await fetch(`${baseUrl}/v1/emails?state=inbox`, {
+      headers: { Authorization: 'Bearer test-token' },
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.items.length, 1);
+    assert.equal(body.items[0].messageId, 'm2');
+    assert.equal(body.items[0].trackedThreadMessageCount, 2);
   });
 
   it('fetches complete email content on demand without adding it to list responses', async () => {

@@ -47,6 +47,17 @@ struct EmailDetailView: View {
                             )
                         }
 
+                        if item.isConversation {
+                            ConversationPreviewSection(
+                                configuration: model.configuration,
+                                emailID: item.id,
+                                focusedMessageID: item.messageId,
+                                fallbackSubject: item.displaySubject ?? "No subject",
+                                account: item.account,
+                                viewFullConversation: { showingFullEmail = true }
+                            )
+                        }
+
                         if let decision = item.handlingDecision {
                             HandlingDecisionCard(
                                 decision: decision,
@@ -792,6 +803,182 @@ enum EmailBodyLinks {
               let scheme = url.scheme?.lowercased(),
               allowedSchemes.contains(scheme) else { return nil }
         return url
+    }
+}
+
+private struct ConversationPreviewSection: View {
+    let configuration: ServerConfiguration
+    let emailID: String
+    let focusedMessageID: String
+    let fallbackSubject: String
+    let account: String
+    let viewFullConversation: () -> Void
+
+    @State private var content: EmailContent?
+    @State private var isLoading = true
+
+    private var previousMessages: [FullEmailMessage] {
+        guard let content else { return [] }
+        return content.messagesForDisplay.filter { $0.id != focusedMessageID }
+    }
+
+    var body: some View {
+        Group {
+            if let content, !previousMessages.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Label("EARLIER IN THIS CONVERSATION", systemImage: "bubble.left.and.bubble.right")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(WinnowDesign.accent)
+                        Spacer(minLength: 8)
+                        Text("\(content.messages.count) messages")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 11)
+
+                    ForEach(Array(previousMessages.prefix(4).enumerated()), id: \.element.id) { index, message in
+                        if index > 0 { DetailDivider() }
+                        NavigationLink {
+                            ConversationMessageDetailView(
+                                message: message,
+                                fallbackSubject: fallbackSubject,
+                                account: account
+                            )
+                        } label: {
+                            ConversationMessageRow(message: message, account: account)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    if previousMessages.count > 4 {
+                        DetailDivider()
+                        Button(action: viewFullConversation) {
+                            Label(
+                                "View \(previousMessages.count - 4) more messages",
+                                systemImage: "ellipsis.message"
+                            )
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(WinnowDesign.accent)
+                    }
+                }
+                .winnowCard(padding: 4)
+            } else if isLoading {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading conversation…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .winnowCard(padding: 14)
+            }
+        }
+        .task(id: emailID) { await load() }
+    }
+
+    @MainActor
+    private func load() async {
+        isLoading = true
+        content = try? await APIClient(configuration: configuration).emailContent(emailID: emailID)
+        isLoading = false
+    }
+}
+
+private struct ConversationMessageRow: View {
+    let message: FullEmailMessage
+    let account: String
+
+    private var sender: String {
+        message.from.localizedCaseInsensitiveContains(account) ? "You" : (message.from.isEmpty ? "Unknown sender" : message.from)
+    }
+
+    private var preview: String {
+        message.body
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: sender == "You" ? "arrowshape.turn.up.left.fill" : "arrowshape.turn.up.left.2.fill")
+                .font(.subheadline)
+                .foregroundStyle(WinnowDesign.accent)
+                .frame(width: 24, height: 24)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(sender)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if !message.date.isEmpty {
+                        Text(message.date)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+                Text(preview.isEmpty ? "No message preview available." : preview)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.tertiary)
+                .padding(.top, 4)
+                .accessibilityHidden(true)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Opens this earlier message")
+    }
+}
+
+private struct ConversationMessageDetailView: View {
+    let message: FullEmailMessage
+    let fallbackSubject: String
+    let account: String
+
+    var body: some View {
+        ZStack {
+            AppBackdrop()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(message.subject.isEmpty ? fallbackSubject : message.subject)
+                            .font(.title2.bold())
+                            .fixedSize(horizontal: false, vertical: true)
+                        Label(account, systemImage: "person.crop.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .winnowCard()
+
+                    FullEmailMessageCard(
+                        message: message,
+                        position: 0,
+                        count: 1,
+                        isSelectedMessage: false,
+                        initiallyExpanded: true
+                    )
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+        }
+        .navigationTitle("Message")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

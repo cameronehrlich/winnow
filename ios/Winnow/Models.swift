@@ -66,6 +66,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
     let processedAt: String
     let updatedAt: String
     var readState: String
+    var trackedThreadMessageCount: Int
     let handlingDecision: EmailHandlingDecision?
     let undoAction: EmailAction?
 
@@ -81,6 +82,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         !unsubscribeLink.isEmpty && !["succeeded", "attempted"].contains(unsubscribeState)
     }
     var isUnread: Bool { readState == "unread" }
+    var isConversation: Bool { trackedThreadMessageCount > 1 }
     var meaningfulAction: String? {
         let value = action.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = value.lowercased()
@@ -124,7 +126,8 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         case id, account, messageId, threadId, fromName, fromEmail, from, subject, snippet
         case summary, action, deadline, impact, handling, reason, confidence, ephemeral
         case lowConfidenceKept, triageState, mailboxState, archive, unsubscribeLink
-        case createdAt, processedAt, updatedAt, readState, isRead, unsubscribeState, handlingDecision, undoAction
+        case createdAt, processedAt, updatedAt, readState, isRead, unsubscribeState
+        case trackedThreadMessageCount, handlingDecision, undoAction
     }
 
     init(from decoder: Decoder) throws {
@@ -156,6 +159,10 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         createdAt = try values.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
         processedAt = try values.decodeIfPresent(String.self, forKey: .processedAt) ?? ""
         updatedAt = try values.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
+        trackedThreadMessageCount = max(
+            1,
+            try values.decodeIfPresent(Int.self, forKey: .trackedThreadMessageCount) ?? 1
+        )
         // Decision metadata is additive. A future server basis/action must not
         // make the core email unreadable to an older client.
         handlingDecision = (try? values.decodeIfPresent(EmailHandlingDecision.self, forKey: .handlingDecision)) ?? nil
