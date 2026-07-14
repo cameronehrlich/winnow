@@ -200,8 +200,9 @@ export async function scan(account, opts = {}) {
     }
   }
 
-  const messages = await adapter.fetchUnread(account, searchQuery, maxMessages);
-  console.log(`[winnow] Found ${messages.length} unread messages`);
+  const suppliedMessages = Array.isArray(opts.messages) ? opts.messages : null;
+  const messages = suppliedMessages || await adapter.fetchUnread(account, searchQuery, maxMessages);
+  console.log(`[winnow] Found ${messages.length} ${suppliedMessages ? 'synchronized' : 'unread'} messages`);
 
   for (const msg of messages) {
     const messageKey = msg.id || msg.threadId;

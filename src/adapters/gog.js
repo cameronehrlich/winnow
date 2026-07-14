@@ -14,6 +14,7 @@ const MAX_NOTE_LENGTH = 20_000;
 const MAX_THREAD_MESSAGES = 100;
 const MAX_THREAD_BODY_LENGTH = 500_000;
 const MAX_RECIPIENTS = 50;
+const MAX_SYNC_RESULTS = 500;
 
 function parseJson(stdout) {
   try {
@@ -130,6 +131,7 @@ export function normalizeGogMessage(message, { includeBody = true, bodyLimit = M
   const headers = headersFrom(value || {});
   const id = String(value?.id || value?.Id || '');
   const body = includeBody ? extractBody(value).slice(0, Math.max(0, bodyLimit)) : '';
+  const labels = value?.labelIds || value?.LabelIds || value?.labels || value?.Labels;
 
   return {
     id,
@@ -141,9 +143,11 @@ export function normalizeGogMessage(message, { includeBody = true, bodyLimit = M
     to: String(headers.to || value?.to || value?.To || '').slice(0, 4_000),
     cc: String(headers.cc || value?.cc || value?.Cc || '').slice(0, 4_000),
     date: String(headers.date || value?.date || value?.Date || '').slice(0, 200),
-    labelIds: Array.isArray(value?.labelIds || value?.LabelIds)
-      ? [...(value.labelIds || value.LabelIds)].slice(0, 100).map(String)
+    labelIds: Array.isArray(labels)
+      ? [...labels].slice(0, 100).map(String)
       : [],
+    historyId: String(value?.historyId || value?.HistoryId || ''),
+    internalDate: String(value?.internalDate || value?.InternalDate || ''),
     headers,
     body,
   };
@@ -205,6 +209,45 @@ export class GogAdapter extends GmailAdapter {
         : [],
       nextPageToken: String(data?.nextPageToken || data?.NextPageToken || '') || null,
     };
+  }
+
+  async searchAllMailbox(account, query, limit = MAX_SYNC_RESULTS) {
+    const safeAccount = validateAccount(account);
+    const safeQuery = requireString(query, 'query', MAX_QUERY_LENGTH);
+    const safeLimit = Number(limit);
+    if (!Number.isSafeInteger(safeLimit) || safeLimit < 1 || safeLimit > MAX_SYNC_RESULTS) {
+      throw new RangeError(`limit must be an integer from 1 to ${MAX_SYNC_RESULTS}`);
+    }
+
+    const data = await this.#runJson([
+      'gmail', 'messages', 'search', safeQuery,
+      '--max', String(safeLimit), '--all',
+      '--account', safeAccount,
+    ]);
+    if (!data) return { messages: [], complete: false };
+    const rawMessages = Array.isArray(data) ? data : (data.messages || data.Messages || []);
+    return {
+      messages: Array.isArray(rawMessages)
+        ? rawMessages.map(message => normalizeGogMessage(message, { includeBody: false }))
+        : [],
+      complete: !String(data?.nextPageToken || data?.NextPageToken || ''),
+    };
+  }
+
+  async getHistory(account, since, limit = MAX_SYNC_RESULTS) {
+    const safeAccount = validateAccount(account);
+    const safeSince = requireString(String(since || ''), 'historyId', 256, {
+      pattern: /^\d+$/,
+    });
+    const safeLimit = Number(limit);
+    if (!Number.isSafeInteger(safeLimit) || safeLimit < 1 || safeLimit > MAX_SYNC_RESULTS) {
+      throw new RangeError(`limit must be an integer from 1 to ${MAX_SYNC_RESULTS}`);
+    }
+    return await this.#runJson([
+      'gmail', 'history', '--since', safeSince,
+      '--max', String(safeLimit), '--all',
+      '--account', safeAccount,
+    ]) || {};
   }
 
   async getMessage(account, messageId) {

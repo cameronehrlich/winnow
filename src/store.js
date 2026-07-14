@@ -467,6 +467,35 @@ function setMeta(key, value) {
   `).run(key, String(value));
 }
 
+function gmailHistoryMetaKey(account) {
+  return `gmail_history:${String(account || '').trim().toLowerCase()}`;
+}
+
+function gmailFullSyncMetaKey(account) {
+  return `gmail_full_sync:${String(account || '').trim().toLowerCase()}`;
+}
+
+export function getGmailHistoryCursor(account) {
+  return getMeta(gmailHistoryMetaKey(account)) || '';
+}
+
+export function setGmailHistoryCursor(account, historyId) {
+  const normalized = String(historyId || '').trim();
+  if (!/^\d+$/.test(normalized)) throw new TypeError('historyId must be numeric');
+  setMeta(gmailHistoryMetaKey(account), normalized);
+  return normalized;
+}
+
+export function getGmailFullSyncAt(account) {
+  return getMeta(gmailFullSyncMetaKey(account)) || '';
+}
+
+export function setGmailFullSyncAt(account, timestamp = new Date().toISOString()) {
+  const normalized = new Date(timestamp).toISOString();
+  setMeta(gmailFullSyncMetaKey(account), normalized);
+  return normalized;
+}
+
 export function makeEmailItemId(account, messageId = '', threadId = '') {
   return Buffer.from(`${account || ''}\0${messageId || ''}\0${threadId || ''}`).toString('base64url');
 }
@@ -804,6 +833,22 @@ export function listRecentTrackedEmailItems({ account = '', days = 7, limit = 10
     -- Gmail cannot leave a stale actionable card in Winnow. Recent archived
     -- rows still fill the remaining batch for restore/read-state detection.
     ORDER BY CASE WHEN mailbox_state = 'inbox' THEN 0 ELSE 1 END, processed_at DESC
+    LIMIT @limit
+  `).all(params).map(rowToEmailItem);
+}
+
+export function listTrackedInboxEmailItems({ account = '', limit = 500 } = {}) {
+  const boundedLimit = Math.min(Math.max(Number(limit) || 500, 1), 1000);
+  const params = { limit: boundedLimit };
+  const accountSql = account ? 'AND account = @account' : '';
+  if (account) params.account = account;
+  return getDb().prepare(`
+    SELECT * FROM email_items
+    WHERE mailbox_state = 'inbox'
+      AND gmail_message_id IS NOT NULL
+      AND gmail_message_id != ''
+      ${accountSql}
+    ORDER BY processed_at DESC
     LIMIT @limit
   `).all(params).map(rowToEmailItem);
 }

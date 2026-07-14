@@ -46,6 +46,8 @@ describe('GogAdapter assistant primitives', () => {
       cc: '',
       date: '',
       labelIds: ['INBOX'],
+      historyId: '',
+      internalDate: '',
       headers: {
         subject: 'Order 123',
         from: 'Store <orders@example.com>',
@@ -56,6 +58,28 @@ describe('GogAdapter assistant primitives', () => {
     assert.deepEqual(calls[0].args, [
       'gmail', 'messages', 'search', 'order 123', '--max', '10', '--account', 'me@example.com',
       '--json', '--no-input',
+    ]);
+  });
+
+  it('supports complete inbox snapshots and incremental Gmail history', async () => {
+    const { adapter, calls } = fakeAdapter([
+      { messages: [{ id: 'm1', threadId: 't1', labels: ['INBOX', 'UNREAD'] }] },
+      { history: [{ id: '12', messagesAdded: [{ message: { id: 'm2', threadId: 't2' } }] }], historyId: '12' },
+    ]);
+
+    const snapshot = await adapter.searchAllMailbox('me@example.com', 'in:inbox', 500);
+    const history = await adapter.getHistory('me@example.com', '10', 500);
+
+    assert.equal(snapshot.complete, true);
+    assert.deepEqual(snapshot.messages[0].labelIds, ['INBOX', 'UNREAD']);
+    assert.equal(history.historyId, '12');
+    assert.deepEqual(calls[0].args, [
+      'gmail', 'messages', 'search', 'in:inbox', '--max', '500', '--all',
+      '--account', 'me@example.com', '--json', '--no-input',
+    ]);
+    assert.deepEqual(calls[1].args, [
+      'gmail', 'history', '--since', '10', '--max', '500', '--all',
+      '--account', 'me@example.com', '--json', '--no-input',
     ]);
   });
 

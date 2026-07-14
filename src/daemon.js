@@ -3,6 +3,7 @@ import { getAccounts, getScanSearchQuery, loadConfig } from './config.js';
 import { startActionListener, stopActionListener } from './slack-actions.js';
 import { startApiServer } from './api.js';
 import { reconcileMailbox } from './reconcile.js';
+import { syncGmailMailbox } from './gmail-sync.js';
 import { ensureStore } from './store.js';
 
 const DEFAULT_SCAN_INTERVAL_SEC = 30;
@@ -32,6 +33,18 @@ async function runScanCycle(accounts, searchQuery) {
 
 async function runReconcileCycle(accounts) {
   for (const account of accounts) {
+    try {
+      const syncResult = await syncGmailMailbox(account);
+      if (syncResult.imported > 0 || syncResult.classified > 0 || syncResult.changed > 0) {
+        console.log(
+          `[winnow/daemon] Gmail ${syncResult.mode} sync for ${account}: `
+          + `${syncResult.imported} imported, ${syncResult.classified} classified, ${syncResult.changed} updated`,
+        );
+      }
+    } catch (err) {
+      console.error(`[winnow/daemon] Gmail sync error (${account}): ${err.message}`);
+    }
+
     try {
       const result = await reconcileMailbox({ account, days: 7, limit: 200 });
       if (result.changed > 0) {
