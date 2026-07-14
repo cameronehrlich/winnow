@@ -121,7 +121,12 @@ function extractBody(value) {
 }
 
 export function normalizeGogMessage(message, { includeBody = true, bodyLimit = MAX_BODY_LENGTH } = {}) {
-  const value = message?.message && typeof message.message === 'object' ? message.message : message;
+  // `gog gmail get` wraps the Gmail resource in `message` while keeping its
+  // normalized body and headers at the top level. Merge both shapes so exact-
+  // message fallbacks do not accidentally discard the readable body.
+  const value = message?.message && typeof message.message === 'object'
+    ? { ...message, ...message.message }
+    : message;
   const headers = headersFrom(value || {});
   const id = String(value?.id || value?.Id || '');
   const body = includeBody ? extractBody(value).slice(0, Math.max(0, bodyLimit)) : '';

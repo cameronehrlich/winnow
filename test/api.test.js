@@ -71,6 +71,7 @@ api:
       emailItemId: item.id,
       account: item.account,
       threadId: item.threadId,
+      focusedMessageId: item.messageId,
       subject: item.subject,
       messages: [{
         id: item.messageId,
@@ -168,6 +169,7 @@ describe('local API', () => {
     const body = await response.json();
     assert.equal(body.content.account, 'me@example.com');
     assert.equal(body.content.messages.length, 1);
+    assert.equal(body.content.focusedMessageId, 'm1');
     assert.equal(body.content.messages[0].body, 'This is the complete message body.');
 
     const missing = await fetch(`${baseUrl}/v1/emails/missing/content`, { headers });

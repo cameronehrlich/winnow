@@ -26,6 +26,7 @@ describe('on-demand email content', () => {
     }, { adapter });
 
     assert.deepEqual(calls, [{ account: 'me@example.com', threadId: 't1' }]);
+    assert.equal(content.focusedMessageId, 'm1');
     assert.equal(content.messages[0].body, 'Payment failed\nUpdate card ending in 2171.');
     assert.equal(content.truncated, false);
   });
@@ -42,5 +43,39 @@ describe('on-demand email content', () => {
 
     assert.equal(content.messages[0].body.length, 100_000);
     assert.equal(content.truncated, true);
+  });
+
+  it('normalizes exact-message fallback responses when no thread ID is indexed', async () => {
+    const adapter = {
+      async getMessage(account, messageId) {
+        assert.equal(account, 'me@example.com');
+        assert.equal(messageId, 'm2');
+        return {
+          body: 'Exact fallback body',
+          headers: { from: 'Sender <sender@example.com>', to: 'Me <me@example.com>', subject: 'Fallback' },
+          message: { id: 'm2', threadId: 't2', labelIds: ['INBOX'] },
+        };
+      },
+    };
+    const content = await fetchEmailContent({
+      id: 'email-2', account: 'me@example.com', messageId: 'm2', subject: 'Fallback',
+    }, { adapter });
+
+    assert.equal(content.focusedMessageId, 'm2');
+    assert.equal(content.messages[0].id, 'm2');
+    assert.equal(content.messages[0].from, 'Sender <sender@example.com>');
+    assert.equal(content.messages[0].body, 'Exact fallback body');
+  });
+
+  it('adds the selected message when a bounded thread response omits it', async () => {
+    const adapter = {
+      async getThread() { return { messages: [{ id: 'newer', body: 'Newer message' }] }; },
+      async getMessage() { return { id: 'selected', body: 'Selected message' }; },
+    };
+    const content = await fetchEmailContent({
+      id: 'email-3', account: 'me@example.com', threadId: 't3', messageId: 'selected', subject: 'Thread',
+    }, { adapter });
+
+    assert.equal(content.messages.some(message => message.id === 'selected'), true);
   });
 });

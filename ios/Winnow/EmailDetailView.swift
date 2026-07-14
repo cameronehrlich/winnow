@@ -711,8 +711,15 @@ private struct FullEmailView: View {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 14) {
                                 conversationHeader(content)
-                                ForEach(Array(content.messages.enumerated()), id: \.element.id) { index, message in
-                                    messageCard(message, index: index, count: content.messages.count)
+                                let messages = content.messagesForDisplay
+                                ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
+                                    FullEmailMessageCard(
+                                        message: message,
+                                        position: index,
+                                        count: messages.count,
+                                        isSelectedMessage: message.id == content.focusedMessageId,
+                                        initiallyExpanded: index == 0
+                                    )
                                 }
                                 if content.truncated {
                                     Label("This unusually long conversation was shortened for display.", systemImage: "scissors")
@@ -774,52 +781,6 @@ private struct FullEmailView: View {
         .winnowCard()
     }
 
-    private func messageCard(_ message: FullEmailMessage, index: Int, count: Int) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(message.from.isEmpty ? "Unknown sender" : message.from)
-                    .font(.headline)
-                    .lineLimit(2)
-                Spacer(minLength: 8)
-                if count > 1 {
-                    Text("\(index + 1) of \(count)")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                if !message.to.isEmpty { metadataLine("To", message.to) }
-                if !message.cc.isEmpty { metadataLine("Cc", message.cc) }
-                if !message.date.isEmpty { metadataLine("Date", message.date) }
-            }
-
-            Divider()
-
-            if message.body.isEmpty {
-                Text("This message has no displayable text body.")
-                    .italic()
-                    .foregroundStyle(.secondary)
-            } else {
-                Text(message.body)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .winnowCard()
-    }
-
-    private func metadataLine(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 5) {
-            Text("\(label):")
-                .foregroundStyle(.tertiary)
-            Text(value)
-                .foregroundStyle(.secondary)
-        }
-        .font(.caption)
-    }
-
     @MainActor
     private func load() async {
         isLoading = true
@@ -831,6 +792,102 @@ private struct FullEmailView: View {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+}
+
+private struct FullEmailMessageCard: View {
+    let message: FullEmailMessage
+    let position: Int
+    let count: Int
+    let isSelectedMessage: Bool
+    @State private var isExpanded: Bool
+
+    init(
+        message: FullEmailMessage,
+        position: Int,
+        count: Int,
+        isSelectedMessage: Bool,
+        initiallyExpanded: Bool
+    ) {
+        self.message = message
+        self.position = position
+        self.count = count
+        self.isSelectedMessage = isSelectedMessage
+        _isExpanded = State(initialValue: initiallyExpanded)
+    }
+
+    var body: some View {
+        Group {
+            if count == 1 {
+                VStack(alignment: .leading, spacing: 12) {
+                    header
+                    messageDetails
+                }
+            } else {
+                DisclosureGroup(isExpanded: $isExpanded) {
+                    messageDetails
+                        .padding(.top, 12)
+                } label: {
+                    header
+                }
+                .tint(WinnowDesign.indigo)
+            }
+        }
+        .winnowCard()
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(message.from.isEmpty ? "Unknown sender" : message.from)
+                    .font(.headline)
+                    .lineLimit(2)
+                if !message.date.isEmpty {
+                    Text(message.date)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            if isSelectedMessage {
+                Text("Selected")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(WinnowDesign.indigo)
+            } else if count > 1 {
+                Text("\(position + 1) of \(count)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private var messageDetails: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                if !message.to.isEmpty { metadataLine("To", message.to) }
+                if !message.cc.isEmpty { metadataLine("Cc", message.cc) }
+            }
+            Divider()
+            if message.body.isEmpty {
+                Text("This message has no displayable text body.")
+                    .italic()
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(message.body)
+                    .font(.body)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func metadataLine(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 5) {
+            Text("\(label):").foregroundStyle(.tertiary)
+            Text(value).foregroundStyle(.secondary)
+        }
+        .font(.caption)
     }
 }
 

@@ -134,6 +134,18 @@ describe('GogAdapter assistant primitives', () => {
     assert.equal(normalized.body.length, 100_000);
   });
 
+  it('keeps top-level body and headers from wrapped gmail get responses', () => {
+    const message = normalizeGogMessage({
+      body: 'Complete exact body',
+      headers: { from: 'Sender <sender@example.com>', subject: 'Exact message' },
+      message: { id: 'm-exact', threadId: 't-exact', labelIds: ['INBOX'] },
+    });
+    assert.equal(message.id, 'm-exact');
+    assert.equal(message.from, 'Sender <sender@example.com>');
+    assert.equal(message.subject, 'Exact message');
+    assert.equal(message.body, 'Complete exact body');
+  });
+
   it('never includes malformed gog output or email bodies in parse-error logs', async () => {
     const logged = [];
     const originalError = console.error;

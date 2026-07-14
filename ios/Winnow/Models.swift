@@ -13,10 +13,19 @@ struct EmailContent: Decodable, Equatable {
     let emailItemId: String
     let account: String
     let threadId: String
+    let focusedMessageId: String?
     let subject: String
     let messages: [FullEmailMessage]
     let truncated: Bool
     let fetchedAt: String
+
+    var messagesForDisplay: [FullEmailMessage] {
+        let newestFirst = Array(messages.reversed())
+        guard let focusedMessageId, !focusedMessageId.isEmpty,
+              let focused = newestFirst.first(where: { $0.id == focusedMessageId })
+        else { return newestFirst }
+        return [focused] + newestFirst.filter { $0.id != focused.id }
+    }
 }
 
 struct FullEmailMessage: Decodable, Equatable, Identifiable {

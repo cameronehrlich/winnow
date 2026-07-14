@@ -1,4 +1,4 @@
-import { GogAdapter } from './adapters/gog.js';
+import { GogAdapter, normalizeGogMessage } from './adapters/gog.js';
 import { emailBodyToText } from './message-content.js';
 
 const MAX_MESSAGES = 100;
@@ -25,10 +25,13 @@ export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {
   let messages;
   if (item.threadId) {
     const thread = await adapter.getThread(item.account, item.threadId);
-    messages = thread?.messages;
+    messages = Array.isArray(thread?.messages) ? thread.messages : [];
+    if (item.messageId && !messages.some(message => message?.id === item.messageId || message?.messageId === item.messageId)) {
+      const exact = normalizeGogMessage(await adapter.getMessage(item.account, item.messageId));
+      if (exact.id || exact.body) messages = [exact, ...messages];
+    }
   } else {
-    const message = await adapter.getMessage(item.account, item.messageId);
-    messages = [message];
+    messages = [normalizeGogMessage(await adapter.getMessage(item.account, item.messageId))];
   }
 
   let budget = MAX_TOTAL_CHARS;
@@ -57,6 +60,7 @@ export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {
     emailItemId: item.id,
     account: item.account,
     threadId: item.threadId || normalized[0].id,
+    focusedMessageId: item.messageId || normalized.at(-1)?.id || '',
     subject: item.subject || normalized[0].subject,
     messages: normalized,
     truncated: truncated || budget === 0 || messages.length > MAX_MESSAGES,

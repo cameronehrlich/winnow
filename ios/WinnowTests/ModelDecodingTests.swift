@@ -26,10 +26,17 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testFullEmailContentDecodes() throws {
-        let json = #"{"emailItemId":"abc","account":"me@example.com","threadId":"t1","subject":"Hello","messages":[{"id":"m1","from":"Sender","to":"Me","cc":"","subject":"Hello","date":"Today","body":"Complete body"}],"truncated":false,"fetchedAt":"2026-07-13T12:00:00.000Z"}"#.data(using: .utf8)!
+        let json = #"{"emailItemId":"abc","account":"me@example.com","threadId":"t1","focusedMessageId":"m1","subject":"Hello","messages":[{"id":"m1","from":"Sender","to":"Me","cc":"","subject":"Hello","date":"Today","body":"Complete body"}],"truncated":false,"fetchedAt":"2026-07-13T12:00:00.000Z"}"#.data(using: .utf8)!
         let content = try JSONDecoder().decode(EmailContent.self, from: json)
+        XCTAssertEqual(content.focusedMessageId, "m1")
         XCTAssertEqual(content.messages.first?.body, "Complete body")
         XCTAssertFalse(content.truncated)
+    }
+
+    func testFullEmailContentPutsSelectedMessageFirstThenNewest() throws {
+        let json = #"{"emailItemId":"abc","account":"me@example.com","threadId":"t1","focusedMessageId":"m1","subject":"Hello","messages":[{"id":"m1","from":"One","to":"","cc":"","subject":"","date":"","body":"First"},{"id":"m2","from":"Two","to":"","cc":"","subject":"","date":"","body":"Second"},{"id":"m3","from":"Three","to":"","cc":"","subject":"","date":"","body":"Third"}],"truncated":false,"fetchedAt":"2026-07-13T12:00:00.000Z"}"#.data(using: .utf8)!
+        let content = try JSONDecoder().decode(EmailContent.self, from: json)
+        XCTAssertEqual(content.messagesForDisplay.map(\.id), ["m1", "m3", "m2"])
     }
 
     func testEmailDecodesTypedHandlingDecisionAndRuleAttribution() throws {
