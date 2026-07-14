@@ -60,11 +60,30 @@ describe('daily action summary', () => {
     assert.deepEqual(archived.items.map(item => item.messageId), ['m-other']);
     assert.deepEqual(getMailboxCounts(), { inbox: 1, archived: 1 });
 
+    const firstPage = listEmailItems({ limit: 1 });
+    const secondPage = listEmailItems({ limit: 1, cursor: firstPage.nextCursor });
+    assert.deepEqual(firstPage.items.map(item => item.messageId), ['m-new']);
+    assert.deepEqual(secondPage.items.map(item => item.messageId), ['m-other']);
+
     updateEmailItemState(latest.id, { mailboxState: 'archived', readState: 'read' });
     const moved = listEmailItems({ state: 'archived' });
     assert.deepEqual(moved.items.map(item => item.messageId), ['m-new', 'm-other']);
     assert.equal(moved.items[0].trackedThreadMessageCount, 2);
     assert.deepEqual(getMailboxCounts(), { inbox: 0, archived: 2 });
+  });
+
+  it('does not collapse unrelated rows that lack Gmail thread IDs', () => {
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-one', threadId: '', archive: false,
+    }, { timestamp: '2026-07-13T11:00:00.000Z' });
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-two', threadId: '', archive: false,
+    }, { timestamp: '2026-07-13T10:00:00.000Z' });
+
+    assert.deepEqual(
+      listEmailItems({ state: 'inbox' }).items.map(item => item.messageId),
+      ['m-one', 'm-two'],
+    );
   });
 
   it('normalizes folded subjects and rejects punctuation-only sender names', () => {

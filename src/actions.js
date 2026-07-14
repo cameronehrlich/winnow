@@ -5,7 +5,7 @@ import {
   getEmailItem,
   makeEmailItemId,
   resultToEmailItem,
-  updateEmailItemState,
+  updateEmailThreadState,
   upsertEmailItem,
 } from './store.js';
 import { syncSlackDeliveryForItem } from './reconcile.js';
@@ -50,6 +50,11 @@ function lookupItem({ emailItemId, account, threadId, messageId }) {
   return findEmailItemByGmail({ account, messageId, threadId });
 }
 
+function latestThreadItem(account, threadId, fallback = null) {
+  if (!account || !threadId) return fallback;
+  return findEmailItemByGmail({ account, threadId }) || fallback;
+}
+
 export async function archiveEmail({
   account,
   threadId,
@@ -64,14 +69,19 @@ export async function archiveEmail({
 } = {}) {
   if (!account || !threadId) throw new Error('account and threadId are required');
   const existing = lookupItem({ emailItemId, account, threadId, messageId });
-  if (existing?.mailboxState === 'archived' && existing.readState === 'read') return existing;
+  const current = latestThreadItem(account, threadId, existing);
+  if (current?.mailboxState === 'archived' && current.readState === 'read') {
+    return updateEmailThreadState(current.id, {
+      triageState: 'manual_archived', mailboxState: 'archived', readState: 'read', reason,
+    });
+  }
 
   const adapter = adapterFor();
   await adapter.archive(account, threadId);
   await adapter.markRead(account, threadId);
   await adapter.addLabel(account, threadId, ARCHIVED_LABEL);
   const item = existing || resolveItem({ emailItemId, account, threadId, messageId, from, subject, summary });
-  const updated = updateEmailItemState(item.id, {
+  const updated = updateEmailThreadState(item.id, {
     triageState: 'manual_archived',
     mailboxState: 'archived',
     readState: 'read',
@@ -96,13 +106,18 @@ export async function moveEmailToInbox({
 } = {}) {
   if (!account || !threadId) throw new Error('account and threadId are required');
   const existing = lookupItem({ emailItemId, account, threadId, messageId });
-  if (existing?.mailboxState === 'inbox') return existing;
+  const current = latestThreadItem(account, threadId, existing);
+  if (current?.mailboxState === 'inbox') {
+    return updateEmailThreadState(current.id, {
+      triageState: 'restored', mailboxState: 'inbox', reason,
+    });
+  }
 
   const adapter = adapterFor();
   await adapter.unarchive(account, threadId);
   await adapter.removeLabel(account, threadId, ARCHIVED_LABEL);
   const item = existing || resolveItem({ emailItemId, account, threadId, messageId, from, subject, summary });
-  const updated = updateEmailItemState(item.id, {
+  const updated = updateEmailThreadState(item.id, {
     triageState: 'restored',
     mailboxState: 'inbox',
     reason,
@@ -125,11 +140,14 @@ export async function markEmailRead({
 } = {}) {
   if (!account || !threadId) throw new Error('account and threadId are required');
   const existing = lookupItem({ emailItemId, account, threadId, messageId });
-  if (existing?.readState === 'read') return existing;
+  const current = latestThreadItem(account, threadId, existing);
+  if (current?.readState === 'read') {
+    return updateEmailThreadState(current.id, { readState: 'read' });
+  }
   const adapter = adapterFor();
   await adapter.markRead(account, threadId);
   const item = existing || resolveItem({ emailItemId, account, threadId, messageId, from, subject, summary });
-  const updated = updateEmailItemState(item.id, { readState: 'read' });
+  const updated = updateEmailThreadState(item.id, { readState: 'read' });
   appendEmailEvent('mailbox.state_changed', updated, {
     source,
     reason,
@@ -151,11 +169,14 @@ export async function markEmailUnread({
 } = {}) {
   if (!account || !threadId) throw new Error('account and threadId are required');
   const existing = lookupItem({ emailItemId, account, threadId, messageId });
-  if (existing?.readState === 'unread') return existing;
+  const current = latestThreadItem(account, threadId, existing);
+  if (current?.readState === 'unread') {
+    return updateEmailThreadState(current.id, { readState: 'unread' });
+  }
   const adapter = adapterFor();
   await adapter.modifyLabels(account, threadId, { add: ['UNREAD'] });
   const item = existing || resolveItem({ emailItemId, account, threadId, messageId, from, subject, summary });
-  const updated = updateEmailItemState(item.id, { readState: 'unread' });
+  const updated = updateEmailThreadState(item.id, { readState: 'unread' });
   appendEmailEvent('mailbox.state_changed', updated, {
     source,
     reason,

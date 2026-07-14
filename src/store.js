@@ -670,6 +670,46 @@ export function updateEmailItemState(id, { triageState, mailboxState, readState,
   return getEmailItem(id);
 }
 
+export function updateEmailThreadState(id, { triageState, mailboxState, readState, reason } = {}) {
+  const existing = getEmailItem(id);
+  if (!existing) return null;
+
+  const assignments = ['updated_at = @updatedAt'];
+  const params = { updatedAt: nowIso() };
+  if (triageState) {
+    assignments.push('triage_state = @triageState');
+    params.triageState = triageState;
+  }
+  if (mailboxState) {
+    assignments.push('mailbox_state = @mailboxState');
+    params.mailboxState = mailboxState;
+  }
+  if (['read', 'unread', 'unknown'].includes(readState)) {
+    assignments.push('read_state = @readState');
+    params.readState = readState;
+  }
+  if (reason) {
+    assignments.push('reason = @reason');
+    params.reason = reason;
+  }
+
+  const threadWhere = existing.threadId
+    ? 'account = @account AND gmail_thread_id = @threadId'
+    : 'id = @id';
+  if (existing.threadId) {
+    params.account = existing.account;
+    params.threadId = existing.threadId;
+  } else {
+    params.id = id;
+  }
+  getDb().prepare(`
+    UPDATE email_items
+    SET ${assignments.join(', ')}
+    WHERE ${threadWhere}
+  `).run(params);
+  return getEmailItem(id);
+}
+
 export function claimHandlingUndo(emailItemId, decisionId, claimToken, {
   now = new Date(),
   leaseMs = HANDLING_UNDO_LEASE_MS,

@@ -274,12 +274,6 @@ struct EmailCard: View {
                             .lineLimit(2)
                     }
 
-                    if item.isConversation {
-                        Label("Conversation", systemImage: "bubble.left.and.bubble.right")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(WinnowDesign.accent)
-                    }
-
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 78)
@@ -301,9 +295,9 @@ struct EmailCard: View {
 
                 VStack {
                     Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.bold))
-                        .foregroundStyle(.tertiary)
+                    Image(systemName: item.isConversation ? "chevron.right.circle" : "chevron.right")
+                        .font(.system(size: item.isConversation ? 20 : 13, weight: .semibold))
+                        .foregroundStyle(item.isConversation ? WinnowDesign.accent : Color(.tertiaryLabel))
                         .frame(width: 70, alignment: .trailing)
                         .accessibilityHidden(true)
                     Spacer(minLength: 0)
@@ -315,7 +309,8 @@ struct EmailCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityHint("Shows email details")
+        .accessibilityValue(item.isConversation ? "Threaded conversation" : "Single message")
+        .accessibilityHint(item.isConversation ? "Shows conversation details" : "Shows email details")
         .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)

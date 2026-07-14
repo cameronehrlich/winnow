@@ -82,7 +82,10 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         !unsubscribeLink.isEmpty && !["succeeded", "attempted"].contains(unsubscribeState)
     }
     var isUnread: Bool { readState == "unread" }
-    var isConversation: Bool { trackedThreadMessageCount > 1 }
+    var isConversation: Bool {
+        trackedThreadMessageCount > 1
+            || (!threadId.isEmpty && !messageId.isEmpty && threadId != messageId)
+    }
     var meaningfulAction: String? {
         let value = action.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = value.lowercased()

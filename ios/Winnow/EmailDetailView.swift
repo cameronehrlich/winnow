@@ -816,6 +816,7 @@ private struct ConversationPreviewSection: View {
 
     @State private var content: EmailContent?
     @State private var isLoading = true
+    @State private var loadFailed = false
 
     private var previousMessages: [FullEmailMessage] {
         guard let content else { return [] }
@@ -877,6 +878,19 @@ private struct ConversationPreviewSection: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .winnowCard(padding: 14)
+            } else if loadFailed {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.bubble")
+                        .foregroundStyle(WinnowDesign.amber)
+                    Text("Earlier messages couldn’t be loaded.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Button("Retry") { Task { await load() } }
+                        .font(.subheadline.weight(.semibold))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .winnowCard(padding: 14)
             }
         }
         .task(id: emailID) { await load() }
@@ -885,7 +899,13 @@ private struct ConversationPreviewSection: View {
     @MainActor
     private func load() async {
         isLoading = true
-        content = try? await APIClient(configuration: configuration).emailContent(emailID: emailID)
+        loadFailed = false
+        do {
+            content = try await APIClient(configuration: configuration).emailContent(emailID: emailID)
+        } catch {
+            content = nil
+            loadFailed = true
+        }
         isLoading = false
     }
 }

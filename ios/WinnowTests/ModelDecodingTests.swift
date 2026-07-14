@@ -40,6 +40,13 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(folded.displaySubject, "Follow-up work ready")
     }
 
+    func testReplyIsRecognizedAsAConversationBeforeEarlierRowsAreIndexed() throws {
+        let json = #"{"id":"reply","messageId":"m-reply","threadId":"t-original","trackedThreadMessageCount":1}"#.data(using: .utf8)!
+        let item = try JSONDecoder().decode(EmailItem.self, from: json)
+
+        XCTAssertTrue(item.isConversation)
+    }
+
     func testFullEmailContentDecodes() throws {
         let json = #"{"emailItemId":"abc","account":"me@example.com","threadId":"t1","focusedMessageId":"m1","subject":"Hello","messages":[{"id":"m1","from":"Sender","to":"Me","cc":"","subject":"Hello","date":"Today","body":"Complete body"}],"truncated":false,"fetchedAt":"2026-07-13T12:00:00.000Z"}"#.data(using: .utf8)!
         let content = try JSONDecoder().decode(EmailContent.self, from: json)

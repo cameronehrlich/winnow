@@ -7,6 +7,8 @@ import { archiveEmail, markEmailRead, markEmailUnread, moveEmailToInbox } from '
 import {
   closeStoreForTests,
   configureDatabaseForTests,
+  getEmailItem,
+  listEmailItems,
   listEvents,
   recordDelivery,
   upsertEmailItemFromResult,
@@ -223,5 +225,59 @@ describe('email actions', () => {
     assert.equal(unread.readState, 'unread');
     assert.equal(unread.isRead, false);
     assert.equal(listEvents({ limit: 10 }).filter(event => event.eventType === 'mailbox.state_changed').length, 2);
+  });
+
+  it('keeps every tracked row in a Gmail thread consistent after actions', async () => {
+    installFakeGog();
+    const original = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-original', threadId: 't-shared',
+      subject: 'Original', archive: false, readState: 'unread',
+    }, { timestamp: '2026-07-12T15:00:00.000Z' });
+    const reply = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-reply', threadId: 't-shared',
+      subject: 'Re: Original', archive: false, readState: 'unread',
+    }, { timestamp: '2026-07-12T16:00:00.000Z' });
+
+    await archiveEmail({
+      emailItemId: reply.id, account: reply.account, threadId: reply.threadId,
+      messageId: reply.messageId, source: 'api', syncSlack: false,
+    });
+    assert.equal(getEmailItem(original.id).mailboxState, 'archived');
+    assert.equal(getEmailItem(original.id).readState, 'read');
+    assert.equal(listEmailItems({ state: 'archived' }).items.length, 1);
+
+    await moveEmailToInbox({
+      emailItemId: reply.id, account: reply.account, threadId: reply.threadId,
+      messageId: reply.messageId, source: 'api', syncSlack: false,
+    });
+    assert.equal(getEmailItem(original.id).mailboxState, 'inbox');
+
+    await markEmailUnread({
+      emailItemId: reply.id, account: reply.account, threadId: reply.threadId,
+      messageId: reply.messageId, source: 'api',
+    });
+    assert.equal(getEmailItem(original.id).readState, 'unread');
+    assert.equal(getEmailItem(reply.id).readState, 'unread');
+  });
+
+  it('does not let an older archived row hide a newer inbox reply from an action', async () => {
+    installFakeGog();
+    const original = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-old-archived', threadId: 't-returned',
+      subject: 'Original', archive: true, readState: 'read',
+    }, { timestamp: '2026-07-12T15:00:00.000Z' });
+    const reply = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-new-inbox', threadId: 't-returned',
+      subject: 'Re: Original', archive: false, readState: 'unread',
+    }, { timestamp: '2026-07-12T16:00:00.000Z' });
+
+    await archiveEmail({
+      emailItemId: original.id, account: original.account, threadId: original.threadId,
+      messageId: original.messageId, source: 'slack', syncSlack: false,
+    });
+
+    assert.equal(getEmailItem(reply.id).mailboxState, 'archived');
+    assert.equal(getEmailItem(reply.id).readState, 'read');
+    assert.equal(listEvents({ limit: 10 }).filter(event => event.eventType === 'email.manual_archived').length, 1);
   });
 });
