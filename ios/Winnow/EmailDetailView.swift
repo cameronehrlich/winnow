@@ -29,8 +29,6 @@ struct EmailDetailView: View {
                     VStack(spacing: 16) {
                         senderHeader(item)
 
-                        actionsCard(item)
-
                         if let decision = item.handlingDecision {
                             HandlingDecisionCard(
                                 decision: decision,
@@ -131,108 +129,120 @@ struct EmailDetailView: View {
     }
 
     private func senderHeader(_ item: EmailItem) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 13) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
                 ZStack(alignment: .bottomTrailing) {
-                    SenderAvatar(initials: item.senderInitials, seed: item.fromEmail.isEmpty ? item.senderDisplayName : item.fromEmail, size: 52)
-                    AccountAvatarBadge(account: model.account(email: item.account), size: 20)
-                        .offset(x: 4, y: 4)
+                    SenderAvatar(
+                        initials: item.senderInitials,
+                        seed: item.fromEmail.isEmpty ? item.senderDisplayName : item.fromEmail,
+                        size: 40
+                    )
+                    AccountAvatarBadge(account: model.account(email: item.account), size: 16)
+                        .offset(x: 3, y: 3)
                 }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.senderDisplayName).font(.headline)
-                    if !item.fromEmail.isEmpty { Text(item.fromEmail).font(.caption).foregroundStyle(.secondary) }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.senderDisplayName)
+                        .font(.headline)
+                        .lineLimit(1)
+                    if !item.fromEmail.isEmpty {
+                        Text(item.fromEmail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
-                Spacer()
-                CapsuleLabel(item.isArchived ? "Archived" : "Inbox", symbol: item.isArchived ? "archivebox" : "tray", color: item.isArchived ? WinnowDesign.amber : WinnowDesign.mint)
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 4) {
+                    CapsuleLabel(
+                        item.isArchived ? "Archived" : "Inbox",
+                        symbol: item.isArchived ? "archivebox" : "tray",
+                        color: item.isArchived ? WinnowDesign.amber : WinnowDesign.mint
+                    )
+                    if let date = item.displayDate {
+                        Text(date.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
             }
             if let subject = item.displaySubject {
                 Text(subject)
-                    .font(.title2.bold())
+                    .font(.title3.bold())
                     .fixedSize(horizontal: false, vertical: true)
             }
-            HStack {
-                AccountAvatarBadge(account: model.account(email: item.account), size: 18)
-                Text(item.account)
-                Spacer()
-                if let date = item.displayDate { Text(date.formatted(date: .abbreviated, time: .shortened)) }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+
+            Divider()
+            actionsRow(item)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .winnowCard()
+        .winnowCard(padding: 14)
     }
 
-    private func actionsCard(_ item: EmailItem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("ACTIONS")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
+    private func actionsRow(_ item: EmailItem) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            CompactDetailActionButton(
+                title: item.isArchived ? "Inbox" : "Archive",
+                symbol: item.isArchived ? "tray.and.arrow.down" : "archivebox",
+                color: item.isArchived ? WinnowDesign.mint : WinnowDesign.amber
+            ) {
+                performPrimaryMailboxAction(on: item)
+            }
+            .accessibilityLabel(item.isArchived ? "Move to Inbox" : "Archive")
 
-            HStack(alignment: .top, spacing: 8) {
+            CompactDetailActionButton(
+                title: item.isUnread ? "Mark Read" : "Unread",
+                symbol: item.isUnread ? "envelope.open" : "envelope.badge",
+                color: WinnowDesign.accent
+            ) {
+                Task { _ = await model.perform(item.isUnread ? .markRead : .markUnread, on: item) }
+            }
+            .accessibilityLabel(item.isUnread ? "Mark as read" : "Mark as unread")
+
+            if item.canUnsubscribe {
                 CompactDetailActionButton(
-                    title: item.isArchived ? "Inbox" : "Archive",
-                    symbol: item.isArchived ? "tray.and.arrow.down" : "archivebox",
-                    color: item.isArchived ? WinnowDesign.mint : WinnowDesign.amber
+                    title: "Unsubscribe",
+                    symbol: "person.crop.circle.badge.minus",
+                    color: WinnowDesign.rose
                 ) {
-                    performPrimaryMailboxAction(on: item)
+                    confirmUnsubscribe = true
                 }
-                .accessibilityLabel(item.isArchived ? "Move to Inbox" : "Archive")
+                .confirmationDialog(
+                    "Unsubscribe from this sender?",
+                    isPresented: $confirmUnsubscribe,
+                    titleVisibility: .visible
+                ) {
+                    Button("Unsubscribe", role: .destructive) {
+                        Task { _ = await model.perform(.unsubscribe, on: item) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Winnow will follow the sender’s unsubscribe link.")
+                }
+            }
 
+            if item.canLoadFullContent, item.summary.isEmpty {
                 CompactDetailActionButton(
-                    title: item.isUnread ? "Mark Read" : "Unread",
-                    symbol: item.isUnread ? "envelope.open" : "envelope.badge",
+                    title: "Full Email",
+                    symbol: "doc.text.magnifyingglass",
                     color: WinnowDesign.accent
                 ) {
-                    Task { _ = await model.perform(item.isUnread ? .markRead : .markUnread, on: item) }
+                    showingFullEmail = true
                 }
-                .accessibilityLabel(item.isUnread ? "Mark as read" : "Mark as unread")
+                .accessibilityHint("Loads the complete message securely from Gmail.")
+            }
 
-                if item.canUnsubscribe {
-                    CompactDetailActionButton(
-                        title: "Unsubscribe",
-                        symbol: "person.crop.circle.badge.minus",
-                        color: WinnowDesign.rose
-                    ) {
-                        confirmUnsubscribe = true
-                    }
-                    .confirmationDialog(
-                        "Unsubscribe from this sender?",
-                        isPresented: $confirmUnsubscribe,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Unsubscribe", role: .destructive) {
-                            Task { _ = await model.perform(.unsubscribe, on: item) }
-                        }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("Winnow will follow the sender’s unsubscribe link.")
-                    }
-                }
-
-                if item.canLoadFullContent, item.summary.isEmpty {
-                    CompactDetailActionButton(
-                        title: "Full Email",
-                        symbol: "doc.text.magnifyingglass",
-                        color: WinnowDesign.accent
-                    ) {
-                        showingFullEmail = true
-                    }
-                    .accessibilityHint("Loads the complete message securely from Gmail.")
-                }
-
-                if item.handlingDecision == nil {
-                    CompactDetailActionButton(
-                        title: "New Rule",
-                        symbol: "checklist",
-                        color: WinnowDesign.mint
-                    ) {
-                        showingCreateRule = true
-                    }
+            if item.handlingDecision == nil {
+                CompactDetailActionButton(
+                    title: "New Rule",
+                    symbol: "checklist",
+                    color: WinnowDesign.mint
+                ) {
+                    showingCreateRule = true
                 }
             }
         }
-        .winnowCard(padding: 12)
         .disabled(model.performingEmailIDs.contains(item.id))
     }
 
