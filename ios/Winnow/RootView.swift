@@ -65,10 +65,12 @@ struct RootView: View {
         .alert(item: $model.presentedError) { error in
             Alert(title: Text(error.title), message: Text(error.message), dismissButton: .default(Text("OK")))
         }
-        .overlay(alignment: .top) {
+        .overlay(alignment: .bottom) {
             if let toast = model.toast {
                 ToastView(toast: toast)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 82)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                     .task(id: toast.id) {
                         try? await Task.sleep(for: .seconds(2.2))
                         guard model.toast?.id == toast.id else { return }
@@ -103,12 +105,22 @@ struct RootView: View {
     private var modernTabs: some View {
         TabView(selection: $selectedTab) {
             Tab("Inbox", systemImage: "tray.full", value: RootTab.inbox) {
-                InboxView(mailbox: .inbox, openSettings: openSettings, openStats: openStats)
+                InboxView(
+                    mailbox: .inbox,
+                    openSettings: openSettings,
+                    openStats: openStats,
+                    switchMailbox: { selectedTab = .archived }
+                )
             }
             .badge(model.inboxBadgeCount)
 
             Tab("Archived", systemImage: "archivebox", value: RootTab.archived) {
-                InboxView(mailbox: .archived, openSettings: openSettings, openStats: openStats)
+                InboxView(
+                    mailbox: .archived,
+                    openSettings: openSettings,
+                    openStats: openStats,
+                    switchMailbox: { selectedTab = .inbox }
+                )
             }
 
             Tab("Ask", systemImage: "bubble.left.and.bubble.right.fill", value: RootTab.ask, role: .search) {
@@ -119,12 +131,22 @@ struct RootView: View {
 
     private var legacyTabs: some View {
         TabView(selection: $selectedTab) {
-            InboxView(mailbox: .inbox, openSettings: openSettings, openStats: openStats)
+            InboxView(
+                mailbox: .inbox,
+                openSettings: openSettings,
+                openStats: openStats,
+                switchMailbox: { selectedTab = .archived }
+            )
                 .tabItem { Label("Inbox", systemImage: "tray.full") }
                 .badge(model.inboxBadgeCount)
                 .tag(RootTab.inbox)
 
-            InboxView(mailbox: .archived, openSettings: openSettings, openStats: openStats)
+            InboxView(
+                mailbox: .archived,
+                openSettings: openSettings,
+                openStats: openStats,
+                switchMailbox: { selectedTab = .inbox }
+            )
                 .tabItem { Label("Archived", systemImage: "archivebox") }
                 .tag(RootTab.archived)
 
