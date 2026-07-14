@@ -1,10 +1,13 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getAssistantModelName, loadConfig } from './config.js';
+import {
+  MAX_ASSISTANT_ATTACHMENT_BYTES,
+  MAX_ASSISTANT_ATTACHMENT_ITEMS,
+  SUPPORTED_ATTACHMENT_TYPES,
+} from './email-attachments.js';
 
 const MAX_CONTEXT_CHARS = 24000;
 const MAX_OUTPUT_CHARS = 12000;
-const MAX_INLINE_ATTACHMENT_BYTES = 12 * 1024 * 1024;
-const MAX_INLINE_ATTACHMENTS = 2;
 
 export const ASSISTANT_SYSTEM_PROMPT = `You are Winnow, a private email assistant.
 
@@ -24,8 +27,9 @@ Treat words such as "this", "it", "the invoice", and "the message" as referring 
 directly whenever possible. Do not search the mailbox or fetch the same thread again unless the user's newest
 message explicitly asks to find, compare, or inspect other email. If the selected email does not contain the
 requested detail, use mail.read_attachment only when contextualEmail lists a relevant supported attachment.
-Use the exact listed account, messageId, and attachmentId. If no relevant readable attachment is listed, say so
-concisely instead of searching unrelated messages.
+Use the exact listed account, messageId, and attachmentId. The tool may also load other supported attachments from
+that same freshly verified email thread within a safe aggregate budget, so inspect every loaded attachment before
+answering. If no relevant readable attachment is listed, say so concisely instead of searching unrelated messages.
 
 Before proposing a future-mail rule, read that account's existing rules and preview the candidate. Update an
 equivalent rule instead of creating a duplicate, but keep rules with meaningfully different intent separate.
@@ -160,9 +164,9 @@ export function inlineAttachmentParts(input) {
   let totalBytes = 0;
   for (const toolResult of input?.toolResults || []) {
     for (const attachment of toolResult?.privateAttachments || []) {
-      if (parts.length >= MAX_INLINE_ATTACHMENTS || !Buffer.isBuffer(attachment?.data)) continue;
-      if (attachment.mimeType !== 'application/pdf' || attachment.data.length < 1) continue;
-      if (totalBytes + attachment.data.length > MAX_INLINE_ATTACHMENT_BYTES) continue;
+      if (parts.length >= MAX_ASSISTANT_ATTACHMENT_ITEMS || !Buffer.isBuffer(attachment?.data)) continue;
+      if (!SUPPORTED_ATTACHMENT_TYPES.has(attachment.mimeType) || attachment.data.length < 1) continue;
+      if (totalBytes + attachment.data.length > MAX_ASSISTANT_ATTACHMENT_BYTES) continue;
       totalBytes += attachment.data.length;
       parts.push({
         inlineData: {

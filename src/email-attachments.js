@@ -1,7 +1,16 @@
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 50;
+export const MAX_ASSISTANT_ATTACHMENT_BYTES = 12 * 1024 * 1024;
+export const MAX_ASSISTANT_ATTACHMENT_ITEMS = 12;
 
-const SUPPORTED_ATTACHMENT_TYPES = new Set(['application/pdf']);
+export const SUPPORTED_ATTACHMENT_TYPES = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+]);
 
 function boundedString(value, maxLength) {
   return String(value || '').trim().slice(0, maxLength);
@@ -101,6 +110,55 @@ export function assertReadableAttachment(attachment) {
     throw error;
   }
   return normalized;
+}
+
+export function planReadableAttachmentBatch(
+  requestedAttachment,
+  freshAttachments,
+  {
+    maxBytes = MAX_ASSISTANT_ATTACHMENT_BYTES,
+    maxItems = MAX_ASSISTANT_ATTACHMENT_ITEMS,
+  } = {},
+) {
+  const requested = assertReadableAttachment(requestedAttachment);
+  const requestedKey = `${requested.messageId}\0${requested.attachmentId}`;
+  const ordered = [
+    requested,
+    ...normalizeAttachmentList(freshAttachments).filter(attachment => (
+      `${attachment.messageId}\0${attachment.attachmentId}` !== requestedKey
+    )),
+  ];
+  const selected = [];
+  const omitted = {
+    unsupportedType: 0,
+    unsupportedSize: 0,
+    itemLimit: 0,
+    byteBudget: 0,
+  };
+  let totalBytes = 0;
+
+  for (const attachment of ordered) {
+    if (!SUPPORTED_ATTACHMENT_TYPES.has(attachment.mimeType)) {
+      omitted.unsupportedType += 1;
+      continue;
+    }
+    if (!attachment.sizeBytes || attachment.sizeBytes > MAX_ATTACHMENT_BYTES) {
+      omitted.unsupportedSize += 1;
+      continue;
+    }
+    if (selected.length >= maxItems) {
+      omitted.itemLimit += 1;
+      continue;
+    }
+    if (totalBytes + attachment.sizeBytes > maxBytes) {
+      omitted.byteBudget += 1;
+      continue;
+    }
+    selected.push(attachment);
+    totalBytes += attachment.sizeBytes;
+  }
+
+  return { selected, totalBytes, omitted };
 }
 
 export function resolveFreshAttachment(

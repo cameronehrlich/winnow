@@ -8,7 +8,10 @@ import { resolveTrackedContacts } from './contact-resolver.js';
 import {
   assertReadableAttachment,
   collectThreadAttachments,
+  MAX_ASSISTANT_ATTACHMENT_BYTES,
+  MAX_ASSISTANT_ATTACHMENT_ITEMS,
   MAX_ATTACHMENT_BYTES,
+  planReadableAttachmentBatch,
   resolveFreshAttachment,
 } from './email-attachments.js';
 import {
@@ -40,7 +43,7 @@ export const ASSISTANT_TOOL_DEFINITIONS = Object.freeze([
   { name: 'mail.search', risk: 'read', description: 'Search configured Gmail accounts.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { account: { type: 'string' }, query: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 25 } } } },
   { name: 'contacts.resolve', risk: 'read', description: 'Resolve a person name to recent correspondent email candidates without guessing.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 10 } } } },
   { name: 'mail.get_thread', risk: 'read', description: 'Read one Gmail thread.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'threadId'], properties: { account: { type: 'string' }, threadId: { type: 'string' } } } },
-  { name: 'mail.read_attachment', risk: 'read', description: 'Read one supported attachment from the selected email thread only when its text context lacks the answer.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId', 'attachmentId'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, attachmentId: { type: 'string' } } } },
+  { name: 'mail.read_attachment', risk: 'read', description: 'Read a supported attachment and a bounded group of related supported attachments from the selected email thread when its text context lacks the answer.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId', 'attachmentId'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, attachmentId: { type: 'string' } } } },
   ...['mail.archive', 'mail.mark_read', 'mail.mark_unread'].map(name => ({ name, risk: 'reversible', description: `${name.split('.')[1].replace('_', ' ')} one Gmail thread.`, inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'threadId'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' } } } })),
   { name: 'unsubscribe.request', risk: 'persistent', description: 'Discover and propose an unsubscribe method.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' } } } },
   { name: 'mail.send_reply', risk: 'outbound', description: 'Propose sending an exact reply draft.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'messageId', 'draft'], properties: { account: { type: 'string' }, messageId: { type: 'string' }, threadId: { type: 'string' }, draft: { type: 'object', additionalProperties: false, required: ['body'], properties: { body: { type: 'string' }, to: { type: 'array', items: { type: 'string' } }, cc: { type: 'array', items: { type: 'string' } }, bcc: { type: 'array', items: { type: 'string' } }, subject: { type: 'string' } } } } } },
@@ -522,19 +525,51 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
         error.code === 'attachment_not_found' ? 404 : 400,
       );
     }
-    const data = await dependencies.readAttachment(
-      item.account,
-      readable.messageId,
-      readable.attachmentId,
-      Math.min(readable.sizeBytes, MAX_ATTACHMENT_BYTES),
-    );
-    if (!Buffer.isBuffer(data) || data.length > MAX_ATTACHMENT_BYTES || data.length > readable.sizeBytes) {
-      throw new AssistantToolError('attachment_size_not_supported', 'This attachment is too large to inspect safely');
+    const batch = planReadableAttachmentBatch(readable, freshAttachments);
+    const privateAttachments = [];
+    let failedDownloads = 0;
+    for (const attachment of batch.selected) {
+      let data;
+      try {
+        data = await dependencies.readAttachment(
+          item.account,
+          attachment.messageId,
+          attachment.attachmentId,
+          Math.min(attachment.sizeBytes, MAX_ATTACHMENT_BYTES),
+        );
+      } catch (error) {
+        if (attachment.attachmentId === readable.attachmentId
+            && attachment.messageId === readable.messageId) throw error;
+        failedDownloads += 1;
+        continue;
+      }
+      if (!Buffer.isBuffer(data) || data.length < 1
+          || data.length > MAX_ATTACHMENT_BYTES || data.length > attachment.sizeBytes) {
+        if (attachment.attachmentId === readable.attachmentId
+            && attachment.messageId === readable.messageId) {
+          throw new AssistantToolError('attachment_size_not_supported', 'This attachment is too large to inspect safely');
+        }
+        failedDownloads += 1;
+        continue;
+      }
+      privateAttachments.push({ ...attachment, data });
     }
     return {
       kind: 'result', risk: definition.risk,
-      result: { attachment: readable, contentLoaded: true },
-      privateAttachments: [{ ...readable, data }],
+      result: {
+        attachment: readable,
+        contentLoaded: true,
+        loadedAttachments: privateAttachments.map(({ data: _, ...attachment }) => attachment),
+        omittedAttachments: {
+          ...batch.omitted,
+          failedDownloads,
+        },
+        limits: {
+          maxItems: MAX_ASSISTANT_ATTACHMENT_ITEMS,
+          maxBytes: MAX_ASSISTANT_ATTACHMENT_BYTES,
+        },
+      },
+      privateAttachments,
       evidence: [],
     };
   }

@@ -46,7 +46,7 @@ describe('assistant model context', () => {
     assert.equal(parsed.toolResults[0].trust, 'untrusted_tool_data');
   });
 
-  it('keeps private attachment bytes out of JSON context and creates a bounded PDF part', () => {
+  it('keeps private attachment bytes out of JSON context and creates supported inline parts', () => {
     const input = {
       contextualEmail: {
         reference: { account: 'me@example.com', messageId: 'm1', threadId: 't1' },
@@ -58,14 +58,35 @@ describe('assistant model context', () => {
       toolResults: [{
         tool: 'mail.read_attachment',
         result: { attachment: { filename: 'invoice.pdf' }, contentLoaded: true },
-        privateAttachments: [{ mimeType: 'application/pdf', data: Buffer.from('%PDF-test') }],
+        privateAttachments: [
+          { mimeType: 'application/pdf', data: Buffer.from('%PDF-test') },
+          { mimeType: 'image/jpeg', data: Buffer.from('jpeg-private') },
+          { mimeType: 'image/svg+xml', data: Buffer.from('svg-private') },
+        ],
       }],
       availableTools: [],
     };
     const serialized = serializeAssistantModelInput(input);
     assert.doesNotMatch(serialized, /JVBERS10ZXN0|PDF-test/);
-    assert.deepEqual(inlineAttachmentParts(input), [{
-      inlineData: { mimeType: 'application/pdf', data: Buffer.from('%PDF-test').toString('base64') },
-    }]);
+    assert.deepEqual(inlineAttachmentParts(input), [
+      { inlineData: { mimeType: 'application/pdf', data: Buffer.from('%PDF-test').toString('base64') } },
+      { inlineData: { mimeType: 'image/jpeg', data: Buffer.from('jpeg-private').toString('base64') } },
+    ]);
+  });
+
+  it('passes four JPEGs in one request and enforces the aggregate byte budget', () => {
+    const fourImages = [1, 2, 3, 4].map(index => ({
+      mimeType: 'image/jpeg', data: Buffer.from(`jpeg-${index}`),
+    }));
+    assert.equal(inlineAttachmentParts({
+      toolResults: [{ privateAttachments: fourImages }],
+    }).length, 4);
+
+    const tooLarge = Buffer.alloc(12 * 1024 * 1024);
+    const parts = inlineAttachmentParts({ toolResults: [{ privateAttachments: [
+      { mimeType: 'image/png', data: tooLarge },
+      { mimeType: 'image/png', data: Buffer.from('does-not-fit') },
+    ] }] });
+    assert.equal(parts.length, 1);
   });
 });

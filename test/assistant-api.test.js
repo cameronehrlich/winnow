@@ -299,6 +299,68 @@ describe('assistant API', () => {
     assert.doesNotMatch(`${audit.arguments_json}${audit.result_json}`, /PDF-private-invoice|JVBER/);
   });
 
+  it('reads four JPEGs from the selected thread in one bounded tool call without persisting bytes', async () => {
+    const attachments = [1, 2, 3, 4].map(index => ({
+      messageId: 'digest-message',
+      attachmentId: `usps-scan-${index}`,
+      filename: `mailpiece-${index}.jpg`,
+      mimeType: 'image/jpeg',
+      sizeBytes: 32,
+    }));
+    const downloads = [];
+    setAssistantDependenciesFactoryForTests(() => ({
+      async getThread(account, threadId) {
+        assert.equal(account, 'me@example.com');
+        assert.equal(threadId, 't1');
+        return { id: 't1', messages: [{
+          id: 'digest-message', messageId: 'digest-message', threadId: 't1',
+          subject: 'Your Daily Digest', body: 'Four mailpieces are shown in attached images.',
+          attachments,
+        }] };
+      },
+      async readAttachment(account, messageId, attachmentId, maxBytes) {
+        downloads.push({ account, messageId, attachmentId, maxBytes });
+        return Buffer.from(`PRIVATE-USPS-${attachmentId}`);
+      },
+    }));
+    responses.push(
+      { text: '', toolCalls: [{
+        name: 'mail.read_attachment',
+        arguments: {
+          account: 'me@example.com', messageId: 'digest-message', attachmentId: 'usps-scan-1',
+        },
+      }], draft: null },
+      { text: 'All four scans show ordinary letter-sized mailpieces.', toolCalls: [], draft: null },
+    );
+
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: "What's coming today?", idempotencyKey: 'read-four-usps-images',
+    });
+    const envelope = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(downloads.length, 4);
+    assert.deepEqual(downloads.map(call => call.attachmentId), [
+      'usps-scan-1', 'usps-scan-2', 'usps-scan-3', 'usps-scan-4',
+    ]);
+    assert.equal(calls.requests[1].toolResults.length, 1);
+    assert.equal(calls.requests[1].toolResults[0].privateAttachments.length, 4);
+    assert.deepEqual(
+      calls.requests[1].toolResults[0].result.loadedAttachments.map(value => value.attachmentId),
+      ['usps-scan-1', 'usps-scan-2', 'usps-scan-3', 'usps-scan-4'],
+    );
+    assert.doesNotMatch(JSON.stringify(envelope), /PRIVATE-USPS/);
+
+    const inspector = new DatabaseSync(databasePath);
+    const audit = inspector.prepare(
+      "SELECT arguments_json, result_json FROM assistant_tool_calls WHERE tool = 'mail.read_attachment'",
+    ).get();
+    inspector.close();
+    assert.ok(audit);
+    assert.doesNotMatch(`${audit.arguments_json}${audit.result_json}`, /PRIVATE-USPS/);
+  });
+
   it('rejects an attachment tuple that is not in the selected thread before download', async () => {
     let downloads = 0;
     setAssistantDependenciesFactoryForTests(() => ({
