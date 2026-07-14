@@ -132,6 +132,16 @@ struct SettingsView: View {
 
                     Section {
                         Button("Forget This Server", role: .destructive) { confirmDisconnect = true }
+                            .confirmationDialog(
+                                "Forget Winnow setup?",
+                                isPresented: $confirmDisconnect,
+                                titleVisibility: .visible
+                            ) {
+                                Button("Forget Server & Token", role: .destructive) { model.disconnect() }
+                                Button("Cancel", role: .cancel) {}
+                            } message: {
+                                Text("This only clears the connection details on this device.")
+                            }
                     }
 
                     Section {
@@ -153,12 +163,6 @@ struct SettingsView: View {
             .onAppear {
                 serverURL = model.configuration.serverURL
                 token = model.configuration.token
-            }
-            .confirmationDialog("Forget Winnow setup?", isPresented: $confirmDisconnect, titleVisibility: .visible) {
-                Button("Forget Server & Token", role: .destructive) { model.disconnect() }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This only clears the connection details on this device.")
             }
         }
     }

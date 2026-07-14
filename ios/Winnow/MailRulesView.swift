@@ -5,8 +5,6 @@ struct MailRulesView: View {
     @State private var selectedAccount = ""
     @State private var searchText = ""
     @State private var editingRule: MailRule?
-    @State private var pendingToggle: RuleToggleRequest?
-    @State private var pendingReset: MailRule?
 
     private var visibleRules: [MailRule] {
         model.mailRules.filter { rule in
@@ -63,7 +61,9 @@ struct MailRulesView: View {
                         MailRuleRow(
                             rule: rule,
                             isBusy: model.performingRuleIDs.contains(rule.id),
-                            toggle: { pendingToggle = RuleToggleRequest(rule: rule, enabled: $0) },
+                            toggle: { enabled in
+                                Task { _ = await model.setMailRuleEnabled(rule, enabled: enabled) }
+                            },
                             edit: { editingRule = rule }
                         )
                     }
@@ -79,7 +79,7 @@ struct MailRulesView: View {
                             rule: rule,
                             isBusy: model.performingRuleIDs.contains(rule.id),
                             customize: { editingRule = rule },
-                            reset: { pendingReset = rule }
+                            reset: { Task { _ = await model.resetMailRule(rule) } }
                         )
                     }
                 }
@@ -135,44 +135,6 @@ struct MailRulesView: View {
             MailRuleEditorView(rule: rule)
                 .environmentObject(model)
         }
-        .confirmationDialog(
-            pendingToggle?.enabled == true ? "Enable this rule?" : "Disable this rule?",
-            isPresented: Binding(
-                get: { pendingToggle != nil },
-                set: { if !$0 { pendingToggle = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let request = pendingToggle {
-                Button(request.enabled ? "Enable Rule" : "Disable Rule", role: request.enabled ? nil : .destructive) {
-                    pendingToggle = nil
-                    Task { _ = await model.setMailRuleEnabled(request.rule, enabled: request.enabled) }
-                }
-            }
-            Button("Cancel", role: .cancel) { pendingToggle = nil }
-        } message: {
-            if let request = pendingToggle {
-                Text("Future matching messages will \(request.enabled ? request.rule.actionTitle.lowercased() : "return to normal Winnow handling").")
-            }
-        }
-        .confirmationDialog(
-            "Reset this default?",
-            isPresented: Binding(
-                get: { pendingReset != nil },
-                set: { if !$0 { pendingReset = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let rule = pendingReset {
-                Button("Reset to Winnow Default", role: .destructive) {
-                    pendingReset = nil
-                    Task { _ = await model.resetMailRule(rule) }
-                }
-            }
-            Button("Cancel", role: .cancel) { pendingReset = nil }
-        } message: {
-            Text("Your customization will be removed. Future mail will use Winnow’s original rule again.")
-        }
     }
 
     private func emptyRow(_ title: String, symbol: String) -> some View {
@@ -182,12 +144,6 @@ struct MailRulesView: View {
     }
 }
 
-private struct RuleToggleRequest: Identifiable {
-    let rule: MailRule
-    let enabled: Bool
-    var id: String { "\(rule.id)|\(enabled)" }
-}
-
 private struct MailRuleRow: View {
     let rule: MailRule
     let isBusy: Bool
@@ -195,6 +151,8 @@ private struct MailRuleRow: View {
     var edit: (() -> Void)?
     var customize: (() -> Void)?
     var reset: (() -> Void)?
+    @State private var pendingToggle: Bool?
+    @State private var confirmReset = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -235,10 +193,39 @@ private struct MailRuleRow: View {
                         .controlSize(.small)
                         .frame(width: 51, height: 31)
                 } else if let toggle {
-                    Toggle("Rule enabled", isOn: Binding(get: { rule.enabled }, set: toggle))
+                    Toggle(
+                        "Rule enabled",
+                        isOn: Binding(
+                            get: { rule.enabled },
+                            set: { pendingToggle = $0 }
+                        )
+                    )
                         .labelsHidden()
                         .tint(WinnowDesign.accent)
                         .accessibilityValue(rule.enabled ? "On" : "Off")
+                        .confirmationDialog(
+                            pendingToggle == true ? "Enable this rule?" : "Disable this rule?",
+                            isPresented: Binding(
+                                get: { pendingToggle != nil },
+                                set: { if !$0 { pendingToggle = nil } }
+                            ),
+                            titleVisibility: .visible
+                        ) {
+                            if let enabled = pendingToggle {
+                                Button(
+                                    enabled ? "Enable Rule" : "Disable Rule",
+                                    role: enabled ? nil : .destructive
+                                ) {
+                                    pendingToggle = nil
+                                    toggle(enabled)
+                                }
+                            }
+                            Button("Cancel", role: .cancel) { pendingToggle = nil }
+                        } message: {
+                            if let enabled = pendingToggle {
+                                Text("Future matching messages will \(enabled ? rule.actionTitle.lowercased() : "return to normal Winnow handling").")
+                            }
+                        }
                 } else if rule.isLockedAutomation {
                     Image(systemName: "lock.fill")
                         .foregroundStyle(.secondary)
@@ -280,11 +267,26 @@ private struct MailRuleRow: View {
             if rule.canReset, let reset {
                 Menu {
                     Button("Edit Customization", systemImage: "pencil", action: customize)
-                    Button("Reset to Winnow Default", systemImage: "arrow.counterclockwise", role: .destructive, action: reset)
+                    Button(
+                        "Reset to Winnow Default",
+                        systemImage: "arrow.counterclockwise",
+                        role: .destructive,
+                        action: { confirmReset = true }
+                    )
                 } label: {
                     compactIcon(symbol: "ellipsis")
                 }
                 .accessibilityLabel("Rule options")
+                .confirmationDialog(
+                    "Reset this default?",
+                    isPresented: $confirmReset,
+                    titleVisibility: .visible
+                ) {
+                    Button("Reset to Winnow Default", role: .destructive, action: reset)
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Your customization will be removed. Future mail will use Winnow’s original rule again.")
+                }
             } else {
                 compactButton(symbol: "slider.horizontal.3", label: "Customize rule", action: customize)
             }

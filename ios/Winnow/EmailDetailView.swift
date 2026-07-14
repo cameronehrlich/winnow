@@ -6,7 +6,6 @@ struct EmailDetailView: View {
     @EnvironmentObject private var model: AppModel
     let emailID: String
     @State private var confirmUnsubscribe = false
-    @State private var confirmUndoHandling = false
     @State private var assistantComposerRequest: AssistantComposerRequest?
     @State private var editingRule: MailRule?
     @State private var showingCreateRule = false
@@ -64,7 +63,10 @@ struct EmailDetailView: View {
                                 decision: decision,
                                 isBusy: model.performingEmailIDs.contains(item.id),
                                 canUndo: item.undoAction != nil,
-                                undo: { confirmUndoHandling = true },
+                                undoConfirmationTitle: undoConfirmationTitle(for: item),
+                                undoConfirmationButton: undoConfirmationButton(for: item),
+                                undoConfirmationMessage: undoConfirmationMessage(for: item),
+                                undo: { Task { _ = await model.undoHandling(on: item) } },
                                 adjust: { adjustFutureHandling(item, decision: decision) },
                                 createRule: { showingCreateRule = true }
                             )
@@ -90,30 +92,6 @@ struct EmailDetailView: View {
                             InsightBlock(title: "Manual step needed", symbol: "envelope.badge", text: "This sender requires an email-based unsubscribe that Winnow can’t complete automatically.", color: WinnowDesign.amber)
                         }
                     }
-                }
-                .confirmationDialog(
-                    "Unsubscribe from this sender?",
-                    isPresented: $confirmUnsubscribe,
-                    titleVisibility: .visible
-                ) {
-                    Button("Unsubscribe", role: .destructive) {
-                        Task { _ = await model.perform(.unsubscribe, on: item) }
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("Winnow will follow the sender’s unsubscribe link.")
-                }
-                .confirmationDialog(
-                    undoConfirmationTitle(for: item),
-                    isPresented: $confirmUndoHandling,
-                    titleVisibility: .visible
-                ) {
-                    Button(undoConfirmationButton(for: item)) {
-                        Task { _ = await model.undoHandling(on: item) }
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text(undoConfirmationMessage(for: item))
                 }
                 .sheet(item: $editingRule) { rule in
                     MailRuleEditorView(rule: rule)
@@ -257,6 +235,18 @@ struct EmailDetailView: View {
                     ) {
                         confirmUnsubscribe = true
                     }
+                    .confirmationDialog(
+                        "Unsubscribe from this sender?",
+                        isPresented: $confirmUnsubscribe,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Unsubscribe", role: .destructive) {
+                            Task { _ = await model.perform(.unsubscribe, on: item) }
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Winnow will follow the sender’s unsubscribe link.")
+                    }
                 }
 
                 if item.canLoadFullContent, item.summary.isEmpty {
@@ -377,10 +367,14 @@ private struct HandlingDecisionCard: View {
     let decision: EmailHandlingDecision
     let isBusy: Bool
     let canUndo: Bool
+    let undoConfirmationTitle: String
+    let undoConfirmationButton: String
+    let undoConfirmationMessage: String
     let undo: () -> Void
     let adjust: () -> Void
     let createRule: () -> Void
     @State private var isExpanded = false
+    @State private var confirmUndo = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -451,8 +445,18 @@ private struct HandlingDecisionCard: View {
                                 title: "Undo Email",
                                 symbol: "arrow.uturn.backward",
                                 color: WinnowDesign.amber,
-                                action: undo
+                                action: { confirmUndo = true }
                             )
+                            .confirmationDialog(
+                                undoConfirmationTitle,
+                                isPresented: $confirmUndo,
+                                titleVisibility: .visible
+                            ) {
+                                Button(undoConfirmationButton, action: undo)
+                                Button("Cancel", role: .cancel) {}
+                            } message: {
+                                Text(undoConfirmationMessage)
+                            }
                         }
 
                         CompactDetailActionButton(
