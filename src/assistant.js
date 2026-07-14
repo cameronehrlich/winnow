@@ -237,6 +237,9 @@ async function waitForExistingRun(run, timeoutMs = 80_000) {
 
 function errorText(err) {
   if (err instanceof AssistantToolError) return err.message;
+  if (err instanceof AssistantError && err.code === 'assistant_model_unavailable') {
+    return 'Winnow’s model is temporarily unavailable. Please try again in a moment.';
+  }
   return 'I couldn’t complete that safely. Please try again.';
 }
 
@@ -298,21 +301,52 @@ function startAssistantRunHeartbeat(run) {
 }
 
 async function boundedModelResponse(model, input) {
-  let timeout;
-  const providerResponse = Promise.resolve().then(() => model.respond(input));
-  const deadline = new Promise((resolve, reject) => {
-    timeout = setTimeout(() => reject(new AssistantError(
-      504,
-      'assistant_model_timeout',
-      'The assistant model did not respond in time',
-    )), assistantModelTimeoutMs);
-    timeout.unref?.();
-  });
+  const request = async () => {
+    let timeout;
+    const providerResponse = Promise.resolve().then(() => model.respond(input));
+    const deadline = new Promise((resolve, reject) => {
+      timeout = setTimeout(() => reject(new AssistantError(
+        504,
+        'assistant_model_timeout',
+        'The assistant model did not respond in time',
+      )), assistantModelTimeoutMs);
+      timeout.unref?.();
+    });
+    try {
+      return await Promise.race([providerResponse, deadline]);
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
   try {
-    return await Promise.race([providerResponse, deadline]);
-  } finally {
-    clearTimeout(timeout);
+    return await request();
+  } catch (err) {
+    // Gemini occasionally returns a short-lived 429/5xx response. Retry one
+    // provider failure, but never retry our deadline or deterministic parsing,
+    // validation, authentication, and configuration errors.
+    if (!isTransientModelProviderError(err)) throw err;
+    try {
+      return await request();
+    } catch (retryErr) {
+      if (!isTransientModelProviderError(retryErr)) throw retryErr;
+      throw new AssistantError(
+        503,
+        'assistant_model_unavailable',
+        'The assistant model is temporarily unavailable',
+      );
+    }
   }
+}
+
+function isTransientModelProviderError(err) {
+  if (!err || err instanceof AssistantError) return false;
+  const status = Number(err.status || err.statusCode || err.response?.status || 0);
+  if (status === 429 || (status >= 500 && status <= 599)) return true;
+  const code = String(err.code || '').toUpperCase();
+  if (['ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'ENETUNREACH', 'ETIMEDOUT'].includes(code)) return true;
+  return /\b(?:429|50[0-9])\b|service unavailable|fetch failed|network error|socket hang up/i
+    .test(String(err.message || ''));
 }
 
 async function resolveExistingAssistantRun(run, requestFingerprint, leaseToken, onProgress) {

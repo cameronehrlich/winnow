@@ -284,6 +284,66 @@ describe('assistant API', () => {
     assert.equal(run.error_code, 'assistant_failed');
   });
 
+  it('retries one transient provider failure before preparing an explicit reminder', async () => {
+    let attempts = 0;
+    setAssistantModelFactoryForTests(() => ({
+      async respond() {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error('[503 Service Unavailable] The service is currently unavailable.');
+        }
+        return {
+          text: 'Review this reminder.',
+          toolCalls: [{
+            name: 'device.create_reminder',
+            arguments: {
+              title: 'Submit Wild Child Gym receipt to IGOE',
+              dueAt: '2026-07-15T09:00:00-07:00',
+            },
+          }],
+          draft: null,
+        };
+      },
+    }));
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Can you make a reminder for me to submit this to IGOE tomorrow?',
+      idempotencyKey: 'transient-reminder-retry',
+    });
+
+    assert.equal(response.status, 200);
+    const envelope = await response.json();
+    assert.equal(attempts, 2);
+    assert.equal(envelope.messages.at(-1).proposal.tool, 'device.create_reminder');
+    assert.equal(envelope.messages.at(-1).proposal.status, 'pending');
+  });
+
+  it('reports a repeated transient provider failure as availability rather than safety', async () => {
+    let attempts = 0;
+    setAssistantModelFactoryForTests(() => ({
+      async respond() {
+        attempts += 1;
+        throw new Error('[503 Service Unavailable] The service is currently unavailable.');
+      },
+    }));
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Can you make a reminder for me to submit this to IGOE tomorrow?',
+      idempotencyKey: 'repeated-transient-reminder-failure',
+    });
+
+    assert.equal(response.status, 200);
+    const envelope = await response.json();
+    assert.equal(attempts, 2);
+    assert.match(envelope.messages.at(-1).text, /temporarily unavailable/i);
+    const inspector = new DatabaseSync(databasePath, { readOnly: true });
+    const run = inspector.prepare('SELECT status, error_code FROM assistant_runs WHERE idempotency_key = ?')
+      .get('repeated-transient-reminder-failure');
+    inspector.close();
+    assert.equal(run.status, 'failed');
+    assert.equal(run.error_code, 'assistant_model_unavailable');
+  });
+
   it('times out a provider response before lease recovery and fences its late tool calls', async () => {
     setAssistantModelTimeoutForTests(20);
     setAssistantModelFactoryForTests(() => ({

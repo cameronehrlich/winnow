@@ -258,6 +258,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                             ForEach(viewModel.messages) { message in
                                 AssistantMessageView(
                                     message: message,
+                                    accountStatus: accountStatus,
                                     isProposalWorking: viewModel.activeProposalID == message.proposal?.id,
                                     reviewProposal: { reviewedProposal = $0 },
                                     cancelProposal: cancel,
@@ -347,15 +348,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
 
     private var scopeLabel: some View {
         Group {
-            if presentation == .inlineEmail {
-                HStack(spacing: 8) {
-                    AccountAvatarBadge(account: accountStatus, size: 22)
-                    Label("Conversation", systemImage: "sparkles")
-                        .font(.headline)
-                        .foregroundStyle(WinnowDesign.accent)
-                    Spacer()
-                }
-            } else {
+            if presentation != .inlineEmail {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(viewModel.scope == .email ? "Asking about this email · \(scopeDescription)" : "Searching \(scopeDescription)")
                         .font(.caption.weight(.semibold))
@@ -676,6 +669,7 @@ private struct AssistantComposerFieldStyle: ViewModifier {
 
 private struct AssistantMessageView: View {
     let message: AssistantMessage
+    let accountStatus: AccountStatus?
     let isProposalWorking: Bool
     let reviewProposal: (AssistantProposal) -> Void
     let cancelProposal: (AssistantProposal) -> Void
@@ -687,13 +681,7 @@ private struct AssistantMessageView: View {
     var body: some View {
         VStack(alignment: isUser ? .trailing : .leading, spacing: 10) {
             if !message.text.isEmpty {
-                Text(message.formattedText)
-                    .font(.body)
-                    .foregroundStyle(isUser ? Color.white : Color.primary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .frame(maxWidth: isUser ? 310 : .infinity, alignment: isUser ? .trailing : .leading)
+                messageBubble
             }
 
             if !message.evidence.isEmpty {
@@ -720,6 +708,40 @@ private struct AssistantMessageView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+    }
+
+    private var messageBubble: some View {
+        Text(message.formattedText)
+            .font(.body)
+            .foregroundStyle(isUser ? Color.white : Color.primary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(alignment: .bottomTrailing) {
+                if showsAccountAvatar {
+                    AccountAvatarBadge(account: accountStatus, size: 22)
+                        .offset(x: 8, y: 6)
+                }
+            }
+            // The badge straddles the corner instead of consuming text width.
+            // Reserve its outside footprint so multiline bubbles and the next
+            // message remain aligned and never overlap it.
+            .padding(.trailing, showsAccountAvatar ? 8 : 0)
+            .padding(.bottom, showsAccountAvatar ? 6 : 0)
+            .frame(maxWidth: isUser ? 318 : .infinity, alignment: isUser ? .trailing : .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(messageAccessibilityLabel)
+    }
+
+    private var showsAccountAvatar: Bool {
+        isUser && accountStatus != nil
+    }
+
+    private var messageAccessibilityLabel: String {
+        guard showsAccountAvatar, let account = accountStatus else {
+            return message.text
+        }
+        return "You, from \(account.email): \(message.text)"
     }
 
     private var bubbleBackground: AnyShapeStyle {

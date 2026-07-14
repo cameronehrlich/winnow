@@ -13,10 +13,6 @@ struct EmailDetailView: View {
 
     private var item: EmailItem? { model.email(id: emailID) }
 
-    private var normalizedEmptyValues: Set<String> {
-        ["", "n/a", "none", "none found", "not found", "unknown"]
-    }
-
     var body: some View {
         ZStack {
             AppBackdrop()
@@ -32,18 +28,6 @@ struct EmailDetailView: View {
                 ) {
                     VStack(spacing: 16) {
                         senderHeader(item)
-
-                        if !item.summary.isEmpty {
-                            InsightBlock(
-                                title: "Summary",
-                                symbol: "text.alignleft",
-                                text: item.summary,
-                                color: WinnowDesign.accent,
-                                actionTitle: item.canLoadFullContent ? "View Full Email" : nil,
-                                actionSymbol: "doc.text.magnifyingglass",
-                                action: item.canLoadFullContent ? { showingFullEmail = true } : nil
-                            )
-                        }
 
                         actionsCard(item)
 
@@ -72,10 +56,6 @@ struct EmailDetailView: View {
                             )
                         }
 
-                        if hasDetails(item) {
-                            detailsCard(item)
-                        }
-
                         if !item.snippet.isEmpty, item.snippet != item.summary {
                             InsightBlock(
                                 title: "Message preview",
@@ -91,6 +71,12 @@ struct EmailDetailView: View {
                         } else if item.unsubscribeState == "attempted" {
                             InsightBlock(title: "Manual step needed", symbol: "envelope.badge", text: "This sender requires an email-based unsubscribe that Winnow can’t complete automatically.", color: WinnowDesign.amber)
                         }
+
+                        ConversationOpeningSection(
+                            summary: item.summary,
+                            canLoadFullEmail: item.canLoadFullContent,
+                            viewFullEmail: { showingFullEmail = true }
+                        )
                     }
                 }
                 .sheet(item: $editingRule) { rule in
@@ -180,26 +166,6 @@ struct EmailDetailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .winnowCard()
-    }
-
-    @ViewBuilder
-    private func detailsCard(_ item: EmailItem) -> some View {
-        let rows = detailRows(item)
-        VStack(spacing: 0) {
-            ForEach(rows.indices, id: \.self) { index in
-                if index > 0 { DetailDivider() }
-                let row = rows[index]
-                DetailRow(
-                    label: row.label,
-                    value: row.value,
-                    symbol: row.symbol,
-                    color: row.color,
-                    trailingValue: row.trailingValue,
-                    trailingAccessibilityLabel: row.trailingAccessibilityLabel
-                )
-            }
-        }
-        .winnowCard(padding: 4)
     }
 
     private func actionsCard(_ item: EmailItem) -> some View {
@@ -298,69 +264,6 @@ struct EmailDetailView: View {
         }
     }
 
-    private func hasDetails(_ item: EmailItem) -> Bool {
-        !detailRows(item).isEmpty
-    }
-
-    private func detailRows(_ item: EmailItem) -> [DetailValue] {
-        var rows: [DetailValue] = []
-        if let action = item.meaningfulAction {
-            rows.append(DetailValue(
-                label: "Next step",
-                value: action,
-                symbol: "arrow.turn.down.right",
-                color: WinnowDesign.brightIndigo
-            ))
-        }
-        if let deadline = meaningfulDeadline(item.deadline) {
-            rows.append(DetailValue(label: "Deadline", value: deadline, symbol: "clock", color: WinnowDesign.amber))
-        }
-        if let impact = meaningfulImpact(item.impact) {
-            rows.append(DetailValue(label: "Impact", value: impact, symbol: "bolt", color: WinnowDesign.rose))
-        }
-        if item.handlingDecision == nil, let handling = meaningfulValue(item.handling) {
-            rows.append(DetailValue(
-                label: "Handling",
-                value: humanizedHandling(handling),
-                symbol: "hand.raised",
-                color: WinnowDesign.mint,
-                trailingValue: item.confidence.map { "\($0)%" },
-                trailingAccessibilityLabel: item.confidence.map { "\($0) percent confidence" }
-            ))
-        }
-        return rows
-    }
-
-    private func meaningfulDeadline(_ value: String) -> String? {
-        meaningfulValue(value, additionallyIgnoring: ["no deadline", "no deadline found"])
-    }
-
-    private func meaningfulImpact(_ value: String) -> String? {
-        meaningfulValue(value, additionallyIgnoring: ["no impact", "no impact found"])
-    }
-
-    private func meaningfulValue(_ value: String, additionallyIgnoring ignored: Set<String> = []) -> String? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalized = trimmed.lowercased()
-        guard !normalizedEmptyValues.union(ignored).contains(normalized) else { return nil }
-        return trimmed
-    }
-
-    private func humanizedHandling(_ value: String) -> String {
-        switch value.lowercased() {
-        case "archive": "Archive"
-        case "keep": "Keep in Inbox"
-        case "reply": "Reply"
-        case "task": "Follow up as a task"
-        case "calendar": "Add to calendar"
-        case "read later": "Read later"
-        default:
-            value
-                .replacingOccurrences(of: "_", with: " ")
-                .replacingOccurrences(of: "-", with: " ")
-                .capitalized
-        }
-    }
 }
 
 private struct HandlingDecisionCard: View {
@@ -722,15 +625,6 @@ private struct CreateRuleFromEmailView: View {
     }
 }
 
-private struct DetailValue {
-    let label: String
-    let value: String
-    let symbol: String
-    let color: Color
-    var trailingValue: String? = nil
-    var trailingAccessibilityLabel: String? = nil
-}
-
 private struct InsightBlock: View {
     let title: String
     let symbol: String
@@ -792,6 +686,51 @@ private struct InsightBlock: View {
             }
         }
         .winnowCard()
+    }
+}
+
+private struct ConversationOpeningSection: View {
+    let summary: String
+    let canLoadFullEmail: Bool
+    let viewFullEmail: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("Conversation", systemImage: "sparkles")
+                    .font(.headline)
+                    .foregroundStyle(WinnowDesign.accent)
+                Spacer()
+            }
+            .padding(.horizontal, 4)
+
+            if !summary.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("WINNOW'S SUMMARY", systemImage: "text.alignleft")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(WinnowDesign.accent)
+
+                    Text(summary)
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if canLoadFullEmail {
+                        Button(action: viewFullEmail) {
+                            Label("View Full Email", systemImage: "doc.text.magnifyingglass")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(WinnowDesign.accent)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Loads the complete message securely from Gmail.")
+                    }
+                }
+                .winnowCard()
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Winnow's summary. Conversation opening context")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -1232,36 +1171,6 @@ private struct FullEmailMessageCard: View {
                 .tint(WinnowDesign.accent)
         }
         .font(.caption)
-    }
-}
-
-private struct DetailRow: View {
-    let label: String
-    let value: String
-    let symbol: String
-    let color: Color
-    var trailingValue: String? = nil
-    var trailingAccessibilityLabel: String? = nil
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol)
-                .foregroundStyle(color)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(label).font(.caption).foregroundStyle(.secondary)
-                Text(value).font(.subheadline.weight(.medium))
-            }
-            Spacer()
-            if let trailingValue {
-                Text(trailingValue)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .accessibilityLabel(trailingAccessibilityLabel ?? trailingValue)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
     }
 }
 
