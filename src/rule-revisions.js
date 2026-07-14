@@ -9,6 +9,8 @@ export function ruleRevision(rule) {
     match: rule?.match || '',
     matcherKind: rule?.matcherKind || '',
     matcherValue: rule?.matcherValue || '',
+    subjectMatchMode: rule?.subjectMatchMode || '',
+    subjectMatchValue: rule?.subjectMatchValue || '',
     source: rule?.source || '',
   });
   return `definition:${createHash('sha256').update(definition).digest('base64url').slice(0, 24)}`;

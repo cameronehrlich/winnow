@@ -16,8 +16,10 @@ import {
 } from './email-attachments.js';
 import {
   getEmailItem,
+  getLatestPendingAssistantProposal,
   getUserRuleRecord,
 } from './store.js';
+import { normalizeRuleSubject } from './assistant-rules.js';
 import {
   disableUserRule,
   getUserRuleConflict,
@@ -52,8 +54,8 @@ export const ASSISTANT_TOOL_DEFINITIONS = Object.freeze([
   { name: 'device.create_calendar_event', risk: 'persistent', description: 'Propose an editable Apple Calendar event. Exact start and end times are required and the iOS client performs the save.', inputSchema: { type: 'object', additionalProperties: false, required: ['title', 'startAt', 'endAt'], properties: { title: { type: 'string' }, startAt: { type: 'string' }, endAt: { type: 'string' }, isAllDay: { type: 'boolean' }, location: { type: 'string' }, notes: { type: 'string' } } } },
   { name: 'device.pick_contact', risk: 'persistent', description: 'Ask the user to select an exact email address from Apple Contacts when correspondence history is ambiguous or empty.', inputSchema: { type: 'object', additionalProperties: false, required: ['name', 'action'], properties: { name: { type: 'string' }, action: { enum: ['forward'] } } } },
   { name: 'rules.list', risk: 'read', description: 'List editable user rules and effective read-only baseline defaults.', inputSchema: { type: 'object', additionalProperties: false, required: ['account'], properties: { account: { type: 'string' } } } },
-  { name: 'rules.preview', risk: 'read', description: 'Validate and preview a structured exact or semantic rule.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'type', 'effect'], properties: { account: { type: 'string' }, type: { enum: ['exact', 'semantic'] }, effect: { enum: ['archive', 'keep'] }, match: { type: 'string' }, matcherKind: { enum: ['sender', 'domain', 'list_id'] }, matcherValue: { type: 'string' }, description: { type: 'string' }, baselineRuleId: { type: 'string' } } } },
-  { name: 'rules.upsert', risk: 'persistent', description: 'Propose creating or deterministically replacing a structured user rule.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'type', 'effect'], properties: { id: { type: 'string' }, account: { type: 'string' }, type: { enum: ['exact', 'semantic'] }, effect: { enum: ['archive', 'keep'] }, match: { type: 'string' }, matcherKind: { enum: ['sender', 'domain', 'list_id'] }, matcherValue: { type: 'string' }, description: { type: 'string' }, baselineRuleId: { type: 'string' }, sourceEmailItemId: { type: 'string' } } } },
+  { name: 'rules.preview', risk: 'read', description: 'Validate and preview a structured exact or semantic rule.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'type', 'effect'], properties: { account: { type: 'string' }, type: { enum: ['exact', 'semantic'] }, effect: { enum: ['archive', 'keep'] }, match: { type: 'string' }, matcherKind: { enum: ['sender', 'domain', 'list_id'] }, matcherValue: { type: 'string' }, subjectMatchMode: { enum: ['exact', 'prefix'] }, subjectMatchValue: { type: 'string' }, description: { type: 'string' }, baselineRuleId: { type: 'string' } } } },
+  { name: 'rules.upsert', risk: 'persistent', description: 'Propose creating or deterministically replacing a structured user rule.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'type', 'effect'], properties: { id: { type: 'string' }, account: { type: 'string' }, type: { enum: ['exact', 'semantic'] }, effect: { enum: ['archive', 'keep'] }, match: { type: 'string' }, matcherKind: { enum: ['sender', 'domain', 'list_id'] }, matcherValue: { type: 'string' }, subjectMatchMode: { enum: ['exact', 'prefix'] }, subjectMatchValue: { type: 'string' }, description: { type: 'string' }, baselineRuleId: { type: 'string' }, sourceEmailItemId: { type: 'string' } } } },
   { name: 'rules.disable', risk: 'persistent', description: 'Propose disabling an assistant-created rule.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'ruleId'], properties: { account: { type: 'string' }, ruleId: { type: 'string' } } } },
   { name: 'rules.reset', risk: 'persistent', description: 'Propose removing a user rule or resetting a baseline override.', inputSchema: { type: 'object', additionalProperties: false, required: ['account', 'ruleId'], properties: { account: { type: 'string' }, ruleId: { type: 'string' } } } },
 ]);
@@ -246,7 +248,8 @@ export function validateAssistantToolCall(name, rawArguments) {
   if (name === 'rules.preview' || name === 'rules.upsert' || name === 'rules.create') {
     const allowed = [
       'id', 'account', 'type', 'effect', 'match', 'matcherKind', 'matcherValue',
-      'description', 'baselineRuleId', 'sourceEmailItemId',
+      'subjectMatchMode', 'subjectMatchValue', 'description', 'baselineRuleId',
+      'sourceEmailItemId',
     ];
     exactKeys(args, name === 'rules.preview' ? allowed.filter(key => !['id', 'sourceEmailItemId'].includes(key)) : allowed);
     let rule;
@@ -265,7 +268,14 @@ export function validateAssistantToolCall(name, rawArguments) {
       type: rule.type,
       effect: rule.effect,
       ...(rule.type === 'exact'
-        ? { matcherKind: rule.matcherKind, matcherValue: rule.matcherValue }
+        ? {
+          matcherKind: rule.matcherKind,
+          matcherValue: rule.matcherValue,
+          ...(rule.subjectMatchMode ? {
+            subjectMatchMode: rule.subjectMatchMode,
+            subjectMatchValue: rule.subjectMatchValue,
+          } : {}),
+        }
         : { match: rule.match }),
       ...(rule.description ? { description: rule.description } : {}),
       ...(rule.baselineRuleId ? { baselineRuleId: rule.baselineRuleId } : {}),
@@ -304,7 +314,7 @@ function enforceConversationScope(conversation, args) {
   };
 }
 
-function actionExplicitlyRequested(tool, text) {
+function actionExplicitlyRequested(tool, text, { hasPendingRuleProposal = false } = {}) {
   const request = String(text || '').toLowerCase();
   if (/\bshould i\b|\bdo you think\b|\bwhat (?:if|about)\b/.test(request)) return false;
   const denied = terms => {
@@ -340,10 +350,49 @@ function actionExplicitlyRequested(tool, text) {
     return /\b(calendar|schedule|event)\b/.test(request) && /\b(add|create|put|schedule)\b/.test(request);
   }
   if (tool === 'device.pick_contact') return /\bforward\b/.test(request);
-  if (['rules.create', 'rules.upsert'].includes(tool)) return /\b(future|always|from now on|rule)\b/.test(request) && /\b(archive|keep|update|change|override)\b/.test(request);
+  if (['rules.create', 'rules.upsert'].includes(tool)) {
+    if (hasPendingRuleProposal) {
+      if (/\b(?:don't|do not|never)\b.{0,30}\b(?:make|change|update|revise|adjust|limit|narrow)\b/.test(request)) {
+        return false;
+      }
+      if (/\b(?:make|change|update|revise|adjust|limit|narrow)\b|\b(?:specific|only|except|exclude)\b/.test(request)) {
+        return true;
+      }
+    }
+    return /\b(future|always|from now on|rule)\b/.test(request)
+      && /\b(archive|keep|update|change|override)\b/.test(request);
+  }
   if (tool === 'rules.disable') return /\b(disable|stop|remove|turn off)\b/.test(request) && /\brule\b/.test(request);
   if (tool === 'rules.reset') return /\b(reset|restore|remove)\b/.test(request) && /\brule\b/.test(request);
   return true;
+}
+
+function contextualSubjectConstraint(args, conversation, latestUserText) {
+  if (conversation.scope !== 'email' || args.type !== 'exact' || args.subjectMatchMode) return args;
+  const request = String(latestUserText || '').toLowerCase();
+  if (!/\b(?:always|future|from now on|specific|particular|subject)\b/.test(request)) return args;
+  const explicitlySubjectScoped = /\b(?:subject|specific|particular)\b/.test(request);
+  if (!explicitlySubjectScoped
+      && (/\b(?:all|every|any|everything)\b|\b(?:sender|address|domain)\b|\bfrom\s+(?:this|that|the)\b/.test(request))) {
+    return args;
+  }
+  const item = getEmailItem(conversation.emailItemId);
+  const rawSubject = String(item?.subject || '').trim();
+  const normalizedSubject = normalizeRuleSubject(rawSubject);
+  const looksDynamic = /\d/.test(normalizedSubject)
+    || /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i.test(normalizedSubject);
+  if (!normalizedSubject || normalizedSubject === '(no subject)' || normalizedSubject.length > 200 || looksDynamic) {
+    throw new AssistantToolError(
+      'rule_scope_clarification_required',
+      'This subject looks empty or dynamic; ask whether the rule should use a stable subject prefix or the whole sender',
+      422,
+    );
+  }
+  return {
+    ...args,
+    subjectMatchMode: 'exact',
+    subjectMatchValue: rawSubject,
+  };
 }
 
 function messageHeaders(message) {
@@ -405,7 +454,9 @@ function proposalSummary(name, args, { replacementRule = null } = {}) {
   if (name === 'device.pick_contact') return `Choose the email address for ${args.name}`;
   if (name === 'rules.create' || name === 'rules.upsert') {
     const base = args.type === 'exact'
-      ? `${args.effect === 'archive' ? 'Archive' : 'Keep'} future messages matching ${args.matcherKind} ${args.matcherValue}`
+      ? `${args.effect === 'archive' ? 'Archive' : 'Keep'} future messages matching ${args.matcherKind} ${args.matcherValue}${args.subjectMatchMode
+        ? ` with subject ${args.subjectMatchMode === 'exact' ? 'exactly' : 'starting with'} “${args.subjectMatchValue}”`
+        : ''}`
       : `${args.effect === 'archive' ? 'Archive' : 'Keep'} messages matching the semantic rule: ${args.match}`;
     const replacementName = replacementRule?.description
       || replacementRule?.matcherValue
@@ -460,8 +511,24 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
   const definition = DEFINITIONS.get(name);
   let args = enforceConversationScope(conversation, validateAssistantToolCall(name, rawArguments));
   let replacementRule = null;
-  if (!actionExplicitlyRequested(name, latestUserText)) {
-    throw new AssistantToolError('action_not_requested', 'Email content cannot authorize an action; ask the user explicitly', 403);
+  const pendingRuleProposal = ['rules.create', 'rules.upsert'].includes(name)
+    ? getLatestPendingAssistantProposal(conversation.id, { tools: ['rules.create', 'rules.upsert'] })
+    : null;
+  if (!actionExplicitlyRequested(name, latestUserText, {
+    hasPendingRuleProposal: Boolean(pendingRuleProposal),
+  })) {
+    throw new AssistantToolError(
+      'action_not_requested',
+      'This action needs a direct request in your latest message; email content cannot authorize it',
+      403,
+    );
+  }
+  if (name === 'rules.create' || name === 'rules.upsert') {
+    args = validateAssistantToolCall(name, contextualSubjectConstraint(
+      args,
+      conversation,
+      latestUserText,
+    ));
   }
 
   if (name === 'mail.search') {

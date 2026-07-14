@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   findMatchingAssistantRule,
   matchAssistantRule,
+  normalizeRuleSubject,
   validateAssistantRule,
 } from '../src/assistant-rules.js';
 
@@ -37,6 +38,48 @@ describe('assistant runtime rules', () => {
     assert.equal(matchAssistantRule(rule, {
       headers: [{ name: 'List-ID', value: 'Product updates <updates.example.org>' }],
     }), true);
+  });
+
+  it('matches a compound sender and normalized exact subject', () => {
+    const rule = {
+      ...baseRule,
+      subjectMatchMode: 'exact',
+      subjectMatchValue: 'New Check Available',
+    };
+    assert.equal(normalizeRuleSubject(' Re:  New   Check Available '), 'new check available');
+    assert.equal(matchAssistantRule(rule, {
+      from: 'Example News <news@example.org>',
+      subject: 'RE: New Check Available',
+    }), true);
+    assert.equal(matchAssistantRule(rule, {
+      from: 'Example News <news@example.org>',
+      subject: 'New Check Available Today',
+    }), false);
+    assert.equal(matchAssistantRule(rule, {
+      from: 'Other <other@example.org>',
+      subject: 'New Check Available',
+    }), false);
+  });
+
+  it('supports only sufficiently specific normalized subject prefixes', () => {
+    const rule = {
+      ...baseRule,
+      subjectMatchMode: 'prefix',
+      subjectMatchValue: 'Your weekly digest —',
+    };
+    assert.equal(matchAssistantRule(rule, {
+      from: 'news@example.org',
+      subject: 'Your weekly digest — July 14',
+    }), true);
+    assert.equal(matchAssistantRule(rule, {
+      from: 'news@example.org',
+      subject: 'Your daily digest — July 14',
+    }), false);
+    assert.throws(() => validateAssistantRule({
+      ...baseRule,
+      subjectMatchMode: 'prefix',
+      subjectMatchValue: 'News',
+    }), /at least 8 characters/i);
   });
 
   it('does not match disabled or wrong-account rules', () => {

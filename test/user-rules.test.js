@@ -19,6 +19,11 @@ import {
 import {
   closeStoreForTests,
   configureDatabaseForTests,
+  createAssistantConversation,
+  createAssistantProposal,
+  createAssistantRunWithUserMessage,
+  finishAssistantRunWithProposal,
+  getAssistantProposal,
   getUserRuleRecord,
   listEvents,
   listUserRuleRecords,
@@ -424,6 +429,232 @@ rules:
     }, conversation, {});
     assert.equal(edited.id, current.id);
     assert.equal(edited.matcherValue, 'updated-alerts@example.com');
+  });
+
+  it('allows an explicit natural-language refinement of a pending rule proposal', async () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'paycom-message', threadId: 'paycom-thread',
+      from: 'Paycom <systemmessage@paycomonline.com>', subject: 'New Check Available',
+      archive: false,
+    });
+    const conversation = createAssistantConversation({
+      id: 'conversation-refine', scope: 'email', account: item.account, emailItemId: item.id,
+    });
+    createAssistantRunWithUserMessage({
+      id: 'old-rule-run', conversationId: conversation.id,
+      userMessageId: 'old-rule-user-message', idempotencyKey: 'old-rule-run-key',
+      requestFingerprint: 'old-rule-fingerprint', leaseToken: 'old-rule-lease',
+      text: 'Always archive',
+    });
+    createAssistantProposal({
+      id: 'old-rule-proposal', conversationId: conversation.id, runId: 'old-rule-run',
+      tool: 'rules.upsert', risk: 'persistent', summary: 'Archive all messages from Paycom',
+      arguments: {
+        account: item.account, type: 'exact', effect: 'archive',
+        matcherKind: 'sender', matcherValue: 'systemmessage@paycomonline.com',
+      },
+      confirmationDigest: 'old-digest',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), idempotencyKey: 'old-key',
+    });
+
+    const refined = await prepareAssistantTool({
+      name: 'rules.upsert',
+      rawArguments: {
+        account: item.account, type: 'exact', effect: 'archive',
+        matcherKind: 'sender', matcherValue: 'systemmessage@paycomonline.com',
+      },
+      conversation,
+      latestUserText: 'Can we make it specific to this particular email subject from that address?',
+      dependencies: {},
+    });
+
+    assert.equal(refined.kind, 'proposal');
+    assert.equal(refined.arguments.subjectMatchMode, 'exact');
+    assert.equal(refined.arguments.subjectMatchValue, 'new check available');
+    assert.match(refined.summary, /sender systemmessage@paycomonline\.com with subject exactly/i);
+
+    await assert.rejects(
+      prepareAssistantTool({
+        name: 'rules.upsert', rawArguments: refined.arguments, conversation,
+        latestUserText: 'New Check Available', dependencies: {},
+      }),
+      error => error.code === 'action_not_requested'
+        && /direct request/i.test(error.message),
+    );
+  });
+
+  it('defaults a bare contextual always-rule to a stable exact subject, not the whole sender', async () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'stable-message', threadId: 'stable-thread',
+      from: 'Paycom <systemmessage@paycomonline.com>', subject: 'New Check Available',
+      archive: false,
+    });
+    const conversation = createAssistantConversation({
+      id: 'conversation-narrow-default', scope: 'email', account: item.account, emailItemId: item.id,
+    });
+    const bare = await prepareAssistantTool({
+      name: 'rules.upsert',
+      rawArguments: {
+        account: item.account, type: 'exact', effect: 'archive',
+        matcherKind: 'sender', matcherValue: 'systemmessage@paycomonline.com',
+      },
+      conversation, latestUserText: 'Always archive', dependencies: {},
+    });
+    assert.equal(bare.arguments.subjectMatchMode, 'exact');
+    assert.equal(bare.arguments.subjectMatchValue, 'new check available');
+
+    const senderWide = await prepareAssistantTool({
+      name: 'rules.upsert',
+      rawArguments: {
+        account: item.account, type: 'exact', effect: 'archive',
+        matcherKind: 'sender', matcherValue: 'systemmessage@paycomonline.com',
+      },
+      conversation, latestUserText: 'Always archive every email from this sender', dependencies: {},
+    });
+    assert.equal(senderWide.arguments.subjectMatchMode, undefined);
+  });
+
+  it('asks for clarification instead of broadening an ambiguous dynamic subject', async () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'dynamic-message', threadId: 'dynamic-thread',
+      from: 'Digest <digest@example.com>', subject: 'Digest for July 14, 2026', archive: false,
+    });
+    const conversation = createAssistantConversation({
+      id: 'conversation-dynamic-subject', scope: 'email', account: item.account, emailItemId: item.id,
+    });
+    await assert.rejects(prepareAssistantTool({
+      name: 'rules.upsert',
+      rawArguments: {
+        account: item.account, type: 'exact', effect: 'archive',
+        matcherKind: 'sender', matcherValue: 'digest@example.com',
+      },
+      conversation, latestUserText: 'Always archive', dependencies: {},
+    }), error => error.code === 'rule_scope_clarification_required');
+  });
+
+  it('supersedes an older pending rule proposal only after storing its replacement', () => {
+    const conversation = createAssistantConversation({
+      id: 'conversation-supersede', scope: 'mailbox', account: 'me@example.com',
+    });
+    createAssistantRunWithUserMessage({
+      id: 'old-proposal-run', conversationId: conversation.id,
+      userMessageId: 'old-proposal-user-message', idempotencyKey: 'old-proposal-run-key',
+      requestFingerprint: 'old-proposal-fingerprint', leaseToken: 'old-proposal-lease',
+      text: 'Always archive',
+    });
+    createAssistantProposal({
+      id: 'old-proposal', conversationId: conversation.id, runId: 'old-proposal-run',
+      tool: 'rules.upsert', risk: 'persistent', summary: 'Old rule', arguments: {},
+      confirmationDigest: 'old-digest',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), idempotencyKey: 'old-proposal-key',
+    });
+    createAssistantRunWithUserMessage({
+      id: 'replacement-run', conversationId: conversation.id,
+      userMessageId: 'replacement-user-message', idempotencyKey: 'replacement-run-key',
+      requestFingerprint: 'replacement-fingerprint', leaseToken: 'replacement-lease',
+      text: 'Make it specific to this subject',
+    });
+    assert.equal(finishAssistantRunWithProposal({
+      runId: 'replacement-run', leaseToken: 'replacement-lease',
+      proposal: {
+        id: 'replacement-proposal', conversationId: conversation.id,
+        tool: 'rules.upsert', risk: 'persistent', summary: 'Replacement rule',
+        arguments: {}, confirmationDigest: 'replacement-digest',
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        idempotencyKey: 'replacement-proposal-key',
+      },
+      toolCall: {
+        id: 'replacement-tool-call', tool: 'rules.upsert', risk: 'persistent',
+        arguments: {}, status: 'proposed',
+      },
+      message: {
+        id: 'replacement-assistant-message', conversationId: conversation.id,
+        role: 'assistant', text: 'Replacement rule',
+      },
+    }), true);
+    assert.equal(getAssistantProposal('old-proposal').status, 'cancelled');
+    assert.equal(getAssistantProposal('replacement-proposal').status, 'pending');
+  });
+
+  it('persists and previews compound sender and subject exact rules', async () => {
+    const saved = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'archive',
+      matcherKind: 'sender', matcherValue: 'systemmessage@paycomonline.com',
+      subjectMatchMode: 'exact', subjectMatchValue: 'New Check Available',
+      description: 'Archive Paycom check notices',
+    });
+    const stored = getUserRuleRecord(saved.id);
+    assert.equal(stored.subjectMatchMode, 'exact');
+    assert.equal(stored.subjectMatchValue, 'new check available');
+    assert.match(stored.conflictKey, /subject:exact:new check available$/);
+    const apiRule = listRulesForApi('me@example.com').rules.find(rule => rule.id === saved.id);
+    assert.equal(apiRule.subjectMatchMode, 'exact');
+    assert.equal(apiRule.subjectMatchValue, 'new check available');
+
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'compound-match', threadId: 'compound-match-thread',
+      from: 'Paycom <systemmessage@paycomonline.com>', subject: 'Re: New Check Available', archive: false,
+    });
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'subject-miss', threadId: 'subject-miss-thread',
+      from: 'Paycom <systemmessage@paycomonline.com>', subject: 'Password changed', archive: false,
+    });
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'sender-miss', threadId: 'sender-miss-thread',
+      from: 'Other <other@example.com>', subject: 'New Check Available', archive: false,
+    });
+    const preview = await previewUserRule({
+      account: saved.account, type: saved.type, effect: saved.effect,
+      matcherKind: saved.matcherKind, matcherValue: saved.matcherValue,
+      subjectMatchMode: saved.subjectMatchMode, subjectMatchValue: saved.subjectMatchValue,
+    });
+    assert.equal(preview.matchCount, 1);
+    assert.equal(preview.matches[0].messageId, 'compound-match');
+    assert.equal(preview.nonMatches.length, 2);
+  });
+
+  it('additively migrates older user_rules tables for subject constraints', () => {
+    closeStoreForTests();
+    const oldDatabasePath = join(tempDir, 'old-user-rules.db');
+    const legacy = new DatabaseSync(oldDatabasePath);
+    legacy.exec(`
+      CREATE TABLE user_rules (
+        id TEXT PRIMARY KEY,
+        account TEXT NOT NULL,
+        rule_type TEXT NOT NULL CHECK(rule_type IN ('exact', 'semantic')),
+        effect TEXT NOT NULL CHECK(effect IN ('archive', 'keep')),
+        match_text TEXT,
+        matcher_kind TEXT,
+        matcher_value TEXT,
+        description TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        source TEXT NOT NULL,
+        baseline_rule_id TEXT,
+        source_email_item_id TEXT,
+        conflict_key TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(account, conflict_key)
+      );
+      INSERT INTO user_rules (
+        id, account, rule_type, effect, matcher_kind, matcher_value, description,
+        enabled, source, conflict_key, created_at, updated_at
+      ) VALUES (
+        'legacy-rule', 'me@example.com', 'exact', 'archive', 'sender',
+        'legacy@example.com', 'Legacy rule', 1, 'api',
+        'exact:sender:legacy@example.com',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      );
+    `);
+    legacy.close();
+    configureDatabaseForTests(oldDatabasePath);
+    assert.equal(getUserRuleRecord('legacy-rule').subjectMatchMode, null);
+    const compound = upsertUserRule({
+      account: 'me@example.com', type: 'exact', effect: 'keep',
+      matcherKind: 'sender', matcherValue: 'compound@example.com',
+      subjectMatchMode: 'exact', subjectMatchValue: 'Status update',
+    });
+    assert.equal(getUserRuleRecord(compound.id).subjectMatchValue, 'status update');
   });
 
   it('does not let YAML import overwrite newer persisted intent or repeat after completion', () => {

@@ -1,5 +1,6 @@
 const RULE_EFFECTS = new Set(['archive', 'keep']);
 const MATCHER_KINDS = new Set(['sender', 'domain', 'list_id']);
+const SUBJECT_MATCH_MODES = new Set(['exact', 'prefix']);
 const FORBIDDEN_FIELDS = new Set([
   'action',
   'always',
@@ -52,6 +53,15 @@ function normalizeListId(value) {
   return candidate && candidate.length <= 512 && !/[\r\n\0\s]/.test(candidate) ? candidate : '';
 }
 
+export function normalizeRuleSubject(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/^(?:(?:re|fw|fwd)\s*:\s*)+/i, '')
+    .replace(/\s+/g, ' ')
+    .toLocaleLowerCase('en-US');
+}
+
 function headersFrom(message) {
   const candidates = [
     message?.headers,
@@ -97,6 +107,23 @@ export function validateAssistantRule(rule) {
     : (matcherKind === 'domain' ? normalizeDomain(rawMatcherValue) : normalizeListId(rawMatcherValue));
   if (!matcherValue) throw new TypeError(`matcherValue is not a valid ${matcherKind} value`);
 
+  const rawSubjectMode = rule.subjectMatchMode ?? rule.subject_match_mode;
+  const rawSubjectValue = rule.subjectMatchValue ?? rule.subject_match_value;
+  const hasSubjectConstraint = rawSubjectMode != null || rawSubjectValue != null;
+  let subjectMatchMode = null;
+  let subjectMatchValue = null;
+  if (hasSubjectConstraint) {
+    subjectMatchMode = String(rawSubjectMode || '').trim().toLowerCase();
+    if (!SUBJECT_MATCH_MODES.has(subjectMatchMode)) {
+      throw new TypeError('subjectMatchMode must be exact or prefix');
+    }
+    subjectMatchValue = normalizeRuleSubject(requiredString(rawSubjectValue, 'subjectMatchValue', 500));
+    if (!subjectMatchValue) throw new TypeError('subjectMatchValue is required');
+    if (subjectMatchMode === 'prefix' && subjectMatchValue.length < 8) {
+      throw new TypeError('prefix subjectMatchValue must contain at least 8 characters');
+    }
+  }
+
   const account = requiredString(rule.account, 'account', 320).toLowerCase();
   if (!normalizeEmailAddress(account)) throw new TypeError('account is invalid');
 
@@ -106,6 +133,8 @@ export function validateAssistantRule(rule) {
     effect,
     matcherKind,
     matcherValue,
+    subjectMatchMode,
+    subjectMatchValue,
     ...(typeof rule.description === 'string' ? { description: rule.description.slice(0, 1000) } : {}),
     enabled: rule.enabled !== false,
     ...(rule.sourceEmailItemId || rule.source_email_item_id
@@ -130,12 +159,21 @@ export function matchAssistantRule(rule, message) {
 
   const headers = headersFrom(message || {});
   const sender = normalizeEmailAddress(headers.from || message?.from || message?.From || '');
-  if (normalized.matcherKind === 'sender') return sender === normalized.matcherValue;
+  let primaryMatches = false;
+  if (normalized.matcherKind === 'sender') primaryMatches = sender === normalized.matcherValue;
   if (normalized.matcherKind === 'domain') {
-    return sender.includes('@') && sender.slice(sender.lastIndexOf('@') + 1) === normalized.matcherValue;
+    primaryMatches = sender.includes('@')
+      && sender.slice(sender.lastIndexOf('@') + 1) === normalized.matcherValue;
   }
-  const listId = normalizeListId(headers['list-id'] || message?.listId || message?.list_id || '');
-  return listId === normalized.matcherValue;
+  if (normalized.matcherKind === 'list_id') {
+    const listId = normalizeListId(headers['list-id'] || message?.listId || message?.list_id || '');
+    primaryMatches = listId === normalized.matcherValue;
+  }
+  if (!primaryMatches || !normalized.subjectMatchMode) return primaryMatches;
+  const subject = normalizeRuleSubject(headers.subject || message?.subject || message?.Subject || '');
+  return normalized.subjectMatchMode === 'exact'
+    ? subject === normalized.subjectMatchValue
+    : subject.startsWith(normalized.subjectMatchValue);
 }
 
 /**

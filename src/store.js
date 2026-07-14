@@ -370,6 +370,8 @@ function migrate() {
       match_text TEXT,
       matcher_kind TEXT CHECK(matcher_kind IS NULL OR matcher_kind IN ('sender', 'domain', 'list_id')),
       matcher_value TEXT,
+      subject_match_mode TEXT CHECK(subject_match_mode IS NULL OR subject_match_mode IN ('exact', 'prefix')),
+      subject_match_value TEXT,
       description TEXT NOT NULL DEFAULT '',
       enabled INTEGER NOT NULL DEFAULT 1,
       source TEXT NOT NULL CHECK(source IN ('assistant', 'api', 'import')),
@@ -404,6 +406,14 @@ function migrate() {
     VALUES ('assistant_rules_to_user_rules_v1', 'complete')
     ON CONFLICT(key) DO NOTHING;
   `);
+
+  const userRuleColumns = database.prepare('PRAGMA table_info(user_rules)').all();
+  if (!userRuleColumns.some(column => column.name === 'subject_match_mode')) {
+    database.exec("ALTER TABLE user_rules ADD COLUMN subject_match_mode TEXT CHECK(subject_match_mode IS NULL OR subject_match_mode IN ('exact', 'prefix'))");
+  }
+  if (!userRuleColumns.some(column => column.name === 'subject_match_value')) {
+    database.exec('ALTER TABLE user_rules ADD COLUMN subject_match_value TEXT');
+  }
 
   // Older personal databases predate native-client read state. This additive
   // migration lets a normal daemon restart upgrade them in place.
@@ -1906,6 +1916,15 @@ export function finishAssistantRunWithProposal({
       database.exec('ROLLBACK');
       return false;
     }
+    if (proposal.tool === 'rules.upsert' || proposal.tool === 'rules.create') {
+      database.prepare(`
+        UPDATE assistant_proposals
+        SET status = 'cancelled', updated_at = ?
+        WHERE conversation_id = ?
+          AND status = 'pending'
+          AND tool IN ('rules.upsert', 'rules.create')
+      `).run(completedAt, proposal.conversationId);
+    }
     createAssistantProposal({ ...proposal, runId });
     recordAssistantToolCall({ ...toolCall, runId, proposalId: proposal.id });
     addAssistantMessage({ ...message, runId, proposalId: proposal.id });
@@ -1966,6 +1985,26 @@ export function getAssistantProposal(id) {
   return rowToAssistantProposal(
     getDb().prepare('SELECT * FROM assistant_proposals WHERE id = ?').get(id)
   );
+}
+
+export function getLatestPendingAssistantProposal(conversationId, { tools = [] } = {}) {
+  const normalizedTools = Array.isArray(tools)
+    ? tools.map(tool => String(tool || '')).filter(Boolean)
+    : [];
+  if (!normalizedTools.length) {
+    return rowToAssistantProposal(getDb().prepare(`
+      SELECT * FROM assistant_proposals
+      WHERE conversation_id = ? AND status = 'pending' AND expires_at > ?
+      ORDER BY created_at DESC, id DESC LIMIT 1
+    `).get(conversationId, nowIso()));
+  }
+  const placeholders = normalizedTools.map(() => '?').join(', ');
+  return rowToAssistantProposal(getDb().prepare(`
+    SELECT * FROM assistant_proposals
+    WHERE conversation_id = ? AND status = 'pending' AND expires_at > ?
+      AND tool IN (${placeholders})
+    ORDER BY created_at DESC, id DESC LIMIT 1
+  `).get(conversationId, nowIso(), ...normalizedTools));
 }
 
 export function claimAssistantProposal(id, confirmationDigest) {
@@ -2052,6 +2091,8 @@ function rowToUserRule(row) {
     match: row.match_text || '',
     matcherKind: row.matcher_kind || null,
     matcherValue: row.matcher_value || null,
+    subjectMatchMode: row.subject_match_mode || null,
+    subjectMatchValue: row.subject_match_value || null,
     description: row.description || '',
     enabled: Boolean(row.enabled),
     source: row.source,
@@ -2071,6 +2112,8 @@ export function upsertUserRuleRecord({
   match = '',
   matcherKind = null,
   matcherValue = null,
+  subjectMatchMode = null,
+  subjectMatchValue = null,
   description = '',
   enabled = true,
   source = 'api',
@@ -2084,10 +2127,12 @@ export function upsertUserRuleRecord({
   database.prepare(`
     INSERT INTO user_rules (
       id, account, rule_type, effect, match_text, matcher_kind, matcher_value,
+      subject_match_mode, subject_match_value,
       description, enabled, source, baseline_rule_id, source_email_item_id,
       conflict_key, created_at, updated_at
     ) VALUES (
       @id, @account, @type, @effect, @match, @matcherKind, @matcherValue,
+      @subjectMatchMode, @subjectMatchValue,
       @description, @enabled, @source, @baselineRuleId, @sourceEmailItemId,
       @conflictKey, @createdAt, @updatedAt
     )
@@ -2097,6 +2142,8 @@ export function upsertUserRuleRecord({
       match_text = excluded.match_text,
       matcher_kind = excluded.matcher_kind,
       matcher_value = excluded.matcher_value,
+      subject_match_mode = excluded.subject_match_mode,
+      subject_match_value = excluded.subject_match_value,
       description = excluded.description,
       enabled = excluded.enabled,
       source = excluded.source,
@@ -2111,6 +2158,8 @@ export function upsertUserRuleRecord({
     match: match || null,
     matcherKind,
     matcherValue,
+    subjectMatchMode,
+    subjectMatchValue,
     description: String(description || '').slice(0, 1000),
     enabled: enabled ? 1 : 0,
     source,
@@ -2133,6 +2182,8 @@ export function updateUserRuleRecordById({
   match = '',
   matcherKind = null,
   matcherValue = null,
+  subjectMatchMode = null,
+  subjectMatchValue = null,
   description = '',
   enabled = true,
   source = 'api',
@@ -2150,6 +2201,8 @@ export function updateUserRuleRecordById({
         match_text = @match,
         matcher_kind = @matcherKind,
         matcher_value = @matcherValue,
+        subject_match_mode = @subjectMatchMode,
+        subject_match_value = @subjectMatchValue,
         description = @description,
         enabled = @enabled,
         source = @source,
@@ -2166,6 +2219,8 @@ export function updateUserRuleRecordById({
     match: match || null,
     matcherKind,
     matcherValue,
+    subjectMatchMode,
+    subjectMatchValue,
     description: String(description || '').slice(0, 1000),
     enabled: enabled ? 1 : 0,
     source,

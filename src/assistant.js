@@ -838,6 +838,7 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
                 'attachment_not_found',
                 'attachment_type_not_supported',
                 'attachment_size_not_supported',
+                'rule_scope_clarification_required',
               ].includes(err.code)) {
             toolResults.push({
               tool: call.name,

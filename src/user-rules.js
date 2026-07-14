@@ -27,7 +27,8 @@ const IMPORT_STATE_PREFIX = 'user_rules_yaml_import_v1:';
 const USER_RULE_SOURCES = new Set(['assistant', 'api', 'import']);
 const USER_RULE_INPUT_FIELDS = new Set([
   'id', 'account', 'type', 'effect', 'archive', 'match', 'matcherKind', 'matcherValue',
-  'description', 'enabled', 'baselineRuleId', 'sourceEmailItemId',
+  'subjectMatchMode', 'subjectMatchValue', 'description', 'enabled', 'baselineRuleId',
+  'sourceEmailItemId',
 ]);
 const OPERATOR_FIELDS = new Set([
   'action', 'always', 'trigger', 'command', 'script', 'shell', 'suppress_feed', 'suppressFeed',
@@ -172,6 +173,8 @@ export function normalizeUserRule(input, { source = 'api', existing = null } = {
       effect,
       matcherKind: input.matcherKind ?? existing?.matcherKind,
       matcherValue: input.matcherValue ?? existing?.matcherValue,
+      subjectMatchMode: input.subjectMatchMode ?? existing?.subjectMatchMode,
+      subjectMatchValue: input.subjectMatchValue ?? existing?.subjectMatchValue,
       enabled,
     });
     return {
@@ -182,12 +185,19 @@ export function normalizeUserRule(input, { source = 'api', existing = null } = {
       match: '',
       matcherKind: exact.matcherKind,
       matcherValue: exact.matcherValue,
+      subjectMatchMode: exact.subjectMatchMode,
+      subjectMatchValue: exact.subjectMatchValue,
       description,
       enabled,
       source: normalizedSource,
       baselineRuleId: null,
       sourceEmailItemId,
-      conflictKey: `exact:${exact.matcherKind}:${exact.matcherValue}`,
+      conflictKey: [
+        `exact:${exact.matcherKind}:${exact.matcherValue}`,
+        ...(exact.subjectMatchMode
+          ? [`subject:${exact.subjectMatchMode}:${exact.subjectMatchValue}`]
+          : []),
+      ].join(':'),
     };
   }
 
@@ -205,6 +215,8 @@ export function normalizeUserRule(input, { source = 'api', existing = null } = {
     match,
     matcherKind: null,
     matcherValue: null,
+    subjectMatchMode: null,
+    subjectMatchValue: null,
     description,
     enabled,
     source: normalizedSource,
@@ -224,6 +236,10 @@ function toApiRule(rule, scope = 'user') {
     ...(rule.type === 'semantic' ? { match: rule.match } : {
       matcherKind: rule.matcherKind,
       matcherValue: rule.matcherValue,
+      ...(rule.subjectMatchMode ? {
+        subjectMatchMode: rule.subjectMatchMode,
+        subjectMatchValue: rule.subjectMatchValue,
+      } : {}),
     }),
     description: rule.description || '',
     enabled: rule.enabled !== false,

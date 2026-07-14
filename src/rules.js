@@ -76,7 +76,9 @@ export function listRules(account) {
     id: rule.id,
     match: rule.type === 'semantic'
       ? rule.match
-      : `${rule.matcherKind} equals ${rule.matcherValue}`,
+      : `${rule.matcherKind} equals ${rule.matcherValue}${rule.subjectMatchMode
+        ? ` and subject ${rule.subjectMatchMode} ${rule.subjectMatchValue}`
+        : ''}`,
     archive: rule.effect === 'archive',
     source: rule.source,
     enabled: rule.enabled,

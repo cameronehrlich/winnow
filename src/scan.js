@@ -133,7 +133,9 @@ async function getUnsubscribeLink(adapter, account, msg, fullMessage = null) {
 
 export function classificationForAssistantRule(rule) {
   const archive = rule.effect === 'archive';
-  const matcher = `${rule.matcherKind} "${rule.matcherValue}"`;
+  const matcher = `${rule.matcherKind} "${rule.matcherValue}"${rule.subjectMatchMode
+    ? ` and subject ${rule.subjectMatchMode} "${rule.subjectMatchValue}"`
+    : ''}`;
   return {
     archive,
     priority: archive ? 'low' : 'normal',
