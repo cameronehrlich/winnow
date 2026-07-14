@@ -9,6 +9,7 @@ struct AssistantComposerRequest: Identifiable, Equatable {
 struct AssistantMailboxView: View {
     @EnvironmentObject private var model: AppModel
     let openSettings: () -> Void
+    let openStats: () -> Void
     @State private var selectedAccount = ""
 
     var body: some View {
@@ -34,7 +35,11 @@ struct AssistantMailboxView: View {
                             accessibilityLabel: "Choose accounts to search"
                         )
                     }
-                    ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
+                    WinnowStatusButton(
+                        isOnline: model.isOnline,
+                        isRefreshing: model.isRefreshing,
+                        action: openStats
+                    )
                 }
             }
         }

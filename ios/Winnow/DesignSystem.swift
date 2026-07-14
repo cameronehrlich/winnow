@@ -220,6 +220,38 @@ struct ConnectionBadge: View {
     }
 }
 
+struct WinnowStatusButton: View {
+    let isOnline: Bool
+    let isRefreshing: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if isRefreshing {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Circle()
+                        .fill(isOnline ? WinnowDesign.mint : Color.secondary)
+                        .frame(width: 7, height: 7)
+                }
+                Text(isRefreshing ? "Syncing" : (isOnline ? "Live" : "Offline"))
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.thinMaterial, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isRefreshing ? "Winnow is syncing" : (isOnline ? "Winnow is live" : "Winnow is offline"))
+        .accessibilityHint("Shows status and activity")
+    }
+}
+
 struct ToastView: View {
     let toast: ToastMessage
 

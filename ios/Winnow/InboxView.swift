@@ -44,6 +44,7 @@ struct InboxView: View {
     @EnvironmentObject private var model: AppModel
     let mailbox: MailboxTab
     let openSettings: () -> Void
+    let openStats: () -> Void
 
     @State private var account = ""
     @State private var searchText = ""
@@ -146,7 +147,11 @@ struct InboxView: View {
                     if model.accounts.count > 1 {
                         AccountFilterMenu(selection: $account, accounts: model.accounts)
                     }
-                    ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
+                    WinnowStatusButton(
+                        isOnline: model.isOnline,
+                        isRefreshing: model.isRefreshing,
+                        action: openStats
+                    )
                 }
             }
             .onChange(of: model.navigationRequest) { _, request in

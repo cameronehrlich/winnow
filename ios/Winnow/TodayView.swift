@@ -2,7 +2,7 @@ import SwiftUI
 
 struct StatsView: View {
     @EnvironmentObject private var model: AppModel
-    let openSettings: () -> Void
+    @Environment(\.dismiss) private var dismiss
 
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
@@ -77,11 +77,10 @@ struct StatsView: View {
                 }
                 .refreshable { await model.refresh() }
             }
-            .navigationTitle("Stats")
+            .navigationTitle("Status & Activity")
             .toolbar {
-                WinnowSettingsToolbarItem(action: openSettings)
-                ToolbarItem(placement: .topBarTrailing) {
-                    ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
                 }
             }
         }

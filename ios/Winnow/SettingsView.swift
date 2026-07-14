@@ -13,16 +13,21 @@ struct SettingsView: View {
             ZStack {
                 AppBackdrop()
                 Form {
-                    Section {
-                        HStack(spacing: 13) {
-                            WinnowMark(size: 46)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Winnow").font(.headline)
-                                Text("Private, direct, and fast").font(.caption).foregroundStyle(.secondary)
+                    Section("Mail Handling") {
+                        NavigationLink {
+                            MailRulesView()
+                        } label: {
+                            Label {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Rules")
+                                    Text("Choose what Winnow archives or keeps")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                Image(systemName: "line.3.horizontal.decrease.circle")
                             }
-                            Spacer()
                         }
-                        .padding(.vertical, 5)
                     }
 
                     Section {
@@ -96,16 +101,9 @@ struct SettingsView: View {
                                     Circle()
                                         .fill(account.scan.lastScanAt == nil ? Color.secondary : WinnowDesign.mint)
                                         .frame(width: 8, height: 8)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(account.email)
-                                            .font(.subheadline)
-                                            .lineLimit(1)
-                                        if let processed = account.scan.lastScanProcessed {
-                                            Text("\(processed) handled in latest scan")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
+                                    Text(account.email)
+                                        .font(.subheadline)
+                                        .lineLimit(1)
                                     Spacer()
                                     if let date = account.scan.lastScanAt?.winnowSettingsDate {
                                         Text(date.relativeWinnowTime)
@@ -117,24 +115,7 @@ struct SettingsView: View {
                         } header: {
                             Text("Managed Accounts")
                         } footer: {
-                            Text("Service health and per-account scan activity are shown together here.")
-                        }
-                    }
-
-                    Section("Mail Handling") {
-                        NavigationLink {
-                            MailRulesView()
-                        } label: {
-                            Label {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Rules")
-                                    Text("Choose what Winnow archives or keeps")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            } icon: {
-                                Image(systemName: "line.3.horizontal.decrease.circle")
-                            }
+                            Text("Service health and latest account activity are shown together here.")
                         }
                     }
 

@@ -5,9 +5,10 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab: RootTab = .inbox
     @State private var settingsPresented = false
+    @State private var statsPresented = false
 
     private enum RootTab: Hashable {
-        case inbox, archived, stats, ask
+        case inbox, archived, ask
     }
 
     var body: some View {
@@ -51,6 +52,7 @@ struct RootView: View {
         .onChange(of: model.askNavigationRequest) { _, request in
             guard let request else { return }
             settingsPresented = false
+            statsPresented = false
             selectedTab = .ask
             model.consumeAskNavigation(request)
         }
@@ -79,6 +81,11 @@ struct RootView: View {
                 .presentationDragIndicator(.visible)
                 .presentationCornerRadius(30)
         }
+        .sheet(isPresented: $statsPresented) {
+            StatsView()
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(30)
+        }
     }
 
     @ViewBuilder
@@ -96,54 +103,52 @@ struct RootView: View {
     private var modernTabs: some View {
         TabView(selection: $selectedTab) {
             Tab("Inbox", systemImage: "tray.full", value: RootTab.inbox) {
-                InboxView(mailbox: .inbox, openSettings: openSettings)
+                InboxView(mailbox: .inbox, openSettings: openSettings, openStats: openStats)
             }
             .badge(model.inboxBadgeCount)
 
             Tab("Archived", systemImage: "archivebox", value: RootTab.archived) {
-                InboxView(mailbox: .archived, openSettings: openSettings)
-            }
-
-            Tab("Stats", systemImage: "chart.bar.xaxis", value: RootTab.stats) {
-                StatsView(openSettings: openSettings)
+                InboxView(mailbox: .archived, openSettings: openSettings, openStats: openStats)
             }
 
             Tab("Ask", systemImage: "bubble.left.and.bubble.right.fill", value: RootTab.ask, role: .search) {
-                AssistantMailboxView(openSettings: openSettings)
+                AssistantMailboxView(openSettings: openSettings, openStats: openStats)
             }
         }
     }
 
     private var legacyTabs: some View {
         TabView(selection: $selectedTab) {
-            InboxView(mailbox: .inbox, openSettings: openSettings)
+            InboxView(mailbox: .inbox, openSettings: openSettings, openStats: openStats)
                 .tabItem { Label("Inbox", systemImage: "tray.full") }
                 .badge(model.inboxBadgeCount)
                 .tag(RootTab.inbox)
 
-            InboxView(mailbox: .archived, openSettings: openSettings)
+            InboxView(mailbox: .archived, openSettings: openSettings, openStats: openStats)
                 .tabItem { Label("Archived", systemImage: "archivebox") }
                 .tag(RootTab.archived)
 
-            StatsView(openSettings: openSettings)
-                .tabItem { Label("Stats", systemImage: "chart.bar.xaxis") }
-                .tag(RootTab.stats)
-
-            AssistantMailboxView(openSettings: openSettings)
+            AssistantMailboxView(openSettings: openSettings, openStats: openStats)
                 .tabItem { Label("Ask", systemImage: "bubble.left.and.bubble.right.fill") }
                 .tag(RootTab.ask)
         }
     }
 
     private func openSettings() {
+        statsPresented = false
         settingsPresented = true
+    }
+
+    private func openStats() {
+        settingsPresented = false
+        statsPresented = true
     }
 
     private func mailbox(for tab: RootTab) -> MailboxTab? {
         switch tab {
         case .inbox: .inbox
         case .archived: .archived
-        case .stats, .ask: nil
+        case .ask: nil
         }
     }
 
