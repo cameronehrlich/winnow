@@ -134,6 +134,7 @@ struct RootView: View {
                     openStats: openStats
                 )
             }
+            .badge(model.hasUnseenArchivedItems ? Text("") : nil)
 
             Tab("Ask", systemImage: "bubble.left.and.bubble.right.fill", value: RootTab.ask, role: .search) {
                 Color.clear
@@ -158,6 +159,7 @@ struct RootView: View {
                 openStats: openStats
             )
                 .tabItem { Label("Archived", systemImage: "archivebox") }
+                .badge(model.hasUnseenArchivedItems ? Text("") : nil)
                 .tag(RootTab.archived)
 
             Color.clear

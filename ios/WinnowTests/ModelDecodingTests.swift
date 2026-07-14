@@ -1,7 +1,25 @@
+import Foundation
 import XCTest
 @testable import Winnow
 
 final class ModelDecodingTests: XCTestCase {
+    @MainActor
+    func testArchivedUnseenIndicatorOnlyTracksNewerArchivedItems() throws {
+        let data = #"""
+        [
+          {"id":"old-archive","mailboxState":"archived","processedAt":"2026-07-14T08:59:00Z"},
+          {"id":"new-inbox","mailboxState":"inbox","processedAt":"2026-07-14T09:01:00Z"},
+          {"id":"new-archive","mailboxState":"archived","processedAt":"2026-07-14T09:02:00Z"}
+        ]
+        """#.data(using: .utf8)!
+        let emails = try JSONDecoder().decode([EmailItem].self, from: data)
+        let cutoff = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-07-14T09:00:00Z"))
+
+        XCTAssertTrue(AppModel.hasItems(in: emails, mailbox: .archived, newerThan: cutoff))
+        XCTAssertFalse(AppModel.hasItems(in: Array(emails.dropLast()), mailbox: .archived, newerThan: cutoff))
+        XCTAssertTrue(AppModel.hasItems(in: emails, mailbox: .inbox, newerThan: cutoff))
+    }
+
     func testDeviceProposalBuildsAStableSourceBacklink() throws {
         let json = #"""
         {

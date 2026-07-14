@@ -22,6 +22,7 @@ final class AppModel: ObservableObject {
     @Published var askNavigationRequest: UUID?
     @Published private(set) var inboxNewItemsCutoff: Date?
     @Published private(set) var archivedNewItemsCutoff: Date?
+    @Published private(set) var hasUnseenArchivedItems = false
 
     private var hasLoaded = false
     private var autoRefreshTask: Task<Void, Never>?
@@ -104,9 +105,10 @@ final class AppModel: ObservableObject {
             status = runtimeStatus
             accounts = accountList
             lastRefresh = Date()
+            if let visibleMailbox { markMailboxSeen(visibleMailbox) }
+            updateArchivedUnseenState()
             WidgetSnapshotStore.save(emails: emails)
             PushNotificationManager.shared.setAppIconBadge(inboxBadgeCount)
-            if let visibleMailbox { markMailboxSeen(visibleMailbox) }
         } catch {
             guard generation == refreshGeneration else { return }
             if !silent || emails.isEmpty {
@@ -179,6 +181,7 @@ final class AppModel: ObservableObject {
             hasLoaded = false
             visibleMailbox = nil
             sessionCutoffMailboxes.removeAll()
+            hasUnseenArchivedItems = false
             stopAutoRefresh()
             WidgetSnapshotStore.clear()
             PushNotificationManager.shared.setAppIconBadge(0)
@@ -451,6 +454,9 @@ final class AppModel: ObservableObject {
             }
         }
         markMailboxSeen(mailbox)
+        if mailbox == .archived {
+            hasUnseenArchivedItems = false
+        }
     }
 
     func requestNavigation(emailID: String, mailboxState: String = "inbox") {
@@ -488,6 +494,26 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(newestDate, forKey: viewedKey(for: mailbox))
     }
 
+    private func updateArchivedUnseenState() {
+        guard visibleMailbox != .archived,
+              let cutoff = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date
+        else {
+            hasUnseenArchivedItems = false
+            return
+        }
+        hasUnseenArchivedItems = Self.hasItems(
+            in: emails,
+            mailbox: .archived,
+            newerThan: cutoff
+        )
+    }
+
+    static func hasItems(in emails: [EmailItem], mailbox: MailboxTab, newerThan cutoff: Date) -> Bool {
+        emails.contains { item in
+            mailbox.includes(item) && (item.displayDate ?? .distantPast) > cutoff
+        }
+    }
+
     private func replace(_ incomingItem: EmailItem) {
         var item = incomingItem
         guard let index = emails.firstIndex(where: { $0.id == item.id }) else {
@@ -510,6 +536,7 @@ final class AppModel: ObservableObject {
     }
 
     private func publishEmailState() {
+        updateArchivedUnseenState()
         WidgetSnapshotStore.save(emails: emails)
         PushNotificationManager.shared.setAppIconBadge(inboxBadgeCount)
     }
