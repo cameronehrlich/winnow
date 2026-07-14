@@ -44,9 +44,14 @@ async function runReconcileCycle(accounts) {
     } catch (err) {
       console.error(`[winnow/daemon] Gmail sync error (${account}): ${err.message}`);
     }
+  }
 
+  // Run the slower per-message verification only after every account has had
+  // its lightweight history/full sync, so one large mailbox cannot delay
+  // catch-up for the accounts that follow it.
+  for (const account of accounts) {
     try {
-      const result = await reconcileMailbox({ account, days: 7, limit: 200 });
+      const result = await reconcileMailbox({ account, days: 7, limit: 100 });
       if (result.changed > 0) {
         console.log(`[winnow/daemon] Reconciled ${result.changed}/${result.checked} mailbox state changes for ${account}`);
       }
