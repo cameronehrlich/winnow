@@ -46,12 +46,27 @@ struct InboxView: View {
     let openSettings: () -> Void
 
     @State private var account = ""
+    @State private var searchText = ""
     @State private var navigationPath: [String] = []
 
+    private var searchQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var filteredEmails: [EmailItem] {
-        model.emails.filter { item in
+        return model.emails.filter { item in
             let matchesAccount = account.isEmpty || item.account == account
-            return mailbox.includes(item) && matchesAccount
+            let matchesQuery = searchQuery.isEmpty || [
+                item.subject,
+                item.senderDisplayName,
+                item.fromEmail,
+                item.summary,
+                item.snippet,
+                item.action,
+                item.deadline,
+                item.impact,
+            ].contains(where: { $0.localizedCaseInsensitiveContains(searchQuery) })
+            return mailbox.includes(item) && matchesAccount && matchesQuery
         }
     }
 
@@ -82,6 +97,7 @@ struct InboxView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .scrollDismissesKeyboard(.interactively)
                 .refreshable { await model.refresh() }
 
                 if model.isLoading && model.emails.isEmpty {
@@ -99,6 +115,11 @@ struct InboxView: View {
                 }
             }
             .navigationTitle(mailbox.title)
+            .searchable(
+                text: $searchText,
+                placement: .navigationBarDrawer(displayMode: .automatic),
+                prompt: "Sender, subject, or summary"
+            )
             .navigationDestination(for: String.self) { emailID in
                 EmailDetailView(emailID: emailID)
             }
@@ -121,14 +142,19 @@ struct InboxView: View {
     }
 
     private var emptyTitle: String {
+        if !searchQuery.isEmpty { return "No Results" }
         return mailbox == .inbox ? "Inbox Clear" : "Nothing Archived Yet"
     }
 
     private var emptySymbol: String {
+        if !searchQuery.isEmpty { return "magnifyingglass" }
         return mailbox == .inbox ? "checkmark.circle" : "archivebox"
     }
 
     private var emptyDescription: String {
+        if !searchQuery.isEmpty {
+            return "No messages in \(mailbox.title.lowercased()) match “\(searchQuery)”."
+        }
         return mailbox == .inbox
             ? "Nothing needs your attention right now."
             : "Messages handled by Winnow will appear here."
@@ -136,110 +162,6 @@ struct InboxView: View {
 
     private func perform(_ action: EmailAction, on item: EmailItem) {
         Task { _ = await model.perform(action, on: item, optimisticDelay: .milliseconds(140)) }
-    }
-}
-
-struct EmailSearchView: View {
-    @EnvironmentObject private var model: AppModel
-    @Binding var mailbox: MailboxTab
-    let openSettings: () -> Void
-
-    @State private var account = ""
-    @State private var searchText = ""
-    @State private var navigationPath: [String] = []
-
-    private var query: String {
-        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var results: [EmailItem] {
-        guard !query.isEmpty else { return [] }
-        return model.emails.filter { item in
-            let matchesAccount = account.isEmpty || item.account == account
-            let matchesQuery = [
-                item.subject,
-                item.senderDisplayName,
-                item.fromEmail,
-                item.summary,
-                item.snippet,
-                item.action,
-                item.deadline,
-                item.impact,
-            ].contains(where: { $0.localizedCaseInsensitiveContains(query) })
-            return mailbox.includes(item) && matchesAccount && matchesQuery
-        }
-    }
-
-    var body: some View {
-        NavigationStack(path: $navigationPath) {
-            ZStack {
-                AppBackdrop()
-
-                if query.isEmpty {
-                    ContentUnavailableView {
-                        Label("Search \(mailbox.title)", systemImage: "magnifyingglass")
-                    } description: {
-                        Text("Find messages by sender, subject, summary, or content preview.")
-                    }
-                } else if results.isEmpty {
-                    ContentUnavailableView.search(text: query)
-                } else {
-                    List {
-                        ForEach(results) { item in
-                            EmailCard(
-                                item: item,
-                                account: model.account(email: item.account),
-                                isPerforming: model.performingEmailIDs.contains(item.id),
-                                openAction: { navigationPath.append(item.id) }
-                            )
-                            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .swipeActions(edge: mailbox.swipeEdge, allowsFullSwipe: true) {
-                                Button {
-                                    Task {
-                                        _ = await model.perform(
-                                            mailbox.primaryAction,
-                                            on: item,
-                                            optimisticDelay: .milliseconds(140)
-                                        )
-                                    }
-                                } label: {
-                                    Label(mailbox.primaryAction.label, systemImage: mailbox.primaryAction.systemImage)
-                                }
-                                .tint(mailbox == .inbox ? WinnowDesign.amber : WinnowDesign.indigo)
-                            }
-                        }
-                    }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
-                    .refreshable { await model.refresh() }
-                }
-            }
-            .navigationTitle("Search")
-            .navigationBarTitleDisplayMode(.inline)
-            .navigationDestination(for: String.self) { emailID in
-                EmailDetailView(emailID: emailID)
-            }
-            .searchable(text: $searchText, prompt: "Sender, subject, or summary")
-            .searchScopes($mailbox, activation: .onSearchPresentation) {
-                Text("Inbox").tag(MailboxTab.inbox)
-                Text("Archived").tag(MailboxTab.archived)
-            }
-            .toolbar {
-                WinnowSettingsToolbarItem(action: openSettings)
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if model.accounts.count > 1 {
-                        AccountFilterMenu(
-                            selection: $account,
-                            accounts: model.accounts,
-                            accessibilityLabel: "Filter search account"
-                        )
-                    }
-                    ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
-                }
-            }
-        }
     }
 }
 

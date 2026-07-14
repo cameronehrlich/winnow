@@ -4,12 +4,10 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab: RootTab = .inbox
-    @State private var lastMailboxTab: MailboxTab = .inbox
-    @State private var searchMailbox: MailboxTab = .inbox
     @State private var settingsPresented = false
 
     private enum RootTab: Hashable {
-        case inbox, archived, ask, stats, search
+        case inbox, archived, stats, ask
     }
 
     var body: some View {
@@ -34,12 +32,7 @@ struct RootView: View {
                 model.stopAutoRefresh()
             }
         }
-        .onChange(of: selectedTab) { oldTab, newTab in
-            if oldTab == .inbox { lastMailboxTab = .inbox }
-            if oldTab == .archived { lastMailboxTab = .archived }
-            if newTab == .inbox { lastMailboxTab = .inbox }
-            if newTab == .archived { lastMailboxTab = .archived }
-            if newTab == .search { searchMailbox = lastMailboxTab }
+        .onChange(of: selectedTab) { _, newTab in
             model.setArchivedVisible(newTab == .archived)
         }
         .onChange(of: model.isConfigured) { _, isConfigured in
@@ -87,7 +80,6 @@ struct RootView: View {
     private var configuredTabs: some View {
         if #available(iOS 26.0, *) {
             modernTabs
-                .tabViewSearchActivation(.searchTabSelection)
         } else if #available(iOS 18.0, *) {
             modernTabs
         } else {
@@ -108,16 +100,12 @@ struct RootView: View {
             }
             .badge(model.archivedBadgeCount)
 
-            Tab("Ask", systemImage: "sparkles", value: RootTab.ask) {
-                AssistantMailboxView(openSettings: openSettings)
-            }
-
             Tab("Stats", systemImage: "chart.bar.xaxis", value: RootTab.stats) {
                 StatsView(openSettings: openSettings)
             }
 
-            Tab("Search", systemImage: "magnifyingglass", value: RootTab.search, role: .search) {
-                EmailSearchView(mailbox: $searchMailbox, openSettings: openSettings)
+            Tab("Ask", systemImage: "bubble.left.and.bubble.right.fill", value: RootTab.ask, role: .search) {
+                AssistantMailboxView(openSettings: openSettings)
             }
         }
     }
@@ -134,17 +122,13 @@ struct RootView: View {
                 .badge(model.archivedBadgeCount)
                 .tag(RootTab.archived)
 
-            AssistantMailboxView(openSettings: openSettings)
-                .tabItem { Label("Ask", systemImage: "sparkles") }
-                .tag(RootTab.ask)
-
             StatsView(openSettings: openSettings)
                 .tabItem { Label("Stats", systemImage: "chart.bar.xaxis") }
                 .tag(RootTab.stats)
 
-            EmailSearchView(mailbox: $searchMailbox, openSettings: openSettings)
-                .tabItem { Label("Search", systemImage: "magnifyingglass") }
-                .tag(RootTab.search)
+            AssistantMailboxView(openSettings: openSettings)
+                .tabItem { Label("Ask", systemImage: "bubble.left.and.bubble.right.fill") }
+                .tag(RootTab.ask)
         }
     }
 
