@@ -216,11 +216,15 @@ struct RootView: View {
     }
 
     private func open(emailID: String, mailbox: String) {
-        selectedTab = mailbox == "archived" ? .archived : .inbox
         guard !emailID.isEmpty else { return }
         Task {
             await model.refresh(silent: true)
-            model.requestNavigation(emailID: emailID, mailboxState: mailbox)
+            let currentMailbox = model.email(id: emailID).map { item in
+                item.isArchived ? "archived" : "inbox"
+            } ?? (mailbox == "archived" ? "archived" : "inbox")
+            selectedTab = currentMailbox == "archived" ? .archived : .inbox
+            await Task.yield()
+            model.requestNavigation(emailID: emailID, mailboxState: currentMailbox)
         }
     }
 }

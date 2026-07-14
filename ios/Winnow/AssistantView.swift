@@ -269,7 +269,9 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                             }
                         }
 
-                        if presentation == .inlineEmail {
+                        if presentation == .inlineEmail,
+                           !viewModel.isLoading,
+                           viewModel.messages.isEmpty {
                             suggestionCloud
                         }
 
