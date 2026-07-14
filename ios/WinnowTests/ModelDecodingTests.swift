@@ -2,6 +2,39 @@ import XCTest
 @testable import Winnow
 
 final class ModelDecodingTests: XCTestCase {
+    @MainActor
+    func testNewItemDividerCutoffStaysFrozenUntilTheNextForegroundSession() {
+        let defaults = UserDefaults.standard
+        let inboxKey = "winnow.inbox-last-viewed"
+        let archivedKey = "winnow.archived-last-viewed"
+        let previousInbox = defaults.object(forKey: inboxKey)
+        let previousArchived = defaults.object(forKey: archivedKey)
+        defer {
+            if let previousInbox { defaults.set(previousInbox, forKey: inboxKey) }
+            else { defaults.removeObject(forKey: inboxKey) }
+            if let previousArchived { defaults.set(previousArchived, forKey: archivedKey) }
+            else { defaults.removeObject(forKey: archivedKey) }
+        }
+
+        let originalCutoff = Date(timeIntervalSince1970: 1_700_000_000)
+        let nextSessionCutoff = originalCutoff.addingTimeInterval(300)
+        defaults.set(originalCutoff, forKey: inboxKey)
+        defaults.set(originalCutoff, forKey: archivedKey)
+
+        let model = AppModel(configuration: ServerConfiguration(serverURL: "", token: ""))
+        model.setVisibleMailbox(.inbox)
+        defaults.set(nextSessionCutoff, forKey: inboxKey)
+        model.setVisibleMailbox(.archived)
+        model.setVisibleMailbox(.inbox)
+
+        XCTAssertEqual(model.inboxNewItemsCutoff, originalCutoff)
+
+        model.setVisibleMailbox(nil)
+        model.setVisibleMailbox(.inbox)
+
+        XCTAssertEqual(model.inboxNewItemsCutoff, nextSessionCutoff)
+    }
+
     func testEmailDecodesCurrentBackendShape() throws {
         let json = #"""
         {

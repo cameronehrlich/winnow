@@ -29,6 +29,7 @@ final class AppModel: ObservableObject {
     private var refreshGeneration = 0
     private var pendingOptimisticActions: [String: EmailAction] = [:]
     private var visibleMailbox: MailboxTab?
+    private var sessionCutoffMailboxes: Set<MailboxTab> = []
     private let inboxViewedKey = "winnow.inbox-last-viewed"
     private let archivedViewedKey = "winnow.archived-last-viewed"
 
@@ -176,6 +177,8 @@ final class AppModel: ObservableObject {
             accounts = []
             mailRules = []
             hasLoaded = false
+            visibleMailbox = nil
+            sessionCutoffMailboxes.removeAll()
             stopAutoRefresh()
             WidgetSnapshotStore.clear()
             PushNotificationManager.shared.setAppIconBadge(0)
@@ -427,15 +430,25 @@ final class AppModel: ObservableObject {
     }
 
     func setVisibleMailbox(_ mailbox: MailboxTab?) {
+        guard let mailbox else {
+            visibleMailbox = nil
+            sessionCutoffMailboxes.removeAll()
+            return
+        }
         guard visibleMailbox != mailbox else { return }
         visibleMailbox = mailbox
-        guard let mailbox else { return }
 
-        let cutoff = UserDefaults.standard.object(forKey: viewedKey(for: mailbox)) as? Date
-        if mailbox == .inbox {
-            inboxNewItemsCutoff = cutoff
-        } else {
-            archivedNewItemsCutoff = cutoff
+        // Freeze the divider at the mailbox's pre-session seen position. We
+        // still advance the persisted position below so the next foreground
+        // session starts in the right place, but tab switches and refreshes do
+        // not erase the divider the user is currently reviewing.
+        if sessionCutoffMailboxes.insert(mailbox).inserted {
+            let cutoff = UserDefaults.standard.object(forKey: viewedKey(for: mailbox)) as? Date
+            if mailbox == .inbox {
+                inboxNewItemsCutoff = cutoff
+            } else {
+                archivedNewItemsCutoff = cutoff
+            }
         }
         markMailboxSeen(mailbox)
     }
