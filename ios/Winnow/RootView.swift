@@ -6,6 +6,8 @@ struct RootView: View {
     @State private var selectedTab: RootTab = .inbox
     @State private var settingsPresented = false
     @State private var statsPresented = false
+    @State private var askPresented = false
+    @State private var askStatsPresented = false
 
     private enum RootTab: Hashable {
         case inbox, archived, ask
@@ -51,9 +53,7 @@ struct RootView: View {
         }
         .onChange(of: model.askNavigationRequest) { _, request in
             guard let request else { return }
-            settingsPresented = false
-            statsPresented = false
-            selectedTab = .ask
+            presentAsk()
             model.consumeAskNavigation(request)
         }
         .onOpenURL(perform: handleDeepLink)
@@ -88,6 +88,20 @@ struct RootView: View {
                 .presentationDragIndicator(.visible)
                 .presentationCornerRadius(30)
         }
+        .sheet(isPresented: $askPresented) {
+            AssistantMailboxView(
+                openStats: { askStatsPresented = true },
+                dismiss: { askPresented = false }
+            )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationCornerRadius(34)
+            .sheet(isPresented: $askStatsPresented) {
+                StatsView()
+                    .presentationDragIndicator(.visible)
+                    .presentationCornerRadius(30)
+            }
+        }
     }
 
     @ViewBuilder
@@ -103,7 +117,7 @@ struct RootView: View {
 
     @available(iOS 18.0, *)
     private var modernTabs: some View {
-        TabView(selection: $selectedTab) {
+        TabView(selection: tabSelection) {
             Tab("Inbox", systemImage: "tray.full", value: RootTab.inbox) {
                 InboxView(
                     mailbox: .inbox,
@@ -124,13 +138,13 @@ struct RootView: View {
             }
 
             Tab("Ask", systemImage: "bubble.left.and.bubble.right.fill", value: RootTab.ask, role: .search) {
-                AssistantMailboxView(openSettings: openSettings, openStats: openStats)
+                Color.clear
             }
         }
     }
 
     private var legacyTabs: some View {
-        TabView(selection: $selectedTab) {
+        TabView(selection: tabSelection) {
             InboxView(
                 mailbox: .inbox,
                 openSettings: openSettings,
@@ -150,10 +164,23 @@ struct RootView: View {
                 .tabItem { Label("Archived", systemImage: "archivebox") }
                 .tag(RootTab.archived)
 
-            AssistantMailboxView(openSettings: openSettings, openStats: openStats)
+            Color.clear
                 .tabItem { Label("Ask", systemImage: "bubble.left.and.bubble.right.fill") }
                 .tag(RootTab.ask)
         }
+    }
+
+    private var tabSelection: Binding<RootTab> {
+        Binding(
+            get: { selectedTab },
+            set: { newTab in
+                if newTab == .ask {
+                    presentAsk()
+                } else {
+                    selectedTab = newTab
+                }
+            }
+        )
     }
 
     private func openSettings() {
@@ -164,6 +191,12 @@ struct RootView: View {
     private func openStats() {
         settingsPresented = false
         statsPresented = true
+    }
+
+    private func presentAsk() {
+        settingsPresented = false
+        statsPresented = false
+        askPresented = true
     }
 
     private func mailbox(for tab: RootTab) -> MailboxTab? {

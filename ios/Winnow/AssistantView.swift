@@ -8,9 +8,14 @@ struct AssistantComposerRequest: Identifiable, Equatable {
 
 struct AssistantMailboxView: View {
     @EnvironmentObject private var model: AppModel
-    let openSettings: () -> Void
     let openStats: () -> Void
+    let dismiss: (() -> Void)?
     @State private var selectedAccount = ""
+
+    init(openStats: @escaping () -> Void, dismiss: (() -> Void)? = nil) {
+        self.openStats = openStats
+        self.dismiss = dismiss
+    }
 
     var body: some View {
         NavigationStack {
@@ -26,7 +31,15 @@ struct AssistantMailboxView: View {
             .navigationTitle("Ask Winnow")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                WinnowSettingsToolbarItem(action: openSettings)
+                if let dismiss {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button(action: dismiss) {
+                            Image(systemName: "xmark")
+                                .font(.body.weight(.semibold))
+                        }
+                        .accessibilityLabel("Close Ask Winnow")
+                    }
+                }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if model.accounts.count > 1 {
                         AccountFilterMenu(
