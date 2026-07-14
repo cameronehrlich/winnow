@@ -60,7 +60,7 @@ struct InboxView: View {
         return model.emails.filter { item in
             let matchesAccount = account.isEmpty || item.account == account
             let matchesQuery = searchQuery.isEmpty || [
-                item.subject,
+                item.displaySubject ?? "",
                 item.senderDisplayName,
                 item.fromEmail,
                 item.summary,
@@ -260,10 +260,12 @@ struct EmailCard: View {
                         }
                     }
 
-                    Text(item.subject)
-                        .font(.subheadline.weight(item.isUnread ? .bold : .regular))
-                        .foregroundStyle(item.isUnread ? .primary : .secondary)
-                        .lineLimit(2)
+                    if let subject = item.displaySubject {
+                        Text(subject)
+                            .font(.subheadline.weight(item.isUnread ? .bold : .regular))
+                            .foregroundStyle(item.isUnread ? .primary : .secondary)
+                            .lineLimit(2)
+                    }
 
                     if !item.summary.isEmpty || !item.snippet.isEmpty {
                         Text(item.summary.isEmpty ? item.snippet : item.summary)
