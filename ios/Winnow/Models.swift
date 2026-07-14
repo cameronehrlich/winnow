@@ -5,6 +5,30 @@ struct EmailListResponse: Decodable {
     var nextCursor: String?
 }
 
+struct EmailContentEnvelope: Decodable {
+    let content: EmailContent
+}
+
+struct EmailContent: Decodable, Equatable {
+    let emailItemId: String
+    let account: String
+    let threadId: String
+    let subject: String
+    let messages: [FullEmailMessage]
+    let truncated: Bool
+    let fetchedAt: String
+}
+
+struct FullEmailMessage: Decodable, Equatable, Identifiable {
+    let id: String
+    let from: String
+    let to: String
+    let cc: String
+    let subject: String
+    let date: String
+    let body: String
+}
+
 struct EmailItem: Decodable, Identifiable, Equatable {
     let id: String
     let account: String
@@ -43,7 +67,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         default: archive
         }
     }
-    var canOpenInGmail: Bool { !threadId.isEmpty }
+    var canLoadFullContent: Bool { !threadId.isEmpty || !messageId.isEmpty }
     var canUnsubscribe: Bool {
         !unsubscribeLink.isEmpty && !["succeeded", "attempted"].contains(unsubscribeState)
     }
@@ -72,27 +96,6 @@ struct EmailItem: Decodable, Identifiable, Equatable {
     }
 
     var displayDate: Date? { processedAt.winnowDate ?? createdAt.winnowDate }
-
-    var gmailDestination: GmailDestination? {
-        guard canOpenInGmail else { return nil }
-        var components = URLComponents(string: "https://mail.google.com/mail/u/")
-        if !account.isEmpty {
-            components?.queryItems = [URLQueryItem(name: "authuser", value: account)]
-        }
-        components?.fragment = "all/\(threadId)"
-        guard let exactMessageURL = components?.url else { return nil }
-        return GmailDestination(
-            exactMessageURL: exactMessageURL,
-            accountHint: account
-        )
-    }
-
-    // Kept as a convenience for call sites that only need the exact web permalink.
-    var gmailURL: URL? { gmailDestination?.exactMessageURL }
-
-    func nativeGmailURL(accountID: Int?) -> URL? {
-        GmailDestination.nativeMessageURL(threadID: threadId, accountID: accountID)
-    }
 
     private enum CodingKeys: String, CodingKey {
         case id, account, messageId, threadId, fromName, fromEmail, from, subject, snippet
@@ -357,28 +360,6 @@ struct SummaryItem: Decodable, Equatable, Identifiable {
             return match.id
         }
         return nil
-    }
-}
-
-struct GmailDestination: Equatable {
-    static let nativeAppURL = URL(string: "googlegmail://")!
-
-    let exactMessageURL: URL
-    let accountHint: String
-
-    static func nativeMessageURL(threadID: String, accountID: Int?) -> URL? {
-        guard !threadID.isEmpty, let accountID, accountID > 0,
-              let encodedThreadID = threadID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
-        else { return nil }
-        // Gmail does not publish this route. Keep it to the smallest historically
-        // supported shape; newer Gmail builds reject the old create-new-tab suffix.
-        return URL(string: "googlegmail:///cv=\(encodedThreadID)/accountId=\(accountID)")
-    }
-
-    var exactMessageAccessibilityHint: String {
-        accountHint.isEmpty
-            ? "Opens the exact message in Gmail on the web."
-            : "Opens the exact message using the \(accountHint) Gmail account."
     }
 }
 

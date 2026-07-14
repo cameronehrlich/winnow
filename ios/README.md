@@ -10,7 +10,7 @@ A personal, native SwiftUI client for Winnow. V1 keeps the useful, dynamic parts
 - One Winnow summary in detail, followed by a compact next-step, deadline, impact, handling, and confidence card
 - Opening an in-app detail marks the message read; manual read/unread remains available in detail
 - A safe confirmation step and truthful manual-action state for unsubscribe flows
-- One account-aware **Open in Gmail** action on every email detail
+- An on-demand full-message reader that loads the exact Gmail thread without leaving Winnow
 - Lifetime and Today stats plus recent activity
 - Server health merged with per-account scan state in Settings
 - Pull to refresh, refresh whenever the app becomes active, and 30-second foreground refresh
@@ -110,7 +110,7 @@ while keeping each registered device token's environment explicit.
 ## V1 boundaries
 
 - Slack remains a notification fallback if APNs credentials are not installed.
-- Gmail does not publish its exact-conversation iOS URL contract. Winnow uses Gmail's one-based account slot from `gmail_app_account_id`; keep that value aligned with the account order inside the Gmail app. Devices without Gmail fall back to the exact account-hinted web URL.
+- Full message content is fetched from the correct Gmail account only when the reader opens. Raw bodies are not added to Winnow's list responses or stored in its SQLite email index.
 - The normal feed keeps email bodies in Gmail and shows bounded snippets and structured triage fields. Ask Winnow fetches a bounded thread excerpt on demand and sends it to the configured Gemini model, but does not persist the incoming raw body in assistant tables.
 - Each email reopens its canonical Winnow conversation and saved history; there is no general conversation-history picker yet.
 - Draft changes are requested conversationally. There is no direct rich-text draft editor in V1.

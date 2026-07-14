@@ -67,6 +67,23 @@ api:
     moveEmailToInbox: async ({ emailItemId, reason }) => updateEmailItemState(emailItemId, {
       triageState: 'restored', mailboxState: 'inbox', reason,
     }),
+    fetchEmailContent: async item => ({
+      emailItemId: item.id,
+      account: item.account,
+      threadId: item.threadId,
+      subject: item.subject,
+      messages: [{
+        id: item.messageId,
+        from: item.from,
+        to: 'Me <me@example.com>',
+        cc: '',
+        subject: item.subject,
+        date: 'Sun, 29 Jun 2026 09:00:00 -0700',
+        body: 'This is the complete message body.',
+      }],
+      truncated: false,
+      fetchedAt: '2026-06-29T16:01:00.000Z',
+    }),
   };
   const item = upsertEmailItemFromResult({
     account: 'me@example.com',
@@ -138,6 +155,23 @@ describe('local API', () => {
     assert.equal(lifetimeJson.counters.processed, 1);
     assert.ok(lifetimeJson.recentActivity.length > 0);
     assert.equal(lifetimeJson.recentActivity[0].emailItemId, emailJson.items[0].id);
+  });
+
+  it('fetches complete email content on demand without adding it to list responses', async () => {
+    const headers = { Authorization: 'Bearer test-token' };
+    const emails = await fetch(`${baseUrl}/v1/emails`, { headers }).then(response => response.json());
+    assert.equal(emails.items[0].body, undefined);
+
+    const encodedID = encodeURIComponent(emails.items[0].id);
+    const response = await fetch(`${baseUrl}/v1/emails/${encodedID}/content`, { headers });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.content.account, 'me@example.com');
+    assert.equal(body.content.messages.length, 1);
+    assert.equal(body.content.messages[0].body, 'This is the complete message body.');
+
+    const missing = await fetch(`${baseUrl}/v1/emails/missing/content`, { headers });
+    assert.equal(missing.status, 404);
   });
 
   it('returns status and account routing metadata without secrets', async () => {

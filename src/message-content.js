@@ -1,6 +1,6 @@
 // Do not mistake a plain-text email address such as <person@example.com> for
 // HTML. Restrict detection to tags that commonly occur in email bodies.
-const HTML_TAG_RE = /<\/?(?:html|body|div|p|br|span|table|tr|td|blockquote|a|ul|ol|li|hr)\b[^>]*>/i;
+const HTML_TAG_RE = /<\/?(?:html|head|body|style|script|div|p|br|span|table|thead|tbody|tr|th|td|blockquote|a|img|ul|ol|li|hr|h[1-6])\b[^>]*>/i;
 
 const HTML_QUOTE_MARKERS = [
   /<(?:div|blockquote)\b[^>]*(?:class|id)\s*=\s*["'][^"']*(?:gmail_quote|yahoo_quoted|moz-cite-prefix|divRplyFwdMsg)[^"']*["'][^>]*>/i,
@@ -67,7 +67,8 @@ function decodeHtmlEntities(value) {
   });
 }
 
-function htmlToText(value) {
+export function emailBodyToText(value) {
+  if (!HTML_TAG_RE.test(String(value || ''))) return normalizeWhitespace(value);
   return normalizeWhitespace(
     decodeHtmlEntities(
       String(value || '')
@@ -188,18 +189,18 @@ export function normalizeMessageContent(body, { fallback = '' } = {}) {
   let authoredHtml = quoteIndex >= 0 ? raw.slice(0, quoteIndex) : raw;
   const quotedHtml = quoteIndex >= 0 ? raw.slice(quoteIndex) : '';
   const signatureIndex = firstMarkerIndex(authoredHtml, HTML_SIGNATURE_MARKERS);
-  if (signatureIndex >= 0 && hasMeaningfulText(htmlToText(authoredHtml.slice(0, signatureIndex)))) {
+  if (signatureIndex >= 0 && hasMeaningfulText(emailBodyToText(authoredHtml.slice(0, signatureIndex)))) {
     authoredHtml = authoredHtml.slice(0, signatureIndex);
   }
 
-  const authored = splitPlainText(htmlToText(authoredHtml));
-  const htmlThreadContext = htmlToText(quotedHtml);
+  const authored = splitPlainText(emailBodyToText(authoredHtml));
+  const htmlThreadContext = emailBodyToText(quotedHtml);
   const latestContent = authored.latestContent;
   const threadContext = normalizeWhitespace([authored.threadContext, htmlThreadContext].filter(Boolean).join('\n\n'));
 
   if (!hasMeaningfulText(latestContent)) {
     return {
-      latestContent: htmlToText(raw),
+      latestContent: emailBodyToText(raw),
       threadContext: '',
       hadQuotedContent: false,
       sourceFormat,

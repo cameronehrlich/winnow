@@ -1,15 +1,14 @@
 import SwiftUI
-import UIKit
 
 struct EmailDetailView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.openURL) private var openURL
     let emailID: String
     @State private var confirmUnsubscribe = false
     @State private var confirmUndoHandling = false
     @State private var assistantComposerRequest: AssistantComposerRequest?
     @State private var editingRule: MailRule?
     @State private var showingCreateRule = false
+    @State private var showingFullEmail = false
 
     private var item: EmailItem? { model.email(id: emailID) }
 
@@ -60,7 +59,7 @@ struct EmailDetailView: View {
                         if item.unsubscribeState == "succeeded" {
                             InsightBlock(title: "Unsubscribed", symbol: "checkmark.circle.fill", text: "Winnow completed the unsubscribe request.", color: WinnowDesign.mint)
                         } else if item.unsubscribeState == "attempted" {
-                            InsightBlock(title: "Manual step needed", symbol: "envelope.badge", text: "This sender requires an email-based unsubscribe. Open the message in Gmail to finish.", color: WinnowDesign.amber)
+                            InsightBlock(title: "Manual step needed", symbol: "envelope.badge", text: "This sender requires an email-based unsubscribe that Winnow can’t complete automatically.", color: WinnowDesign.amber)
                         }
                     }
                 }
@@ -95,6 +94,14 @@ struct EmailDetailView: View {
                 .sheet(isPresented: $showingCreateRule) {
                     CreateRuleFromEmailView(item: item)
                         .environmentObject(model)
+                }
+                .sheet(isPresented: $showingFullEmail) {
+                    FullEmailView(
+                        configuration: model.configuration,
+                        emailID: item.id,
+                        fallbackSubject: item.subject,
+                        account: item.account
+                    )
                 }
             } else {
                 ContentUnavailableView("Email unavailable", systemImage: "envelope.badge")
@@ -167,16 +174,6 @@ struct EmailDetailView: View {
         .winnowCard()
     }
 
-    private func openInGmail(_ item: EmailItem) {
-        let accountID = model.account(email: item.account)?.gmailAppAccountId
-        if UIApplication.shared.canOpenURL(GmailDestination.nativeAppURL),
-           let nativeURL = item.nativeGmailURL(accountID: accountID) {
-            openURL(nativeURL)
-        } else if let webURL = item.gmailURL {
-            openURL(webURL)
-        }
-    }
-
     @ViewBuilder
     private func detailsCard(_ item: EmailItem) -> some View {
         let rows = detailRows(item)
@@ -227,14 +224,14 @@ struct EmailDetailView: View {
                 .tint(WinnowDesign.indigo)
             }
 
-            if item.gmailDestination != nil, item.canUnsubscribe {
+            if item.canLoadFullContent, item.canUnsubscribe {
                 AdaptiveActionPair {
-                    gmailButton(item)
+                    fullEmailButton(item)
                 } trailing: {
                     unsubscribeButton
                 }
-            } else if item.gmailDestination != nil {
-                gmailButton(item)
+            } else if item.canLoadFullContent {
+                fullEmailButton(item)
             } else if item.canUnsubscribe {
                 unsubscribeButton
             }
@@ -254,13 +251,13 @@ struct EmailDetailView: View {
         .disabled(model.performingEmailIDs.contains(item.id))
     }
 
-    private func gmailButton(_ item: EmailItem) -> some View {
-        Button { openInGmail(item) } label: {
-            DetailActionLabel(title: "Open in Gmail", symbol: "envelope.open.fill")
+    private func fullEmailButton(_ item: EmailItem) -> some View {
+        Button { showingFullEmail = true } label: {
+            DetailActionLabel(title: "View Full Email", symbol: "doc.text.magnifyingglass")
         }
         .buttonStyle(.bordered)
         .tint(WinnowDesign.indigo)
-        .accessibilityHint("Opens this conversation in the \(item.account) Gmail account.")
+        .accessibilityHint("Loads this conversation securely from the \(item.account) Gmail account.")
     }
 
     private var unsubscribeButton: some View {
@@ -691,6 +688,149 @@ private struct InsightBlock: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .winnowCard()
+    }
+}
+
+private struct FullEmailView: View {
+    @Environment(\.dismiss) private var dismiss
+    let configuration: ServerConfiguration
+    let emailID: String
+    let fallbackSubject: String
+    let account: String
+
+    @State private var content: EmailContent?
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                AppBackdrop()
+                Group {
+                    if let content {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 14) {
+                                conversationHeader(content)
+                                ForEach(Array(content.messages.enumerated()), id: \.element.id) { index, message in
+                                    messageCard(message, index: index, count: content.messages.count)
+                                }
+                                if content.truncated {
+                                    Label("This unusually long conversation was shortened for display.", systemImage: "scissors")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .winnowCard(padding: 14)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                        }
+                    } else if isLoading {
+                        VStack(spacing: 12) {
+                            ProgressView()
+                            Text("Loading from Gmail…")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ContentUnavailableView {
+                            Label("Email unavailable", systemImage: "exclamationmark.triangle")
+                        } description: {
+                            Text(errorMessage ?? "Winnow couldn’t load this message from Gmail.")
+                        } actions: {
+                            Button("Try Again") { Task { await load() } }
+                                .buttonStyle(.borderedProminent)
+                                .tint(WinnowDesign.indigo)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Full Email")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task(id: emailID) { await load() }
+        }
+    }
+
+    private func conversationHeader(_ content: EmailContent) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(content.subject.isEmpty ? fallbackSubject : content.subject)
+                .font(.title2.bold())
+                .fixedSize(horizontal: false, vertical: true)
+            Label(content.account.isEmpty ? account : content.account, systemImage: "person.crop.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if content.messages.count > 1 {
+                Text("\(content.messages.count) messages")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(WinnowDesign.indigo)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .winnowCard()
+    }
+
+    private func messageCard(_ message: FullEmailMessage, index: Int, count: Int) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(message.from.isEmpty ? "Unknown sender" : message.from)
+                    .font(.headline)
+                    .lineLimit(2)
+                Spacer(minLength: 8)
+                if count > 1 {
+                    Text("\(index + 1) of \(count)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                if !message.to.isEmpty { metadataLine("To", message.to) }
+                if !message.cc.isEmpty { metadataLine("Cc", message.cc) }
+                if !message.date.isEmpty { metadataLine("Date", message.date) }
+            }
+
+            Divider()
+
+            if message.body.isEmpty {
+                Text("This message has no displayable text body.")
+                    .italic()
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(message.body)
+                    .font(.body)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .winnowCard()
+    }
+
+    private func metadataLine(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 5) {
+            Text("\(label):")
+                .foregroundStyle(.tertiary)
+            Text(value)
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
+    }
+
+    @MainActor
+    private func load() async {
+        isLoading = true
+        errorMessage = nil
+        do {
+            content = try await APIClient(configuration: configuration).emailContent(emailID: emailID)
+        } catch {
+            content = nil
+            errorMessage = error.localizedDescription
+        }
+        isLoading = false
     }
 }
 

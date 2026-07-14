@@ -99,6 +99,15 @@ struct APIClient: AssistantService {
         return try await request(path: "/v1/emails", queryItems: query)
     }
 
+    func emailContent(emailID: String) async throws -> EmailContent {
+        let encodedID = emailID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? emailID
+        let response: EmailContentEnvelope = try await request(
+            path: "/v1/emails/\(encodedID)/content",
+            timeoutInterval: 30
+        )
+        return response.content
+    }
+
     func dailySummary(account: String = "") async throws -> DailySummary {
         let query = account.isEmpty ? [] : [URLQueryItem(name: "account", value: account)]
         return try await request(path: "/v1/summaries/daily", queryItems: query)

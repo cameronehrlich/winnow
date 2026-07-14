@@ -9,6 +9,7 @@ import { followUnsubscribeLink } from './slack-actions.js';
 import { handleMcpMessage } from './mcp.js';
 import { getRuntimeStatus, listAccountStatus } from './status.js';
 import { getPushCapabilities } from './push.js';
+import { fetchEmailContent } from './email-content.js';
 import { SemanticPreviewError } from './semantic-rule-preview.js';
 import {
   disableUserRule,
@@ -506,6 +507,23 @@ async function handleAuthed(req, res, url, dependencies = {}) {
     const item = getEmailItem(emailMatch.id);
     if (!item) sendJson(res, 404, { error: 'email_not_found' });
     else sendJson(res, 200, { item: mobileEmailItem(item) });
+    return;
+  }
+
+  const emailContentMatch = route(url.pathname, '/v1/emails/:id/content');
+  if (req.method === 'GET' && emailContentMatch) {
+    const item = getEmailItem(emailContentMatch.id);
+    if (!item) {
+      sendJson(res, 404, { error: 'email_not_found' });
+      return;
+    }
+    try {
+      const getContent = dependencies.fetchEmailContent || fetchEmailContent;
+      sendJson(res, 200, { content: await getContent(item) });
+    } catch (err) {
+      console.error(`[winnow/api] email content fetch failed for ${item.id}: ${err.message}`);
+      sendJson(res, 502, { error: 'email_content_unavailable' });
+    }
     return;
   }
 

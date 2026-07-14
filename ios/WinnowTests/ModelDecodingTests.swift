@@ -20,16 +20,16 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(item.subject, "Hello")
         XCTAssertTrue(item.isUnread)
         XCTAssertEqual(item.meaningfulAction, "Reply")
-        XCTAssertEqual(item.gmailURL?.host, "mail.google.com")
-        XCTAssertTrue(item.gmailURL?.absoluteString.contains("authuser=me@example.com") == true)
-        XCTAssertEqual(item.gmailDestination?.accountHint, "me@example.com")
-        XCTAssertEqual(GmailDestination.nativeAppURL.scheme, "googlegmail")
+        XCTAssertTrue(item.canLoadFullContent)
         XCTAssertNil(item.handlingDecision)
         XCTAssertNil(item.undoAction)
-        XCTAssertEqual(
-            item.nativeGmailURL(accountID: 2)?.absoluteString,
-            "googlegmail:///cv=t1/accountId=2"
-        )
+    }
+
+    func testFullEmailContentDecodes() throws {
+        let json = #"{"emailItemId":"abc","account":"me@example.com","threadId":"t1","subject":"Hello","messages":[{"id":"m1","from":"Sender","to":"Me","cc":"","subject":"Hello","date":"Today","body":"Complete body"}],"truncated":false,"fetchedAt":"2026-07-13T12:00:00.000Z"}"#.data(using: .utf8)!
+        let content = try JSONDecoder().decode(EmailContent.self, from: json)
+        XCTAssertEqual(content.messages.first?.body, "Complete body")
+        XCTAssertFalse(content.truncated)
     }
 
     func testEmailDecodesTypedHandlingDecisionAndRuleAttribution() throws {
