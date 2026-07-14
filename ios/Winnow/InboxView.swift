@@ -270,8 +270,8 @@ struct EmailCard: View {
                 VStack {
                     Spacer(minLength: 0)
                     Image(systemName: item.isConversation ? "chevron.right.circle" : "chevron.right")
-                        .font(.system(size: item.isConversation ? 20 : 13, weight: .semibold))
-                        .foregroundStyle(item.isConversation ? WinnowDesign.accent : Color(.tertiaryLabel))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color(.tertiaryLabel))
                         .frame(width: 20, alignment: .trailing)
                         .accessibilityHidden(true)
                     Spacer(minLength: 0)
