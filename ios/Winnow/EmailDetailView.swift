@@ -1,6 +1,7 @@
 import Foundation
 import QuickLook
 import SwiftUI
+import WebKit
 
 struct EmailDetailView: View {
     @Environment(\.dismiss) private var dismiss
@@ -1181,6 +1182,7 @@ private struct FullEmailView: View {
     @State private var content: EmailContent?
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var displayMode: FullEmailDisplayMode = .plain
 
     var body: some View {
         NavigationStack {
@@ -1191,6 +1193,9 @@ private struct FullEmailView: View {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 14) {
                                 conversationHeader(content)
+                                if content.messages.contains(where: \.hasHTMLBody) {
+                                    emailFormatControl
+                                }
                                 let messages = content.messagesForDisplay
                                 ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
                                     FullEmailMessageCard(
@@ -1198,7 +1203,8 @@ private struct FullEmailView: View {
                                         position: index,
                                         count: messages.count,
                                         isSelectedMessage: message.id == content.focusedMessageId,
-                                        initiallyExpanded: index == 0
+                                        initiallyExpanded: index == 0,
+                                        displayMode: displayMode
                                     )
                                 }
                                 if content.truncated {
@@ -1243,6 +1249,26 @@ private struct FullEmailView: View {
         }
     }
 
+    private var emailFormatControl: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Email format", selection: $displayMode) {
+                ForEach(FullEmailDisplayMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityLabel("Email display format")
+
+            if displayMode == .html {
+                Label("Remote and attachment-backed images stay hidden for privacy.", systemImage: "hand.raised")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .winnowCard(padding: 12)
+    }
+
     private func conversationHeader(_ content: EmailContent) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(content.subject.isEmpty ? fallbackSubject : content.subject)
@@ -1280,19 +1306,23 @@ private struct FullEmailMessageCard: View {
     let position: Int
     let count: Int
     let isSelectedMessage: Bool
+    let displayMode: FullEmailDisplayMode
     @State private var isExpanded: Bool
+    @State private var htmlHeight: CGFloat = 180
 
     init(
         message: FullEmailMessage,
         position: Int,
         count: Int,
         isSelectedMessage: Bool,
-        initiallyExpanded: Bool
+        initiallyExpanded: Bool,
+        displayMode: FullEmailDisplayMode = .plain
     ) {
         self.message = message
         self.position = position
         self.count = count
         self.isSelectedMessage = isSelectedMessage
+        self.displayMode = displayMode
         _isExpanded = State(initialValue: initiallyExpanded)
     }
 
@@ -1350,7 +1380,12 @@ private struct FullEmailMessageCard: View {
                 if !message.cc.isEmpty { metadataLine("Cc", message.cc) }
             }
             Divider()
-            if message.body.isEmpty {
+            if displayMode == .html, message.hasHTMLBody {
+                SafeEmailHTMLView(html: message.htmlBody, contentHeight: $htmlHeight)
+                    .frame(height: htmlHeight)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityLabel("HTML email body")
+            } else if message.body.isEmpty {
                 Text("This message has no displayable text body.")
                     .italic()
                     .foregroundStyle(.secondary)
@@ -1372,6 +1407,119 @@ private struct FullEmailMessageCard: View {
                 .tint(WinnowDesign.accent)
         }
         .font(.caption)
+    }
+}
+
+private enum FullEmailDisplayMode: String, CaseIterable, Identifiable {
+    case plain
+    case html
+
+    var id: String { rawValue }
+    var title: String { self == .plain ? "Plain" : "HTML" }
+}
+
+enum SafeEmailHTML {
+    static let contentSecurityPolicy = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'"
+
+    static func document(for source: String) -> String {
+        """
+        <!doctype html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">
+            <meta http-equiv="Content-Security-Policy" content="\(contentSecurityPolicy)">
+            <style>
+              :root { color-scheme: light dark; }
+              html, body { margin: 0; padding: 0; background: transparent; }
+              body {
+                color: #1c1c1e;
+                font: -apple-system-body;
+                overflow-wrap: anywhere;
+                word-break: normal;
+              }
+              img, video, table { max-width: 100% !important; }
+              img { height: auto !important; }
+              img:not([src^="data:" i]) { display: none !important; }
+              pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+              a { color: #6657e8; }
+              @media (prefers-color-scheme: dark) {
+                body { color: #f2f2f7; }
+                a { color: #9b8cff; }
+              }
+            </style>
+          </head>
+          <body>\(source)</body>
+        </html>
+        """
+    }
+}
+
+private struct SafeEmailHTMLView: UIViewRepresentable {
+    let html: String
+    @Binding var contentHeight: CGFloat
+
+    private static let maximumHeight: CGFloat = 12_000
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(contentHeight: $contentHeight)
+    }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        configuration.allowsAirPlayForMediaPlayback = false
+        configuration.mediaTypesRequiringUserActionForPlayback = .all
+
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = context.coordinator
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        webView.scrollView.isScrollEnabled = false
+        context.coordinator.observeContentSize(of: webView)
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        guard context.coordinator.loadedHTML != html else { return }
+        context.coordinator.loadedHTML = html
+        webView.loadHTMLString(SafeEmailHTML.document(for: html), baseURL: nil)
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        @Binding private var contentHeight: CGFloat
+        var loadedHTML = ""
+        private var contentSizeObservation: NSKeyValueObservation?
+
+        init(contentHeight: Binding<CGFloat>) {
+            _contentHeight = contentHeight
+        }
+
+        func observeContentSize(of webView: WKWebView) {
+            contentSizeObservation = webView.scrollView.observe(\.contentSize, options: [.new]) { [weak self, weak webView] _, change in
+                guard let self, let webView, let measuredHeight = change.newValue?.height,
+                      measuredHeight.isFinite, measuredHeight > 0 else { return }
+                let boundedHeight = min(max(measuredHeight, 120), SafeEmailHTMLView.maximumHeight)
+                DispatchQueue.main.async {
+                    self.contentHeight = boundedHeight
+                    webView.scrollView.isScrollEnabled = measuredHeight > SafeEmailHTMLView.maximumHeight
+                }
+            }
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            let isInitialDocument = navigationAction.navigationType == .other
+                && navigationAction.targetFrame?.isMainFrame == true
+                && navigationAction.request.url?.scheme == "about"
+            decisionHandler(isInitialDocument ? .allow : .cancel)
+        }
     }
 }
 

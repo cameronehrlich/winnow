@@ -107,6 +107,24 @@ describe('GogAdapter assistant primitives', () => {
     assert.equal(thread.messages[0].from, 'sender@example.com');
   });
 
+  it('preserves a separately bounded HTML alternative for on-demand rendering', async () => {
+    const plain = Buffer.from('Readable fallback').toString('base64url');
+    const html = Buffer.from('<html><body><strong>Formatted body</strong></body></html>').toString('base64url');
+    const message = normalizeGogMessage({
+      id: 'message1',
+      payload: {
+        mimeType: 'multipart/alternative',
+        parts: [
+          { mimeType: 'text/plain', body: { data: plain } },
+          { mimeType: 'text/html', body: { data: html } },
+        ],
+      },
+    });
+
+    assert.equal(message.body, 'Readable fallback');
+    assert.equal(message.htmlBody, '<html><body><strong>Formatted body</strong></body></html>');
+  });
+
   it('preserves bounded canonical attachment metadata from nested MIME parts', () => {
     const attachmentId = 'a'.repeat(600);
     const message = normalizeGogMessage({

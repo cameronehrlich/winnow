@@ -10,6 +10,8 @@ import { emailBodyToText } from './message-content.js';
 const MAX_MESSAGES = 100;
 const MAX_MESSAGE_CHARS = 100_000;
 const MAX_TOTAL_CHARS = 200_000;
+const MAX_HTML_MESSAGE_CHARS = 500_000;
+const MAX_TOTAL_HTML_CHARS = 1_500_000;
 
 function bounded(value, max) {
   return String(value || '').slice(0, Math.max(0, max));
@@ -21,6 +23,13 @@ function displayBody(message, budget) {
   const raw = bounded(source, limit);
   const body = bounded(emailBodyToText(raw), limit);
   return { body, truncated: source.length > raw.length };
+}
+
+function displayHtmlBody(message, budget) {
+  const source = String(message?.htmlBody || '');
+  const limit = Math.min(MAX_HTML_MESSAGE_CHARS, budget);
+  const htmlBody = bounded(source, limit);
+  return { htmlBody, truncated: source.length > htmlBody.length };
 }
 
 export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {}) {
@@ -41,14 +50,18 @@ export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {
   }
 
   let budget = MAX_TOTAL_CHARS;
+  let htmlBudget = MAX_TOTAL_HTML_CHARS;
   let truncated = false;
   const normalized = (Array.isArray(messages) ? messages : [])
     .slice(0, MAX_MESSAGES)
     .map(message => {
       const displayed = displayBody(message, budget);
+      const displayedHtml = displayHtmlBody(message, htmlBudget);
       const body = displayed.body;
-      truncated ||= displayed.truncated;
+      const htmlBody = displayedHtml.htmlBody;
+      truncated ||= displayed.truncated || displayedHtml.truncated;
       budget = Math.max(0, budget - body.length);
+      htmlBudget = Math.max(0, htmlBudget - htmlBody.length);
       return {
         id: bounded(message?.id || message?.messageId, 256),
         from: bounded(message?.from, 2_000),
@@ -57,6 +70,7 @@ export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {
         subject: bounded(message?.subject || item.subject, 2_000),
         date: bounded(message?.date, 200),
         body,
+        htmlBody,
       };
     })
     .filter(message => message.id || message.body);
@@ -71,7 +85,7 @@ export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {
     subject: item.subject || normalized[0].subject,
     messages: normalized,
     attachments,
-    truncated: truncated || budget === 0 || messages.length > MAX_MESSAGES,
+    truncated: truncated || budget === 0 || htmlBudget === 0 || messages.length > MAX_MESSAGES,
     fetchedAt: new Date().toISOString(),
   };
 }

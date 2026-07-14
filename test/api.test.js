@@ -81,6 +81,7 @@ api:
         subject: item.subject,
         date: 'Sun, 29 Jun 2026 09:00:00 -0700',
         body: 'This is the complete message body.',
+        htmlBody: '<p>This is the <strong>complete</strong> message body.</p>',
       }],
       truncated: false,
       fetchedAt: '2026-06-29T16:01:00.000Z',
@@ -231,6 +232,7 @@ describe('local API', () => {
     assert.equal(body.content.messages.length, 1);
     assert.equal(body.content.focusedMessageId, 'm1');
     assert.equal(body.content.messages[0].body, 'This is the complete message body.');
+    assert.equal(body.content.messages[0].htmlBody, '<p>This is the <strong>complete</strong> message body.</p>');
 
     const missing = await fetch(`${baseUrl}/v1/emails/missing/content`, { headers });
     assert.equal(missing.status, 404);

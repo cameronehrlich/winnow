@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { fetchEmailAttachment, fetchEmailAttachments, fetchEmailContent } from '../src/email-content.js';
 
 describe('on-demand email content', () => {
-  it('loads the exact account thread and converts HTML-only mail to readable text', async () => {
+  it('loads the exact account thread and returns plain and HTML bodies separately', async () => {
     const calls = [];
     const adapter = {
       async getThread(account, threadId) {
@@ -16,6 +16,7 @@ describe('on-demand email content', () => {
             subject: 'Payment failed',
             date: 'Sun, 13 Jul 2026 15:42:00 -0700',
             body: '<html><body><h1>Payment failed</h1><p>Update card ending in 2171.</p></body></html>',
+            htmlBody: '<html><body><h1>Payment failed</h1><p>Update card ending in 2171.</p></body></html>',
           }],
         };
       },
@@ -28,6 +29,7 @@ describe('on-demand email content', () => {
     assert.deepEqual(calls, [{ account: 'me@example.com', threadId: 't1' }]);
     assert.equal(content.focusedMessageId, 'm1');
     assert.equal(content.messages[0].body, 'Payment failed\nUpdate card ending in 2171.');
+    assert.equal(content.messages[0].htmlBody, '<html><body><h1>Payment failed</h1><p>Update card ending in 2171.</p></body></html>');
     assert.equal(content.truncated, false);
   });
 

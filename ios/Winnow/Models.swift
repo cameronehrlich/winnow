@@ -59,6 +59,25 @@ struct FullEmailMessage: Decodable, Equatable, Identifiable {
     let subject: String
     let date: String
     let body: String
+    let htmlBody: String
+
+    var hasHTMLBody: Bool { !htmlBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, from, to, cc, subject, date, body, htmlBody
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(String.self, forKey: .id) ?? ""
+        from = try values.decodeIfPresent(String.self, forKey: .from) ?? ""
+        to = try values.decodeIfPresent(String.self, forKey: .to) ?? ""
+        cc = try values.decodeIfPresent(String.self, forKey: .cc) ?? ""
+        subject = try values.decodeIfPresent(String.self, forKey: .subject) ?? ""
+        date = try values.decodeIfPresent(String.self, forKey: .date) ?? ""
+        body = try values.decodeIfPresent(String.self, forKey: .body) ?? ""
+        htmlBody = try values.decodeIfPresent(String.self, forKey: .htmlBody) ?? ""
+    }
 }
 
 struct EmailAttachment: Decodable, Equatable, Identifiable {

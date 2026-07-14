@@ -183,12 +183,32 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testFullEmailContentDecodes() throws {
-        let json = #"{"emailItemId":"abc","account":"me@example.com","threadId":"t1","focusedMessageId":"m1","subject":"Hello","messages":[{"id":"m1","from":"Sender","to":"Me","cc":"","subject":"Hello","date":"Today","body":"Complete body"}],"truncated":false,"fetchedAt":"2026-07-13T12:00:00.000Z"}"#.data(using: .utf8)!
+        let json = #"{"emailItemId":"abc","account":"me@example.com","threadId":"t1","focusedMessageId":"m1","subject":"Hello","messages":[{"id":"m1","from":"Sender","to":"Me","cc":"","subject":"Hello","date":"Today","body":"Complete body","htmlBody":"<p>Complete <strong>body</strong></p>"}],"truncated":false,"fetchedAt":"2026-07-13T12:00:00.000Z"}"#.data(using: .utf8)!
         let content = try JSONDecoder().decode(EmailContent.self, from: json)
         XCTAssertEqual(content.focusedMessageId, "m1")
         XCTAssertEqual(content.messages.first?.body, "Complete body")
+        XCTAssertEqual(content.messages.first?.htmlBody, "<p>Complete <strong>body</strong></p>")
+        XCTAssertEqual(content.messages.first?.hasHTMLBody, true)
         XCTAssertTrue(content.attachments.isEmpty)
         XCTAssertFalse(content.truncated)
+    }
+
+    func testFullEmailContentDefaultsMissingHTMLBodyToEmpty() throws {
+        let json = #"{"emailItemId":"abc","messages":[{"id":"m1","body":"Plain only"}]}"#.data(using: .utf8)!
+        let content = try JSONDecoder().decode(EmailContent.self, from: json)
+
+        XCTAssertEqual(content.messages.first?.htmlBody, "")
+        XCTAssertEqual(content.messages.first?.hasHTMLBody, false)
+    }
+
+    func testSafeEmailHTMLDocumentLocksDownActiveAndRemoteContent() {
+        let document = SafeEmailHTML.document(for: "<script>window.bad = true</script><img src='https://tracker.example/pixel'>")
+
+        XCTAssertTrue(document.contains("default-src 'none'"))
+        XCTAssertTrue(document.contains("connect-src 'none'"))
+        XCTAssertTrue(document.contains("form-action 'none'"))
+        XCTAssertTrue(document.contains("img:not([src^=\"data:\" i])"))
+        XCTAssertTrue(document.contains("<script>window.bad = true</script>"))
     }
 
     func testFullEmailContentDecodesThreadAttachments() throws {

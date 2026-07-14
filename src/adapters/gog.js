@@ -15,9 +15,11 @@ const EXEC_OPTIONS = {
 };
 const MAX_QUERY_LENGTH = 4096;
 const MAX_BODY_LENGTH = 100_000;
+const MAX_HTML_BODY_LENGTH = 500_000;
 const MAX_NOTE_LENGTH = 20_000;
 const MAX_THREAD_MESSAGES = 100;
 const MAX_THREAD_BODY_LENGTH = 500_000;
+const MAX_THREAD_HTML_BODY_LENGTH = 1_500_000;
 const MAX_RECIPIENTS = 50;
 const MAX_SYNC_RESULTS = 500;
 
@@ -92,10 +94,12 @@ function headersFrom(value) {
   return {};
 }
 
-function decodeBase64Url(value) {
-  if (typeof value !== 'string' || !value || value.length > MAX_BODY_LENGTH * 2) return '';
+function decodeBase64Url(value, maxLength = MAX_BODY_LENGTH) {
+  if (typeof value !== 'string' || !value || value.length > maxLength * 2) return '';
   try {
-    return Buffer.from(value.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    return Buffer.from(value.replace(/-/g, '+').replace(/_/g, '/'), 'base64')
+      .toString('utf8')
+      .slice(0, maxLength);
   } catch {
     return '';
   }
@@ -117,6 +121,20 @@ function bodyFromPayload(payload, depth = 0) {
   return '';
 }
 
+function mimeBodyFromPayload(payload, targetMimeType, maxLength, depth = 0) {
+  if (!payload || typeof payload !== 'object' || depth > 20) return '';
+  const mimeType = String(payload.mimeType || '').toLowerCase();
+  if (mimeType === targetMimeType) {
+    const direct = decodeBase64Url(payload.body?.data, maxLength);
+    if (direct) return direct;
+  }
+  for (const part of Array.isArray(payload.parts) ? payload.parts.slice(0, 100) : []) {
+    const body = mimeBodyFromPayload(part, targetMimeType, maxLength, depth + 1);
+    if (body) return body;
+  }
+  return '';
+}
+
 function extractBody(value) {
   const candidates = [
     value?.body,
@@ -130,7 +148,22 @@ function extractBody(value) {
   return found.slice(0, MAX_BODY_LENGTH);
 }
 
-export function normalizeGogMessage(message, { includeBody = true, bodyLimit = MAX_BODY_LENGTH } = {}) {
+function extractHtmlBody(value, maxLength = MAX_HTML_BODY_LENGTH) {
+  const candidates = [
+    value?.htmlBody,
+    value?.html,
+    mimeBodyFromPayload(value?.payload, 'text/html', maxLength),
+    mimeBodyFromPayload(value?.message?.payload, 'text/html', maxLength),
+  ];
+  const found = candidates.find(candidate => typeof candidate === 'string' && candidate.length > 0) || '';
+  return found.slice(0, maxLength);
+}
+
+export function normalizeGogMessage(message, {
+  includeBody = true,
+  bodyLimit = MAX_BODY_LENGTH,
+  htmlBodyLimit = MAX_HTML_BODY_LENGTH,
+} = {}) {
   // `gog gmail get` wraps the Gmail resource in `message` while keeping its
   // normalized body and headers at the top level. Merge both shapes so exact-
   // message fallbacks do not accidentally discard the readable body.
@@ -140,6 +173,7 @@ export function normalizeGogMessage(message, { includeBody = true, bodyLimit = M
   const headers = headersFrom(value || {});
   const id = String(value?.id || value?.Id || '');
   const body = includeBody ? extractBody(value).slice(0, Math.max(0, bodyLimit)) : '';
+  const htmlBody = includeBody ? extractHtmlBody(value, Math.max(0, htmlBodyLimit)) : '';
   const labels = value?.labelIds || value?.LabelIds || value?.labels || value?.Labels;
 
   return {
@@ -159,6 +193,7 @@ export function normalizeGogMessage(message, { includeBody = true, bodyLimit = M
     internalDate: String(value?.internalDate || value?.InternalDate || ''),
     headers,
     body,
+    ...(includeBody ? { htmlBody } : {}),
     attachments: collectMessageAttachments(value),
   };
 }
@@ -278,11 +313,16 @@ export class GogAdapter extends GmailAdapter {
     const thread = data?.thread || data?.Thread || data || {};
     const rawMessages = Array.isArray(thread) ? thread : (thread.messages || thread.Messages || []);
     let bodyBudget = MAX_THREAD_BODY_LENGTH;
+    let htmlBodyBudget = MAX_THREAD_HTML_BODY_LENGTH;
     const messages = (Array.isArray(rawMessages) ? rawMessages : [])
       .slice(0, MAX_THREAD_MESSAGES)
       .map(message => {
-        const normalized = normalizeGogMessage(message, { bodyLimit: bodyBudget });
+        const normalized = normalizeGogMessage(message, {
+          bodyLimit: bodyBudget,
+          htmlBodyLimit: htmlBodyBudget,
+        });
         bodyBudget = Math.max(0, bodyBudget - normalized.body.length);
+        htmlBodyBudget = Math.max(0, htmlBodyBudget - normalized.htmlBody.length);
         return normalized;
       });
     return {
