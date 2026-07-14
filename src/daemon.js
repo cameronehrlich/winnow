@@ -5,6 +5,7 @@ import { startApiServer } from './api.js';
 import { reconcileMailbox } from './reconcile.js';
 import { syncGmailMailbox } from './gmail-sync.js';
 import { ensureStore } from './store.js';
+import { sendBadgeSync } from './push.js';
 
 const DEFAULT_SCAN_INTERVAL_SEC = 30;
 const DEFAULT_RECONCILE_INTERVAL_SEC = 300;
@@ -32,6 +33,7 @@ async function runScanCycle(accounts, searchQuery) {
 }
 
 async function runReconcileCycle(accounts) {
+  let badgeMayHaveChanged = false;
   for (const account of accounts) {
     try {
       const syncResult = await syncGmailMailbox(account);
@@ -41,6 +43,7 @@ async function runReconcileCycle(accounts) {
           + `${syncResult.imported} imported, ${syncResult.classified} classified, ${syncResult.changed} updated`,
         );
       }
+      badgeMayHaveChanged ||= syncResult.changed > 0;
     } catch (err) {
       console.error(`[winnow/daemon] Gmail sync error (${account}): ${err.message}`);
     }
@@ -54,11 +57,13 @@ async function runReconcileCycle(accounts) {
       const result = await reconcileMailbox({ account, days: 7, limit: 100 });
       if (result.changed > 0) {
         console.log(`[winnow/daemon] Reconciled ${result.changed}/${result.checked} mailbox state changes for ${account}`);
+        badgeMayHaveChanged = true;
       }
     } catch (err) {
       console.error(`[winnow/daemon] Reconcile error (${account}): ${err.message}`);
     }
   }
+  if (badgeMayHaveChanged) await sendBadgeSync();
 }
 
 function startSlackActionsInBackground() {

@@ -540,6 +540,7 @@ struct LatestEvent: Decodable, Equatable {
 struct ActionResponse: Decodable {
     let ok: Bool
     let action: String?
+    let badge: Int?
     let item: EmailItem?
     let outcome: String?
     let requiresManualAction: Bool?

@@ -9,6 +9,7 @@ struct EmailDetailView: View {
     let emailID: String
     @State private var confirmUnsubscribe = false
     @State private var assistantComposerRequest: AssistantComposerRequest?
+    @State private var assistantFocusRequest: UUID?
     @State private var editingRule: MailRule?
     @State private var showingCreateRule = false
     @State private var showingFullEmail = false
@@ -30,6 +31,7 @@ struct EmailDetailView: View {
                     emailItemID: item.id,
                     contextTitle: item.displaySubject ?? "No subject",
                     composerRequest: $assistantComposerRequest,
+                    focusComposerRequest: $assistantFocusRequest,
                     onMailboxChanged: { await model.refresh(silent: true) }
                 ) {
                     VStack(spacing: 16) {
@@ -117,10 +119,14 @@ struct EmailDetailView: View {
         }
         .task(id: emailID) {
             guard let item = model.email(id: emailID) else { return }
+            focusConversationIfRequested()
             await model.markReadWhenOpened(item)
             if item.handlingDecision?.appliedRule != nil {
                 await model.loadMailRules(showsError: false)
             }
+        }
+        .onChange(of: model.conversationFocusRequest) { _, _ in
+            focusConversationIfRequested()
         }
         .task(id: "attachments-\(emailID)") {
             fetchedAttachments = nil
@@ -133,6 +139,12 @@ struct EmailDetailView: View {
                 AttachmentPreviewFile.remove(attachmentPreviewURL)
             }
         }
+    }
+
+    private func focusConversationIfRequested() {
+        guard let request = model.conversationFocusRequest, request.emailID == emailID else { return }
+        assistantFocusRequest = request.id
+        model.consumeConversationFocus(request)
     }
 
     private func undoConfirmationTitle(for item: EmailItem) -> String {

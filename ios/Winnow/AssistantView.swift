@@ -109,6 +109,7 @@ struct EmailAssistantThreadView<DetailContent: View>: View {
     private let contextTitle: String?
     private let onMailboxChanged: () async -> Void
     @Binding private var composerRequest: AssistantComposerRequest?
+    @Binding private var focusComposerRequest: UUID?
     private let detailContent: DetailContent
 
     init(
@@ -118,6 +119,7 @@ struct EmailAssistantThreadView<DetailContent: View>: View {
         emailItemID: String,
         contextTitle: String?,
         composerRequest: Binding<AssistantComposerRequest?> = .constant(nil),
+        focusComposerRequest: Binding<UUID?> = .constant(nil),
         onMailboxChanged: @escaping () async -> Void,
         @ViewBuilder detailContent: () -> DetailContent
     ) {
@@ -127,6 +129,7 @@ struct EmailAssistantThreadView<DetailContent: View>: View {
         self.emailItemID = emailItemID
         self.contextTitle = contextTitle
         _composerRequest = composerRequest
+        _focusComposerRequest = focusComposerRequest
         self.onMailboxChanged = onMailboxChanged
         self.detailContent = detailContent()
     }
@@ -141,6 +144,7 @@ struct EmailAssistantThreadView<DetailContent: View>: View {
             presentation: .inlineEmail,
             accountStatus: accountStatus,
             composerRequest: $composerRequest,
+            focusComposerRequest: $focusComposerRequest,
             onMailboxChanged: onMailboxChanged
         ) {
             detailContent
@@ -162,6 +166,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
     private let presentation: AssistantPresentation
     private let accountStatus: AccountStatus?
     @Binding private var composerRequest: AssistantComposerRequest?
+    @Binding private var focusComposerRequest: UUID?
     private let onMailboxChanged: () async -> Void
     private let leadingContent: LeadingContent
 
@@ -174,6 +179,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
         presentation: AssistantPresentation,
         accountStatus: AccountStatus? = nil,
         composerRequest: Binding<AssistantComposerRequest?> = .constant(nil),
+        focusComposerRequest: Binding<UUID?> = .constant(nil),
         onMailboxChanged: @escaping () async -> Void,
         @ViewBuilder leadingContent: () -> LeadingContent
     ) {
@@ -187,6 +193,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
         self.presentation = presentation
         self.accountStatus = accountStatus
         _composerRequest = composerRequest
+        _focusComposerRequest = focusComposerRequest
         self.onMailboxChanged = onMailboxChanged
         self.leadingContent = leadingContent()
     }
@@ -198,6 +205,7 @@ private struct AssistantConversationHost<LeadingContent: View>: View {
             presentation: presentation,
             accountStatus: accountStatus,
             composerRequest: $composerRequest,
+            focusComposerRequest: $focusComposerRequest,
             onMailboxChanged: onMailboxChanged
         ) {
             leadingContent
@@ -217,6 +225,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
     let presentation: AssistantPresentation
     let accountStatus: AccountStatus?
     @Binding var composerRequest: AssistantComposerRequest?
+    @Binding var focusComposerRequest: UUID?
     let onMailboxChanged: () async -> Void
     let leadingContent: LeadingContent
 
@@ -226,6 +235,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         presentation: AssistantPresentation,
         accountStatus: AccountStatus? = nil,
         composerRequest: Binding<AssistantComposerRequest?> = .constant(nil),
+        focusComposerRequest: Binding<UUID?> = .constant(nil),
         onMailboxChanged: @escaping () async -> Void,
         @ViewBuilder leadingContent: () -> LeadingContent
     ) {
@@ -234,6 +244,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         self.presentation = presentation
         self.accountStatus = accountStatus
         _composerRequest = composerRequest
+        _focusComposerRequest = focusComposerRequest
         self.onMailboxChanged = onMailboxChanged
         self.leadingContent = leadingContent()
     }
@@ -331,6 +342,16 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
             // keyboard appears reliably when Ask Winnow opens from the tab bar.
             try? await Task.sleep(for: .milliseconds(350))
             composerFocused = true
+        }
+        .task(id: focusComposerRequest) {
+            guard presentation == .inlineEmail, let request = focusComposerRequest else { return }
+            inlineThreadActivated = true
+            // Let navigation and restored conversation layout settle before
+            // focusing; the focus observer then scrolls to the composer.
+            try? await Task.sleep(for: .milliseconds(250))
+            guard focusComposerRequest == request else { return }
+            composerFocused = true
+            focusComposerRequest = nil
         }
         .sheet(item: $reviewedProposal) { proposal in
             if proposal.isDeviceAction {

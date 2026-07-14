@@ -9,6 +9,7 @@ import {
   upsertEmailItem,
 } from './store.js';
 import { syncSlackDeliveryForItem } from './reconcile.js';
+import { sendBadgeSync } from './push.js';
 
 const ARCHIVED_LABEL = 'winnow/archived';
 
@@ -55,6 +56,12 @@ function latestThreadItem(account, threadId, fallback = null) {
   return findEmailItemByGmail({ account, threadId }) || fallback;
 }
 
+function syncPushBadge() {
+  void sendBadgeSync().catch(error => {
+    console.error(`[winnow/push] Badge sync failed: ${error.message}`);
+  });
+}
+
 export async function archiveEmail({
   account,
   threadId,
@@ -89,6 +96,7 @@ export async function archiveEmail({
   });
   appendEmailEvent('email.manual_archived', updated, { source, reason });
   if (syncSlack) await syncSlackDeliveryForItem(updated, reason);
+  syncPushBadge();
   return updated;
 }
 
@@ -124,6 +132,7 @@ export async function moveEmailToInbox({
   });
   appendEmailEvent('email.restored_to_inbox', updated, { source, reason });
   if (syncSlack) await syncSlackDeliveryForItem(updated, reason);
+  syncPushBadge();
   return updated;
 }
 
@@ -153,6 +162,7 @@ export async function markEmailRead({
     reason,
     metadata: { readState: 'read' },
   });
+  syncPushBadge();
   return updated;
 }
 
@@ -182,5 +192,6 @@ export async function markEmailUnread({
     reason,
     metadata: { readState: 'unread' },
   });
+  syncPushBadge();
   return updated;
 }

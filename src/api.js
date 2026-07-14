@@ -40,6 +40,7 @@ import {
   getDailyActionSummary,
   getLifetimeActionSummary,
   getEmailItem,
+  getMailboxCounts,
   listEmailItems,
   listEvents,
   registerPushDevice,
@@ -678,7 +679,14 @@ async function handleAuthed(req, res, url, dependencies = {}) {
         return;
       }
       try {
-        const updated = await handler({
+        const dependencyName = {
+          archive: 'archiveEmail',
+          'move-to-inbox': 'moveEmailToInbox',
+          'mark-read': 'markEmailRead',
+          'mark-unread': 'markEmailUnread',
+        }[suffix];
+        const actionHandler = dependencies[dependencyName] || handler;
+        const updated = await actionHandler({
           emailItemId: item.id,
           account: item.account,
           threadId: item.threadId,
@@ -689,6 +697,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
         sendJson(res, 200, {
           ok: true,
           action: suffix,
+          badge: getMailboxCounts().inbox,
           item: mobileEmailItem(getEmailItem(item.id) || updated || item),
         });
       } catch (err) {

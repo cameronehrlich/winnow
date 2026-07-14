@@ -19,6 +19,7 @@ final class AppModel: ObservableObject {
     @Published var presentedError: PresentedError?
     @Published var toast: ToastMessage?
     @Published var navigationRequest: EmailNavigationRequest?
+    @Published var conversationFocusRequest: EmailConversationFocusRequest?
     @Published var askNavigationRequest: UUID?
     @Published private(set) var inboxNewItemsCutoff: Date?
     @Published private(set) var archivedNewItemsCutoff: Date?
@@ -178,6 +179,9 @@ final class AppModel: ObservableObject {
             status = nil
             accounts = []
             mailRules = []
+            navigationRequest = nil
+            conversationFocusRequest = nil
+            askNavigationRequest = nil
             hasLoaded = false
             visibleMailbox = nil
             sessionCutoffMailboxes.removeAll()
@@ -293,6 +297,14 @@ final class AppModel: ObservableObject {
 
     func email(id: String) -> EmailItem? {
         emails.first(where: { $0.id == id })
+    }
+
+    func email(account: String, threadID: String) -> EmailItem? {
+        guard !threadID.isEmpty else { return nil }
+        return emails.first { item in
+            item.threadId == threadID
+                && (account.isEmpty || item.account.caseInsensitiveCompare(account) == .orderedSame)
+        }
     }
 
     func account(email: String) -> AccountStatus? {
@@ -459,12 +471,23 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func requestNavigation(emailID: String, mailboxState: String = "inbox") {
+    func requestNavigation(
+        emailID: String,
+        mailboxState: String = "inbox",
+        focusConversation: Bool = false
+    ) {
         navigationRequest = EmailNavigationRequest(emailID: emailID, mailboxState: mailboxState)
+        if focusConversation {
+            conversationFocusRequest = EmailConversationFocusRequest(emailID: emailID)
+        }
     }
 
     func consumeNavigation(_ request: EmailNavigationRequest) {
         if navigationRequest == request { navigationRequest = nil }
+    }
+
+    func consumeConversationFocus(_ request: EmailConversationFocusRequest) {
+        if conversationFocusRequest == request { conversationFocusRequest = nil }
     }
 
     @discardableResult
@@ -565,6 +588,11 @@ final class AppModel: ObservableObject {
 struct EmailNavigationRequest: Equatable {
     let emailID: String
     let mailboxState: String
+}
+
+struct EmailConversationFocusRequest: Equatable {
+    let id = UUID()
+    let emailID: String
 }
 
 struct PresentedError: Identifiable {

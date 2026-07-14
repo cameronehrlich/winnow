@@ -6,12 +6,34 @@ extension Notification.Name {
     static let winnowPushOpened = Notification.Name("winnow.push.opened")
 }
 
+enum WinnowNotificationIdentifier {
+    static let emailCategory = "WINNOW_EMAIL"
+    static let archiveAction = "WINNOW_ARCHIVE"
+    static let askAction = "WINNOW_ASK"
+    static let conversationDestination = "conversation"
+}
+
+struct WinnowPushContext: Equatable {
+    let emailID: String
+    let account: String
+    let threadID: String
+    let mailboxState: String
+
+    init(userInfo: [AnyHashable: Any]) {
+        emailID = userInfo["emailId"] as? String ?? ""
+        account = userInfo["account"] as? String ?? ""
+        threadID = userInfo["threadId"] as? String ?? ""
+        mailboxState = userInfo["mailboxState"] as? String ?? "inbox"
+    }
+}
+
 final class WinnowAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        PushNotificationManager.shared.configureNotificationCategories()
         return true
     }
 
@@ -45,9 +67,18 @@ final class WinnowAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
+        if response.actionIdentifier == UNNotificationDismissActionIdentifier { return }
         let content = response.notification.request.content.userInfo
+        if response.actionIdentifier == WinnowNotificationIdentifier.archiveAction {
+            await PushNotificationManager.shared.archiveFromNotification(content)
+            return
+        }
+        var destination = content
+        if response.actionIdentifier == WinnowNotificationIdentifier.askAction {
+            destination["winnowDestination"] = WinnowNotificationIdentifier.conversationDestination
+        }
         await MainActor.run {
-            NotificationCenter.default.post(name: .winnowPushOpened, object: nil, userInfo: content)
+            NotificationCenter.default.post(name: .winnowPushOpened, object: nil, userInfo: destination)
         }
     }
 }
@@ -63,6 +94,26 @@ final class PushNotificationManager {
     private var refreshHandler: (() async -> Bool)?
 
     private init() {}
+
+    func configureNotificationCategories() {
+        let archive = UNNotificationAction(
+            identifier: WinnowNotificationIdentifier.archiveAction,
+            title: "Archive",
+            options: []
+        )
+        let ask = UNNotificationAction(
+            identifier: WinnowNotificationIdentifier.askAction,
+            title: "Ask Winnow",
+            options: [.foreground]
+        )
+        let email = UNNotificationCategory(
+            identifier: WinnowNotificationIdentifier.emailCategory,
+            actions: [archive, ask],
+            intentIdentifiers: [],
+            options: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([email])
+    }
 
     func activate(configuration: ServerConfiguration, refreshHandler: @escaping () async -> Bool) async {
         self.configuration = configuration
@@ -111,6 +162,21 @@ final class PushNotificationManager {
         Task {
             let changed = await refreshHandler()
             completion(changed ? .newData : .noData)
+        }
+    }
+
+    func archiveFromNotification(_ userInfo: [AnyHashable: Any]) async {
+        let context = WinnowPushContext(userInfo: userInfo)
+        guard !context.emailID.isEmpty else { return }
+        let activeConfiguration = configuration ?? ConfigurationStore.load()
+        guard activeConfiguration.isComplete else { return }
+        do {
+            let response = try await APIClient(configuration: activeConfiguration)
+                .perform(.archive, emailID: context.emailID)
+            if let badge = response.badge { setAppIconBadge(badge) }
+            _ = await refreshHandler?()
+        } catch {
+            // The next foreground or background refresh reconciles any failed action.
         }
     }
 

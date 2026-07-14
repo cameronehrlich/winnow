@@ -3,6 +3,29 @@ import XCTest
 @testable import Winnow
 
 final class ModelDecodingTests: XCTestCase {
+    func testPushContextPreservesThreadNavigationMetadata() {
+        let context = WinnowPushContext(userInfo: [
+            "emailId": "email-1",
+            "account": "me@example.com",
+            "threadId": "thread-1",
+            "mailboxState": "inbox",
+        ])
+
+        XCTAssertEqual(context.emailID, "email-1")
+        XCTAssertEqual(context.account, "me@example.com")
+        XCTAssertEqual(context.threadID, "thread-1")
+        XCTAssertEqual(context.mailboxState, "inbox")
+        XCTAssertEqual(WinnowNotificationIdentifier.emailCategory, "WINNOW_EMAIL")
+        XCTAssertEqual(WinnowNotificationIdentifier.archiveAction, "WINNOW_ARCHIVE")
+        XCTAssertEqual(WinnowNotificationIdentifier.askAction, "WINNOW_ASK")
+    }
+
+    func testActionResponseDecodesAuthoritativeBadge() throws {
+        let data = #"{"ok":true,"action":"archive","badge":3}"#.data(using: .utf8)!
+        let response = try JSONDecoder().decode(ActionResponse.self, from: data)
+        XCTAssertEqual(response.badge, 3)
+    }
+
     @MainActor
     func testArchivedUnseenIndicatorOnlyTracksNewerArchivedItems() throws {
         let data = #"""

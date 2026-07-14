@@ -58,9 +58,17 @@ struct RootView: View {
         }
         .onOpenURL(perform: handleDeepLink)
         .onReceive(NotificationCenter.default.publisher(for: .winnowPushOpened)) { notification in
-            let emailID = notification.userInfo?["emailId"] as? String ?? ""
-            let mailbox = notification.userInfo?["mailboxState"] as? String ?? "inbox"
-            open(emailID: emailID, mailbox: mailbox)
+            let userInfo = notification.userInfo ?? [:]
+            let context = WinnowPushContext(userInfo: userInfo)
+            let focusConversation = userInfo["winnowDestination"] as? String
+                == WinnowNotificationIdentifier.conversationDestination
+            open(
+                emailID: context.emailID,
+                mailbox: context.mailboxState,
+                account: context.account,
+                threadID: context.threadID,
+                focusConversation: focusConversation
+            )
         }
         .alert(item: $model.presentedError) { error in
             Alert(title: Text(error.title), message: Text(error.message), dismissButton: .default(Text("OK")))
@@ -217,16 +225,28 @@ struct RootView: View {
         }
     }
 
-    private func open(emailID: String, mailbox: String) {
+    private func open(
+        emailID: String,
+        mailbox: String,
+        account: String = "",
+        threadID: String = "",
+        focusConversation: Bool = false
+    ) {
         guard !emailID.isEmpty else { return }
         Task {
             await model.refresh(silent: true)
-            let currentMailbox = model.email(id: emailID).map { item in
+            let resolvedItem = model.email(id: emailID) ?? model.email(account: account, threadID: threadID)
+            let resolvedEmailID = resolvedItem?.id ?? emailID
+            let currentMailbox = resolvedItem.map { item in
                 item.isArchived ? "archived" : "inbox"
             } ?? (mailbox == "archived" ? "archived" : "inbox")
             selectedTab = currentMailbox == "archived" ? .archived : .inbox
             await Task.yield()
-            model.requestNavigation(emailID: emailID, mailboxState: currentMailbox)
+            model.requestNavigation(
+                emailID: resolvedEmailID,
+                mailboxState: currentMailbox,
+                focusConversation: focusConversation
+            )
         }
     }
 }

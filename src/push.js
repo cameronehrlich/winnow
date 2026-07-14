@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { connect } from 'node:http2';
-import { createPrivateKey, randomUUID, sign } from 'node:crypto';
+import { createHash, createPrivateKey, randomUUID, sign } from 'node:crypto';
 import {
   disablePushDevice,
   getMailboxCounts,
@@ -13,6 +13,7 @@ const APNS_HOSTS = {
   production: 'https://api.push.apple.com',
 };
 const TOKEN_TTL_SECONDS = 50 * 60;
+export const WINNOW_EMAIL_NOTIFICATION_CATEGORY = 'WINNOW_EMAIL';
 let cachedProviderToken;
 
 function base64url(value) {
@@ -90,23 +91,35 @@ function providerToken(config, now = Math.floor(Date.now() / 1000)) {
 
 function notificationPayload(item, badge, { silent = false } = {}) {
   const emailId = item?.id || item?.emailItemId || '';
+  const account = String(item?.account || '');
+  const threadId = String(item?.threadId || '');
   const common = {
     event: item?.mailboxState === 'archived' || item?.archive ? 'email.archived' : 'email.kept',
     emailId,
+    account,
+    threadId,
     mailboxState: item?.mailboxState || (item?.archive ? 'archived' : 'inbox'),
   };
   if (silent) return { aps: { 'content-available': 1, badge }, ...common };
   const truncate = (value, length) => String(value || '').slice(0, length);
   const sender = truncate(item?.fromName || item?.fromEmail || item?.from || 'New email', 120);
   const summary = truncate(item?.summary || item?.subject || 'Open Winnow to review.', 700);
+  const aps = {
+    alert: { title: sender, subtitle: truncate(item?.subject, 200), body: summary },
+    sound: 'default',
+    badge,
+    category: WINNOW_EMAIL_NOTIFICATION_CATEGORY,
+    'content-available': 1,
+    'mutable-content': 0,
+  };
+  if (threadId) {
+    aps['thread-id'] = `gmail-${createHash('sha256')
+      .update(`${account}\0${threadId}`)
+      .digest('hex')
+      .slice(0, 40)}`;
+  }
   return {
-    aps: {
-      alert: { title: sender, subtitle: truncate(item?.subject, 200), body: summary },
-      sound: 'default',
-      badge,
-      'content-available': 1,
-      'mutable-content': 0,
-    },
+    aps,
     ...common,
   };
 }
@@ -149,6 +162,7 @@ export function sendApnsRequest({ device, payload, config, timeoutMs = 10_000 })
       'apns-push-type': payload.aps?.alert ? 'alert' : 'background',
       'apns-priority': payload.aps?.alert ? '10' : '5',
       'apns-id': apnsId,
+      ...(payload.event === 'badge.sync' ? { 'apns-collapse-id': 'winnow-badge' } : {}),
       'content-type': 'application/json',
       'content-length': Buffer.byteLength(body),
     });
@@ -167,19 +181,7 @@ export function sendApnsRequest({ device, payload, config, timeoutMs = 10_000 })
   });
 }
 
-export async function maybeSendPushForEmail(item, opts = {}) {
-  if (!item) return { sent: false, reason: 'missing_item' };
-  const config = opts.config || getApnsConfiguration();
-  if (!config.configured) {
-    return { sent: false, reason: config.keyError ? 'apns_private_key_invalid' : 'apns_not_configured' };
-  }
-  const devices = opts.devices || listPushDevices();
-  if (!devices.length) return { sent: false, reason: 'no_registered_devices' };
-
-  const archived = Boolean(item.archive || item.mailboxState === 'archived');
-  const badge = (opts.mailboxCounts || getMailboxCounts()).inbox;
-  const payload = notificationPayload(item, badge, { silent: archived });
-  const send = opts.send || sendApnsRequest;
+async function deliverPayload(payload, { config, devices, send }) {
   const results = await Promise.all(devices.map(async device => {
     try {
       const result = await send({ device, payload, config });
@@ -198,9 +200,51 @@ export async function maybeSendPushForEmail(item, opts = {}) {
     sent: sentCount > 0,
     sentCount,
     failedCount: results.length - sentCount,
-    silent: archived,
     reason: sentCount ? null : 'delivery_failed',
     results,
+  };
+}
+
+export async function maybeSendPushForEmail(item, opts = {}) {
+  if (!item) return { sent: false, reason: 'missing_item' };
+  const config = opts.config || getApnsConfiguration();
+  if (!config.configured) {
+    return { sent: false, reason: config.keyError ? 'apns_private_key_invalid' : 'apns_not_configured' };
+  }
+  const devices = opts.devices || listPushDevices();
+  if (!devices.length) return { sent: false, reason: 'no_registered_devices' };
+
+  const archived = Boolean(item.archive || item.mailboxState === 'archived');
+  const badge = (opts.mailboxCounts || getMailboxCounts()).inbox;
+  const payload = notificationPayload(item, badge, { silent: archived });
+  const send = opts.send || sendApnsRequest;
+  const delivered = await deliverPayload(payload, { config, devices, send });
+  return {
+    ...delivered,
+    silent: archived,
+  };
+}
+
+export async function sendBadgeSync(opts = {}) {
+  const config = opts.config || getApnsConfiguration();
+  if (!config.configured) {
+    return { sent: false, reason: config.keyError ? 'apns_private_key_invalid' : 'apns_not_configured' };
+  }
+  const devices = opts.devices || listPushDevices();
+  if (!devices.length) return { sent: false, reason: 'no_registered_devices' };
+  const badge = (opts.mailboxCounts || getMailboxCounts()).inbox;
+  const payload = {
+    aps: { 'content-available': 1, badge },
+    event: 'badge.sync',
+  };
+  return {
+    ...await deliverPayload(payload, {
+      config,
+      devices,
+      send: opts.send || sendApnsRequest,
+    }),
+    silent: true,
+    badge,
   };
 }
 

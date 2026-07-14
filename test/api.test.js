@@ -203,6 +203,21 @@ describe('local API', () => {
     assert.equal(body.items[0].trackedThreadMessageCount, 2);
   });
 
+  it('returns the authoritative unread badge after a notification action', async () => {
+    const headers = { Authorization: 'Bearer test-token' };
+    const emails = await fetch(`${baseUrl}/v1/emails?state=inbox`, { headers }).then(response => response.json());
+    const response = await fetch(
+      `${baseUrl}/v1/emails/${encodeURIComponent(emails.items[0].id)}/archive`,
+      { method: 'POST', headers },
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.badge, 0);
+    assert.equal(body.item.mailboxState, 'archived');
+  });
+
   it('fetches complete email content on demand without adding it to list responses', async () => {
     const headers = { Authorization: 'Bearer test-token' };
     const emails = await fetch(`${baseUrl}/v1/emails`, { headers }).then(response => response.json());

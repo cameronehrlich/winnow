@@ -1,7 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { getApnsConfiguration, getPushCapabilities, maybeSendPushForEmail } from '../src/push.js';
+import {
+  getApnsConfiguration,
+  getPushCapabilities,
+  maybeSendPushForEmail,
+  sendBadgeSync,
+  WINNOW_EMAIL_NOTIFICATION_CATEGORY,
+} from '../src/push.js';
 
 function testConfiguration() {
   const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
@@ -45,6 +51,8 @@ describe('push notification policy', () => {
       fromName: 'Riley',
       subject: 'Question',
       summary: 'Can you review this?',
+      account: 'me@example.com',
+      threadId: 'thread-1',
       mailboxState: 'inbox',
     }, {
       config: testConfiguration(),
@@ -58,7 +66,34 @@ describe('push notification policy', () => {
     assert.equal(result.sent, true);
     assert.equal(request.payload.aps.badge, 3);
     assert.equal(request.payload.aps.alert.title, 'Riley');
+    assert.equal(request.payload.aps.category, WINNOW_EMAIL_NOTIFICATION_CATEGORY);
+    assert.match(request.payload.aps['thread-id'], /^gmail-[a-f0-9]{40}$/);
     assert.equal(request.payload.emailId, 'email-1');
+    assert.equal(request.payload.threadId, 'thread-1');
+    assert.equal(request.payload.account, 'me@example.com');
+  });
+
+  it('uses a stable account-specific group for the same Gmail thread', async () => {
+    const groups = [];
+    const send = async request => {
+      groups.push(request.payload.aps['thread-id']);
+      return { ok: true, status: 200, reason: '', apnsId: `push-${groups.length}` };
+    };
+    const opts = {
+      config: testConfiguration(), devices: [device], mailboxCounts: { inbox: 2 }, send,
+    };
+    await maybeSendPushForEmail({
+      id: 'email-1', account: 'me@example.com', threadId: 'thread-1', mailboxState: 'inbox',
+    }, opts);
+    await maybeSendPushForEmail({
+      id: 'email-2', account: 'me@example.com', threadId: 'thread-1', mailboxState: 'inbox',
+    }, opts);
+    await maybeSendPushForEmail({
+      id: 'email-3', account: 'other@example.com', threadId: 'thread-1', mailboxState: 'inbox',
+    }, opts);
+
+    assert.equal(groups[0], groups[1]);
+    assert.notEqual(groups[0], groups[2]);
   });
 
   it('uses a silent background update for archived mail', async () => {
@@ -85,5 +120,26 @@ describe('push notification policy', () => {
     });
     assert.equal(result.sent, false);
     assert.equal(result.reason, 'apns_not_configured');
+  });
+
+  it('sends a silent authoritative badge synchronization', async () => {
+    let request;
+    const result = await sendBadgeSync({
+      config: testConfiguration(),
+      devices: [device],
+      mailboxCounts: { inbox: 4, archived: 12 },
+      send: async value => {
+        request = value;
+        return { ok: true, status: 200, reason: '', apnsId: 'badge-1' };
+      },
+    });
+
+    assert.equal(result.sent, true);
+    assert.equal(result.silent, true);
+    assert.equal(result.badge, 4);
+    assert.deepEqual(request.payload, {
+      aps: { 'content-available': 1, badge: 4 },
+      event: 'badge.sync',
+    });
   });
 });
