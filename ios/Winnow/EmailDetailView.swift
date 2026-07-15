@@ -1174,6 +1174,7 @@ private struct ConversationMessageDetailView: View {
 
 private struct FullEmailView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: AppModel
     let configuration: ServerConfiguration
     let emailID: String
     let fallbackSubject: String
@@ -1192,7 +1193,6 @@ private struct FullEmailView: View {
                     if let content {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 14) {
-                                conversationHeader(content)
                                 let messages = content.messagesForDisplay
                                 ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
                                     FullEmailMessageCard(
@@ -1201,7 +1201,9 @@ private struct FullEmailView: View {
                                         count: messages.count,
                                         isSelectedMessage: message.id == content.focusedMessageId,
                                         initiallyExpanded: index == 0,
-                                        displayMode: displayMode
+                                        displayMode: displayMode,
+                                        fallbackSubject: content.subject.isEmpty ? fallbackSubject : content.subject,
+                                        account: model.account(email: content.account.isEmpty ? account : content.account)
                                     )
                                 }
                                 if content.truncated {
@@ -1251,25 +1253,6 @@ private struct FullEmailView: View {
         preferHTMLEmail ? .html : .plain
     }
 
-    private func conversationHeader(_ content: EmailContent) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(content.subject.isEmpty ? fallbackSubject : content.subject)
-                .font(.title2.bold())
-                .fixedSize(horizontal: false, vertical: true)
-            Label(content.account.isEmpty ? account : content.account, systemImage: "person.crop.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if content.messages.count > 1 {
-                Text("\(content.messages.count) messages")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(WinnowDesign.accent)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .winnowCard()
-        .padding(.horizontal, displayMode == .html ? 16 : 0)
-    }
-
     @MainActor
     private func load() async {
         isLoading = true
@@ -1290,6 +1273,8 @@ private struct FullEmailMessageCard: View {
     let count: Int
     let isSelectedMessage: Bool
     let displayMode: FullEmailDisplayMode
+    let fallbackSubject: String
+    let account: AccountStatus?
     @State private var isExpanded: Bool
     @State private var htmlHeight: CGFloat = 180
 
@@ -1299,13 +1284,17 @@ private struct FullEmailMessageCard: View {
         count: Int,
         isSelectedMessage: Bool,
         initiallyExpanded: Bool,
-        displayMode: FullEmailDisplayMode = .plain
+        displayMode: FullEmailDisplayMode = .plain,
+        fallbackSubject: String = "",
+        account: AccountStatus? = nil
     ) {
         self.message = message
         self.position = position
         self.count = count
         self.isSelectedMessage = isSelectedMessage
         self.displayMode = displayMode
+        self.fallbackSubject = fallbackSubject
+        self.account = account
         _isExpanded = State(initialValue: initiallyExpanded)
     }
 
@@ -1330,30 +1319,90 @@ private struct FullEmailMessageCard: View {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(EmailBodyLinks.render(message.from.isEmpty ? "Unknown sender" : message.from))
-                    .font(.headline)
-                    .tint(WinnowDesign.accent)
-                    .lineLimit(2)
-                if !message.date.isEmpty {
-                    Text(message.date)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                ZStack(alignment: .bottomTrailing) {
+                    SenderAvatar(
+                        initials: senderInitials,
+                        seed: senderEmail.isEmpty ? senderName : senderEmail,
+                        size: 38
+                    )
+                    AccountAvatarBadge(account: account, size: 16)
+                        .offset(x: 3, y: 3)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(senderName)
+                            .font(.headline)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        if isSelectedMessage {
+                            Text("Selected")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(WinnowDesign.accent)
+                        } else if count > 1 {
+                            Text("\(position + 1) of \(count)")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    if !senderEmail.isEmpty {
+                        Text(EmailBodyLinks.render(senderEmail))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .tint(WinnowDesign.accent)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
             }
-            Spacer(minLength: 8)
-            if isSelectedMessage {
-                Text("Selected")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(WinnowDesign.accent)
-            } else if count > 1 {
-                Text("\(position + 1) of \(count)")
-                    .font(.caption2.weight(.semibold))
+
+            if !displaySubject.isEmpty {
+                Text(displaySubject)
+                    .font(.subheadline.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !message.date.isEmpty {
+                Text(message.date)
+                    .font(.caption)
                     .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
         }
+    }
+
+    private var senderEmail: String {
+        let value = message.from.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let opening = value.lastIndex(of: "<"),
+           let closing = value[opening...].firstIndex(of: ">") {
+            return String(value[value.index(after: opening)..<closing])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return value.contains("@") && !value.contains(" ") ? value : ""
+    }
+
+    private var senderName: String {
+        let value = message.from.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let opening = value.lastIndex(of: "<") {
+            let name = value[..<opening]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            if !name.isEmpty { return name }
+        }
+        return senderEmail.isEmpty ? (value.isEmpty ? "Unknown sender" : value) : senderEmail
+    }
+
+    private var senderInitials: String {
+        let parts = senderName.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let initials = parts.prefix(2).compactMap(\.first).map(String.init).joined()
+        return initials.isEmpty ? "?" : initials.uppercased()
+    }
+
+    private var displaySubject: String {
+        let subject = message.subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        return subject.isEmpty ? fallbackSubject : subject
     }
 
     private var messageDetails: some View {
