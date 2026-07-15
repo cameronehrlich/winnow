@@ -32,8 +32,10 @@ final class AppModel: ObservableObject {
     private var pendingOptimisticActions: [String: EmailAction] = [:]
     private var visibleMailbox: MailboxTab?
     private var sessionCutoffMailboxes: Set<MailboxTab> = []
+    private var archivedSeenItemIDs: Set<String> = []
     private let inboxViewedKey = "winnow.inbox-last-viewed"
     private let archivedViewedKey = "winnow.archived-last-viewed"
+    private let archivedSeenItemIDsKey = "winnow.archived-seen-item-ids"
 
     init(configuration: ServerConfiguration = ConfigurationStore.load()) {
         self.configuration = configuration
@@ -47,6 +49,7 @@ final class AppModel: ObservableObject {
         }
         inboxNewItemsCutoff = defaults.object(forKey: inboxViewedKey) as? Date
         archivedNewItemsCutoff = defaults.object(forKey: archivedViewedKey) as? Date
+        archivedSeenItemIDs = Set(defaults.stringArray(forKey: archivedSeenItemIDsKey) ?? [])
     }
 
     var isConfigured: Bool { configuration.isComplete }
@@ -106,7 +109,7 @@ final class AppModel: ObservableObject {
             status = runtimeStatus
             accounts = accountList
             lastRefresh = Date()
-            if let visibleMailbox { markMailboxSeen(visibleMailbox) }
+            if visibleMailbox == .inbox { markMailboxSeen(.inbox) }
             updateArchivedUnseenCount()
             WidgetSnapshotStore.save(emails: emails)
             PushNotificationManager.shared.setAppIconBadge(inboxBadgeCount)
@@ -185,7 +188,9 @@ final class AppModel: ObservableObject {
             hasLoaded = false
             visibleMailbox = nil
             sessionCutoffMailboxes.removeAll()
+            archivedSeenItemIDs.removeAll()
             unseenArchivedItemCount = 0
+            UserDefaults.standard.removeObject(forKey: archivedSeenItemIDsKey)
             stopAutoRefresh()
             WidgetSnapshotStore.clear()
             PushNotificationManager.shared.setAppIconBadge(0)
@@ -465,10 +470,36 @@ final class AppModel: ObservableObject {
                 archivedNewItemsCutoff = cutoff
             }
         }
-        markMailboxSeen(mailbox)
-        if mailbox == .archived {
-            unseenArchivedItemCount = 0
-        }
+        if mailbox == .inbox { markMailboxSeen(.inbox) }
+        updateArchivedUnseenCount()
+    }
+
+    /// Records actual exposure of an archived card. Merely opening the tab is
+    /// not enough: a new archived item remains badged until its row has entered
+    /// the visible list region.
+    func markArchivedItemSeen(_ emailID: String) {
+        guard let item = email(id: emailID),
+              item.isArchived,
+              let cutoff = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date,
+              (item.displayDate ?? .distantPast) > cutoff,
+              archivedSeenItemIDs.insert(emailID).inserted
+        else { return }
+
+        UserDefaults.standard.set(Array(archivedSeenItemIDs), forKey: archivedSeenItemIDsKey)
+        updateArchivedUnseenCount()
+
+        // Once every currently loaded new card has actually appeared, roll the
+        // baseline forward and discard the per-item receipts. This keeps the
+        // persisted set bounded while preserving exact on-screen semantics.
+        guard unseenArchivedItemCount == 0,
+              let newestDate = emails.lazy
+                .filter({ $0.isArchived })
+                .compactMap(\.displayDate)
+                .max()
+        else { return }
+        UserDefaults.standard.set(newestDate, forKey: archivedViewedKey)
+        archivedSeenItemIDs.removeAll()
+        UserDefaults.standard.removeObject(forKey: archivedSeenItemIDsKey)
     }
 
     func requestNavigation(
@@ -518,8 +549,7 @@ final class AppModel: ObservableObject {
     }
 
     private func updateArchivedUnseenCount() {
-        guard visibleMailbox != .archived,
-              let cutoff = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date
+        guard let cutoff = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date
         else {
             unseenArchivedItemCount = 0
             return
@@ -527,13 +557,21 @@ final class AppModel: ObservableObject {
         unseenArchivedItemCount = Self.itemCount(
             in: emails,
             mailbox: .archived,
-            newerThan: cutoff
+            newerThan: cutoff,
+            excluding: archivedSeenItemIDs
         )
     }
 
-    static func itemCount(in emails: [EmailItem], mailbox: MailboxTab, newerThan cutoff: Date) -> Int {
+    static func itemCount(
+        in emails: [EmailItem],
+        mailbox: MailboxTab,
+        newerThan cutoff: Date,
+        excluding excludedIDs: Set<String> = []
+    ) -> Int {
         emails.lazy.filter { item in
-            mailbox.includes(item) && (item.displayDate ?? .distantPast) > cutoff
+            mailbox.includes(item)
+                && !excludedIDs.contains(item.id)
+                && (item.displayDate ?? .distantPast) > cutoff
         }.count
     }
 
@@ -549,6 +587,10 @@ final class AppModel: ObservableObject {
         item.trackedThreadMessageCount = max(
             item.trackedThreadMessageCount,
             emails[index].trackedThreadMessageCount
+        )
+        item.unreadThreadMessageCount = max(
+            item.unreadThreadMessageCount,
+            emails[index].unreadThreadMessageCount
         )
         emails[index] = item
     }

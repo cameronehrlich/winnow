@@ -605,6 +605,12 @@ function rowToEmailItem(row) {
     processedAt: row.processed_at,
     updatedAt: row.updated_at,
     trackedThreadMessageCount: Math.max(1, Number(row.tracked_thread_message_count) || 1),
+    unreadThreadMessageCount: Math.max(
+      0,
+      row.unread_thread_message_count == null
+        ? (row.read_state === 'unread' ? 1 : 0)
+        : Number(row.unread_thread_message_count) || 0,
+    ),
   };
 }
 
@@ -880,6 +886,13 @@ export function listEmailItems({ state = 'all', account = '', cursor = '', limit
               ELSE 'thread:' || gmail_thread_id
             END
         ) AS tracked_thread_message_count,
+        SUM(CASE WHEN mailbox_state = 'inbox' AND read_state = 'unread' THEN 1 ELSE 0 END) OVER (
+          PARTITION BY account,
+            CASE
+              WHEN gmail_thread_id IS NULL OR gmail_thread_id = '' THEN 'message:' || id
+              ELSE 'thread:' || gmail_thread_id
+            END
+        ) AS unread_thread_message_count,
         ROW_NUMBER() OVER (
           PARTITION BY account,
             CASE

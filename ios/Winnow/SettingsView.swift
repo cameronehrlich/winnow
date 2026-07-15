@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var token = ""
     @State private var isTesting = false
     @State private var confirmDisconnect = false
+    @AppStorage(WinnowPreferences.preferHTMLEmailKey) private var preferHTMLEmail = false
 
     var body: some View {
         NavigationStack {
@@ -28,6 +29,14 @@ struct SettingsView: View {
                                 Image(systemName: "line.3.horizontal.decrease.circle")
                             }
                         }
+                    }
+
+                    Section {
+                        Toggle("Prefer HTML email", isOn: $preferHTMLEmail)
+                    } header: {
+                        Text("Email Display")
+                    } footer: {
+                        Text("When available, View Full Email opens with the original formatting. You can still switch between HTML and plain text inside the message.")
                     }
 
                     Section {

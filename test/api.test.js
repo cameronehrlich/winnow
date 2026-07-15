@@ -166,6 +166,7 @@ describe('local API', () => {
     assert.equal(emailJson.items[0].readState, 'unread');
     assert.equal(emailJson.items[0].isRead, false);
     assert.equal(emailJson.items[0].trackedThreadMessageCount, 1);
+    assert.equal(emailJson.items[0].unreadThreadMessageCount, 1);
     assert.deepEqual(emailJson.items[0].attachments, [{
       messageId: 'm0', attachmentId: 'pdf-1', filename: 'invoice.pdf',
       mimeType: 'application/pdf', sizeBytes: 9,
@@ -202,6 +203,7 @@ describe('local API', () => {
     assert.equal(body.items.length, 1);
     assert.equal(body.items[0].messageId, 'm2');
     assert.equal(body.items[0].trackedThreadMessageCount, 2);
+    assert.equal(body.items[0].unreadThreadMessageCount, 2);
   });
 
   it('returns the authoritative unread badge after a notification action', async () => {

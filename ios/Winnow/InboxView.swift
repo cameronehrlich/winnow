@@ -73,15 +73,15 @@ struct InboxView: View {
         }
     }
 
-    private var newItemsDividerIndex: Int? {
+    private var newItemsDividerID: String? {
         guard searchQuery.isEmpty,
               let cutoff = model.newItemsCutoff(for: mailbox),
-              let firstPreviouslySeen = filteredEmails.firstIndex(where: {
+              let firstPreviouslySeen = filteredEmails.first(where: {
                   ($0.displayDate ?? .distantPast) <= cutoff
               }),
-              firstPreviouslySeen > 0
+              filteredEmails.first?.id != firstPreviouslySeen.id
         else { return nil }
-        return firstPreviouslySeen
+        return firstPreviouslySeen.id
     }
 
     var body: some View {
@@ -89,8 +89,8 @@ struct InboxView: View {
             ZStack {
                 AppBackdrop()
                 List {
-                    ForEach(Array(filteredEmails.enumerated()), id: \.element.id) { index, item in
-                        if index == newItemsDividerIndex {
+                    ForEach(filteredEmails) { item in
+                        if item.id == newItemsDividerID {
                             NewItemsDivider()
                                 .listRowInsets(EdgeInsets(top: 4, leading: 18, bottom: 4, trailing: 18))
                                 .listRowSeparator(.hidden)
@@ -105,6 +105,11 @@ struct InboxView: View {
                         .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
+                        .modifier(
+                            ArchivedExposureModifier(isEnabled: mailbox == .archived) {
+                                model.markArchivedItemSeen(item.id)
+                            }
+                        )
                         .swipeActions(edge: mailbox.swipeEdge, allowsFullSwipe: true) {
                             Button {
                                 perform(mailbox.primaryAction, on: item)
@@ -195,6 +200,26 @@ struct InboxView: View {
 
     private func perform(_ action: EmailAction, on item: EmailItem) {
         Task { _ = await model.perform(action, on: item, optimisticDelay: .milliseconds(140)) }
+    }
+}
+
+private struct ArchivedExposureModifier: ViewModifier {
+    let isEnabled: Bool
+    let markSeen: () -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            if #available(iOS 18.0, *) {
+                content.onScrollVisibilityChange(threshold: 0.5) { isVisible in
+                    if isVisible { markSeen() }
+                }
+            } else {
+                content.onAppear(perform: markSeen)
+            }
+        } else {
+            content
+        }
     }
 }
 
@@ -290,6 +315,15 @@ struct EmailCard: View {
                                     .font(.subheadline.weight(item.isUnread ? .bold : .regular))
                                     .foregroundStyle(item.isUnread ? .primary : .secondary)
                                     .lineLimit(1)
+                                if item.isUnread && item.unreadThreadMessageCount > 1 {
+                                    Text("\(item.unreadThreadMessageCount)")
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundStyle(WinnowDesign.accent)
+                                        .padding(.horizontal, 5)
+                                        .frame(minWidth: 17, minHeight: 17)
+                                        .background(WinnowDesign.accent.opacity(0.12), in: Capsule())
+                                        .accessibilityLabel("\(item.unreadThreadMessageCount) unread messages")
+                                }
                             }
                             Text(item.account)
                                 .font(.caption2)
@@ -356,7 +390,6 @@ struct EmailCard: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.primary.opacity(0.07), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.04), radius: 10, y: 3)
         .opacity(isPerforming ? 0.68 : 1)
         .disabled(isPerforming)
     }

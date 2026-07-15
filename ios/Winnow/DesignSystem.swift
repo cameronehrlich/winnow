@@ -162,15 +162,16 @@ struct SenderAvatar: View {
 struct AccountAvatarBadge: View {
     let account: AccountStatus?
     var size: CGFloat = 18
+    @State private var cachedImage: UIImage?
 
     private var fallbackLetter: String {
         account?.email.first.map { String($0).uppercased() } ?? "?"
     }
 
     var body: some View {
-        AsyncImage(url: account?.avatarURL) { phase in
-            if let image = phase.image {
-                image.resizable().scaledToFill()
+        Group {
+            if let cachedImage {
+                Image(uiImage: cachedImage).resizable().scaledToFill()
             } else {
                 Text(fallbackLetter)
                     .font(.system(size: size * 0.48, weight: .bold, design: .rounded))
@@ -184,6 +185,47 @@ struct AccountAvatarBadge: View {
         .overlay(Circle().stroke(Color(uiColor: .systemBackground), lineWidth: 2))
         .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
         .accessibilityHidden(true)
+        .task(id: account?.avatarURL) {
+            guard let url = account?.avatarURL else {
+                cachedImage = nil
+                return
+            }
+            cachedImage = await AccountAvatarImageCache.shared.image(for: url)
+        }
+    }
+}
+
+/// Decodes each account photo once for the entire feed instead of once per
+/// recycled row. A mailbox can contain hundreds of cards but only a handful of
+/// distinct account images.
+@MainActor
+private final class AccountAvatarImageCache {
+    static let shared = AccountAvatarImageCache()
+
+    private let images = NSCache<NSURL, UIImage>()
+    private var requests: [URL: Task<Data?, Never>] = [:]
+
+    func image(for url: URL) async -> UIImage? {
+        if let image = images.object(forKey: url as NSURL) { return image }
+
+        let request: Task<Data?, Never>
+        if let existing = requests[url] {
+            request = existing
+        } else {
+            request = Task.detached(priority: .utility) {
+                guard let (data, response) = try? await URLSession.shared.data(from: url),
+                      (response as? HTTPURLResponse)?.statusCode == 200
+                else { return nil }
+                return data
+            }
+            requests[url] = request
+        }
+
+        let data = await request.value
+        requests[url] = nil
+        guard let data, let image = UIImage(data: data) else { return nil }
+        images.setObject(image, forKey: url as NSURL)
+        return image
     }
 }
 

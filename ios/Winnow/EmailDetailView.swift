@@ -1182,7 +1182,7 @@ private struct FullEmailView: View {
     @State private var content: EmailContent?
     @State private var isLoading = true
     @State private var errorMessage: String?
-    @State private var displayMode: FullEmailDisplayMode = .plain
+    @AppStorage(WinnowPreferences.preferHTMLEmailKey) private var preferHTMLEmail = false
 
     var body: some View {
         NavigationStack {
@@ -1251,7 +1251,7 @@ private struct FullEmailView: View {
 
     private var emailFormatControl: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("Email format", selection: $displayMode) {
+            Picker("Email format", selection: displayModeBinding) {
                 ForEach(FullEmailDisplayMode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
@@ -1267,6 +1267,17 @@ private struct FullEmailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .winnowCard(padding: 12)
+    }
+
+    private var displayMode: FullEmailDisplayMode {
+        preferHTMLEmail ? .html : .plain
+    }
+
+    private var displayModeBinding: Binding<FullEmailDisplayMode> {
+        Binding(
+            get: { displayMode },
+            set: { preferHTMLEmail = $0 == .html }
+        )
     }
 
     private func conversationHeader(_ content: EmailContent) -> some View {

@@ -40,6 +40,15 @@ final class ModelDecodingTests: XCTestCase {
         let cutoff = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-07-14T09:00:00Z"))
 
         XCTAssertEqual(AppModel.itemCount(in: emails, mailbox: .archived, newerThan: cutoff), 2)
+        XCTAssertEqual(
+            AppModel.itemCount(
+                in: emails,
+                mailbox: .archived,
+                newerThan: cutoff,
+                excluding: ["new-archive-1"]
+            ),
+            1
+        )
         XCTAssertEqual(AppModel.itemCount(in: Array(emails.dropLast()), mailbox: .archived, newerThan: cutoff), 1)
         XCTAssertEqual(AppModel.itemCount(in: emails, mailbox: .inbox, newerThan: cutoff), 1)
     }
@@ -122,7 +131,7 @@ final class ModelDecodingTests: XCTestCase {
           "mailboxState":"inbox","archive":false,"unsubscribeLink":"https://example.com/unsubscribe",
           "createdAt":"2026-07-12T08:00:00.000Z","processedAt":"2026-07-12T08:00:00.000Z",
           "updatedAt":"2026-07-12T08:00:00.000Z","readState":"unread","isRead":false,
-          "trackedThreadMessageCount":3
+          "trackedThreadMessageCount":3,"unreadThreadMessageCount":2
         }
         """#.data(using: .utf8)!
 
@@ -133,6 +142,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertTrue(item.canLoadFullContent)
         XCTAssertTrue(item.isConversation)
         XCTAssertEqual(item.trackedThreadMessageCount, 3)
+        XCTAssertEqual(item.unreadThreadMessageCount, 2)
         XCTAssertNil(item.handlingDecision)
         XCTAssertNil(item.undoAction)
     }

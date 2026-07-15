@@ -1,5 +1,9 @@
 import Foundation
 
+enum WinnowPreferences {
+    static let preferHTMLEmailKey = "winnow.email.prefer-html"
+}
+
 struct EmailListResponse: Decodable {
     var items: [EmailItem]
     var nextCursor: String?
@@ -168,6 +172,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
     let updatedAt: String
     var readState: String
     var trackedThreadMessageCount: Int
+    var unreadThreadMessageCount: Int
     let handlingDecision: EmailHandlingDecision?
     let undoAction: EmailAction?
     let attachments: [EmailAttachment]
@@ -241,7 +246,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         case summary, action, deadline, impact, handling, reason, confidence, ephemeral
         case lowConfidenceKept, triageState, mailboxState, archive, unsubscribeLink
         case createdAt, processedAt, updatedAt, readState, isRead, unsubscribeState
-        case trackedThreadMessageCount, handlingDecision, undoAction
+        case trackedThreadMessageCount, unreadThreadMessageCount, handlingDecision, undoAction
         case attachments
     }
 
@@ -291,6 +296,11 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         } else {
             readState = "unknown"
         }
+        unreadThreadMessageCount = max(
+            0,
+            try values.decodeIfPresent(Int.self, forKey: .unreadThreadMessageCount)
+                ?? (readState == "unread" ? 1 : 0)
+        )
     }
 }
 

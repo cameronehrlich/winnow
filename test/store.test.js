@@ -40,8 +40,8 @@ afterEach(() => {
 describe('daily action summary', () => {
   it('lists one newest representative per Gmail thread', () => {
     upsertEmailItemFromResult({
-      account: 'me@example.com', messageId: 'm-old', threadId: 't-shared', archive: true,
-      subject: 'Original',
+      account: 'me@example.com', messageId: 'm-old', threadId: 't-shared', archive: false,
+      subject: 'Original', readState: 'unread',
     }, { timestamp: '2026-07-13T10:00:00.000Z' });
     const latest = upsertEmailItemFromResult({
       account: 'me@example.com', messageId: 'm-new', threadId: 't-shared', archive: false,
@@ -55,6 +55,7 @@ describe('daily action summary', () => {
     const inbox = listEmailItems({ state: 'inbox' });
     assert.deepEqual(inbox.items.map(item => item.messageId), ['m-new']);
     assert.equal(inbox.items[0].trackedThreadMessageCount, 2);
+    assert.equal(inbox.items[0].unreadThreadMessageCount, 2);
 
     const archived = listEmailItems({ state: 'archived' });
     assert.deepEqual(archived.items.map(item => item.messageId), ['m-other']);
@@ -69,6 +70,7 @@ describe('daily action summary', () => {
     const moved = listEmailItems({ state: 'archived' });
     assert.deepEqual(moved.items.map(item => item.messageId), ['m-new', 'm-other']);
     assert.equal(moved.items[0].trackedThreadMessageCount, 2);
+    assert.equal(moved.items[0].unreadThreadMessageCount, 1);
     assert.deepEqual(getMailboxCounts(), { inbox: 0, archived: 2 });
   });
 
