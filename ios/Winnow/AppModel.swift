@@ -502,6 +502,14 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.removeObject(forKey: archivedSeenItemIDsKey)
     }
 
+    func isArchivedItemUnseen(_ item: EmailItem) -> Bool {
+        guard item.isArchived,
+              !archivedSeenItemIDs.contains(item.id),
+              let cutoff = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date
+        else { return false }
+        return (item.displayDate ?? .distantPast) > cutoff
+    }
+
     func requestNavigation(
         emailID: String,
         mailboxState: String = "inbox",

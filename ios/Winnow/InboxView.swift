@@ -100,6 +100,7 @@ struct InboxView: View {
                             item: item,
                             account: model.account(email: item.account),
                             isPerforming: model.performingEmailIDs.contains(item.id),
+                            isEmphasized: item.isUnread || (mailbox == .archived && model.isArchivedItemUnseen(item)),
                             openAction: { navigationPath.append(item.id) }
                         )
                         .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
@@ -290,6 +291,7 @@ struct EmailCard: View {
     let item: EmailItem
     let account: AccountStatus?
     let isPerforming: Bool
+    let isEmphasized: Bool
     let openAction: () -> Void
 
     var body: some View {
@@ -312,8 +314,8 @@ struct EmailCard: View {
                                     Circle().fill(WinnowDesign.brightIndigo).frame(width: 6, height: 6)
                                 }
                                 Text(item.senderDisplayName)
-                                    .font(.subheadline.weight(item.isUnread ? .bold : .regular))
-                                    .foregroundStyle(item.isUnread ? .primary : .secondary)
+                                    .font(.subheadline.weight(isEmphasized ? .bold : .regular))
+                                    .foregroundStyle(isEmphasized ? .primary : .secondary)
                                     .lineLimit(1)
                             }
                             Text(item.account)
@@ -335,15 +337,15 @@ struct EmailCard: View {
 
                     if let subject = item.displaySubject {
                         Text(subject)
-                            .font(.subheadline.weight(item.isUnread ? .bold : .regular))
-                            .foregroundStyle(item.isUnread ? .primary : .secondary)
+                            .font(.subheadline.weight(isEmphasized ? .bold : .regular))
+                            .foregroundStyle(isEmphasized ? .primary : .secondary)
                             .lineLimit(2)
                     }
 
                     if !item.summary.isEmpty || !item.snippet.isEmpty {
                         Text(item.summary.isEmpty ? item.snippet : item.summary)
                             .font(.footnote)
-                            .foregroundStyle(item.isUnread ? .secondary : .tertiary)
+                            .foregroundStyle(isEmphasized ? .secondary : .tertiary)
                             .lineLimit(3)
                     }
 
