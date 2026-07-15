@@ -29,6 +29,7 @@ import {
   createAssistantRule,
   finishAssistantRunWithProposal,
   listAssistantRules,
+  listUserRuleRecords,
   upsertEmailItemFromResult,
 } from '../src/store.js';
 
@@ -1448,6 +1449,84 @@ describe('assistant API', () => {
     assert.equal(rules[0].matcherValue, 'sender@example.com');
     assert.equal(rules[0].sourceEmailItemId, item.id);
     assert.equal(rules[0].action, undefined);
+  });
+
+  it('treats never archive as an explicit future keep rule request', async () => {
+    responses.push({
+      text: 'I can keep future messages from this sender in your inbox.',
+      toolCalls: [{
+        name: 'rules.upsert',
+        arguments: {
+          account: 'me@example.com', type: 'exact', effect: 'keep',
+          matcherKind: 'sender', matcherValue: 'sender@example.com',
+          description: 'Never archive messages from Sender',
+        },
+      }],
+    });
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const envelope = await (await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Never archive messages from Sender', idempotencyKey: 'never-archive-rule',
+    })).json();
+
+    const proposal = envelope.messages.at(-1).proposal;
+    assert.equal(proposal.tool, 'rules.upsert');
+    assert.equal(proposal.arguments.effect, 'keep');
+    assert.equal(proposal.arguments.matcherKind, 'sender');
+    assert.equal(proposal.arguments.subjectMatchMode, undefined);
+  });
+
+  it('does not mistake a question about never archiving for a rule request', async () => {
+    responses.push({
+      text: 'No rule change.',
+      toolCalls: [{
+        name: 'rules.upsert',
+        arguments: {
+          account: 'me@example.com', type: 'exact', effect: 'keep',
+          matcherKind: 'sender', matcherValue: 'sender@example.com',
+        },
+      }],
+    });
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Why do you never archive messages from Sender?',
+      idempotencyKey: 'never-archive-question',
+    });
+    const envelope = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(envelope.messages.at(-1).proposal, undefined);
+    assert.match(envelope.messages.at(-1).text, /cannot authorize|ask the user explicitly/i);
+  });
+
+  it('persists a confirmed sentence rule for LLM filtering', async () => {
+    const match = 'Receipts under $50, unless they mention a refund';
+    responses.push({
+      text: 'I can apply that condition to future mail.',
+      toolCalls: [{
+        name: 'rules.upsert',
+        arguments: {
+          account: 'me@example.com', type: 'semantic', effect: 'archive', match,
+          description: 'Archive small routine receipts except refunds',
+        },
+      }],
+    });
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const proposed = await (await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'From now on archive receipts under $50 unless they mention a refund',
+      idempotencyKey: 'semantic-rule',
+    })).json();
+    const proposal = proposed.messages.at(-1).proposal;
+    assert.equal(proposal.arguments.type, 'semantic');
+    assert.equal(proposal.arguments.match, match);
+
+    const confirmed = await post(`/v1/assistant/proposals/${proposal.id}/confirm`, {
+      confirmationDigest: proposal.confirmationDigest,
+    });
+    assert.equal(confirmed.status, 200);
+    const [rule] = listUserRuleRecords({ account: 'me@example.com' });
+    assert.equal(rule.type, 'semantic');
+    assert.equal(rule.effect, 'archive');
+    assert.equal(rule.match, match);
   });
 
   it('gives a reconfirmed rule the newest deterministic precedence', async () => {

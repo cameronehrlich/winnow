@@ -332,7 +332,6 @@ function actionExplicitlyRequested(tool, text, { hasPendingRuleProposal = false 
   if (tool === 'device.create_reminder' && denied(['remind', 'reminder'])) return false;
   if (tool === 'device.create_calendar_event' && denied(['calendar', 'schedule', 'event'])) return false;
   if (tool === 'device.pick_contact' && denied(['forward', 'send'])) return false;
-  if (['rules.create', 'rules.upsert'].includes(tool) && denied(['archive', 'keep', 'create', 'update'])) return false;
   if (tool === 'rules.disable' && denied(['disable', 'remove'])) return false;
   if (tool === 'rules.reset' && denied(['reset', 'remove', 'restore'])) return false;
   if (tool === 'mail.archive') return /\barchive\b/.test(request);
@@ -351,6 +350,10 @@ function actionExplicitlyRequested(tool, text, { hasPendingRuleProposal = false 
   }
   if (tool === 'device.pick_contact') return /\bforward\b/.test(request);
   if (['rules.create', 'rules.upsert'].includes(tool)) {
+    if (/\b(?:why|when)\b.{0,50}\b(?:archive|keep)(?:d|ed|s)?\b/.test(request)
+        || /\bdid\s+(?:you|winnow|i)\b.{0,40}\b(?:archive|keep)\b/.test(request)) {
+      return false;
+    }
     if (hasPendingRuleProposal) {
       if (/\b(?:don't|do not|never)\b.{0,30}\b(?:make|change|update|revise|adjust|limit|narrow)\b/.test(request)) {
         return false;
@@ -359,8 +362,18 @@ function actionExplicitlyRequested(tool, text, { hasPendingRuleProposal = false 
         return true;
       }
     }
-    return /\b(future|always|from now on|rule)\b/.test(request)
-      && /\b(archive|keep|update|change|override)\b/.test(request);
+    // A negative handling preference is still a positive request to create a
+    // rule: “never archive messages from Riley” means keep matching future
+    // mail. Only reject negation of the rule mutation itself.
+    if (/\b(?:don't|do not|never)\b.{0,30}\b(?:create|make|add|update|change|override)\b.{0,20}\brule\b/.test(request)) {
+      return false;
+    }
+    const neverHandlingRequest = /^(?:please\s+)?never\s+(?:automatically\s+)?(?:archive|keep)\b/.test(request.trim())
+      || /\b(?:please|should|must)\b.{0,24}\bnever\b.{0,20}\b(?:archive|keep)\b/.test(request)
+      || /\bi\s+(?:want|need)(?:\s+you)?\s+to\b.{0,24}\bnever\b.{0,20}\b(?:archive|keep)\b/.test(request);
+    const futureScope = /\b(?:future|always|from now on|rule)\b/.test(request)
+      || neverHandlingRequest;
+    return futureScope && /\b(?:archive|keep|update|change|override)\b/.test(request);
   }
   if (tool === 'rules.disable') return /\b(disable|stop|remove|turn off)\b/.test(request) && /\brule\b/.test(request);
   if (tool === 'rules.reset') return /\b(reset|restore|remove)\b/.test(request) && /\brule\b/.test(request);

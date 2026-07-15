@@ -11,6 +11,9 @@ describe('assistant model context', () => {
     assert.match(ASSISTANT_SYSTEM_PROMPT, /read that account's existing rules and preview the candidate/i);
     assert.match(ASSISTANT_SYSTEM_PROMPT, /equivalent rule instead of creating a duplicate/i);
     assert.match(ASSISTANT_SYSTEM_PROMPT, /meaningfully different intent separate/i);
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /content- or meaning-based condition/i);
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /preserve those qualifiers in a semantic rule/i);
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /do not\s+broaden it into a sender or subject rule/i);
   });
 
   it('requires email-scoped questions to use their selected message before searching', () => {
