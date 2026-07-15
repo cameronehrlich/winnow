@@ -103,12 +103,7 @@ final class AppModel: ObservableObject {
                 guard let index = refreshedEmails.firstIndex(where: { $0.id == emailID }) else { continue }
                 refreshedEmails[index].applyOptimistic(action)
             }
-            let newlyArchivedIDs: Set<String> = Set(emails.compactMap { previousItem in
-                guard !previousItem.isArchived,
-                      refreshedEmails.first(where: { $0.id == previousItem.id })?.isArchived == true
-                else { return nil }
-                return previousItem.id
-            })
+            let archivedIDs = Set(refreshedEmails.lazy.filter(\.isArchived).map(\.id))
             emails = refreshedEmails
             summary = dailySummary
             lifetimeSummary = lifetime
@@ -119,10 +114,10 @@ final class AppModel: ObservableObject {
             updateArchivedUnseenCount()
             WidgetSnapshotStore.save(emails: emails)
             PushNotificationManager.shared.setAppIconBadge(inboxBadgeCount)
-            if !newlyArchivedIDs.isEmpty {
+            if !archivedIDs.isEmpty {
                 Task {
                     await PushNotificationManager.shared.removeDeliveredNotifications(
-                        for: newlyArchivedIDs.map { WinnowPushContext(emailID: $0) }
+                        for: archivedIDs.map { WinnowPushContext(emailID: $0) }
                     )
                 }
             }
