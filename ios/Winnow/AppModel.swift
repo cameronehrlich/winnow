@@ -207,6 +207,7 @@ final class AppModel: ObservableObject {
     ) async -> Bool {
         guard !performingEmailIDs.contains(item.id) else { return false }
         let originalItem = email(id: item.id) ?? item
+        let wasAlreadySeenInArchive = archivedSeenItemIDs.contains(item.id)
         let appliesOptimistically = action.supportsOptimisticUpdate
         async let actionResponse = APIClient(configuration: configuration).perform(action, emailID: item.id)
 
@@ -225,6 +226,9 @@ final class AppModel: ObservableObject {
             pendingOptimisticActions[item.id] = action
             withAnimation(.snappy(duration: 0.3, extraBounce: 0)) {
                 applyOptimistic(action, to: item.id)
+                if action == .archive {
+                    recordArchivedSeenReceipt(item.id, finalizeWhenComplete: false)
+                }
                 publishEmailState()
             }
             if showsConfirmation {
@@ -248,6 +252,9 @@ final class AppModel: ObservableObject {
 
             await waitForRefreshToFinish()
             await refresh(silent: true)
+            if action == .archive {
+                finalizeArchivedSeenReceiptsIfPossible()
+            }
 
             if requiresManualUnsubscribe {
                 presentedError = PresentedError(
@@ -266,6 +273,9 @@ final class AppModel: ObservableObject {
                 refreshGeneration &+= 1
                 withAnimation(.snappy(duration: 0.3, extraBounce: 0)) {
                     replace(originalItem)
+                    if action == .archive, !wasAlreadySeenInArchive {
+                        removeArchivedSeenReceipt(item.id)
+                    }
                     publishEmailState()
                 }
                 toast = nil
@@ -481,13 +491,22 @@ final class AppModel: ObservableObject {
         guard let item = email(id: emailID),
               item.isArchived,
               let cutoff = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date,
-              (item.displayDate ?? .distantPast) > cutoff,
-              archivedSeenItemIDs.insert(emailID).inserted
+              (item.displayDate ?? .distantPast) > cutoff
         else { return }
 
+        recordArchivedSeenReceipt(emailID)
+    }
+
+    private func recordArchivedSeenReceipt(_ emailID: String, finalizeWhenComplete: Bool = true) {
+        guard archivedSeenItemIDs.insert(emailID).inserted else { return }
         UserDefaults.standard.set(Array(archivedSeenItemIDs), forKey: archivedSeenItemIDsKey)
         updateArchivedUnseenCount()
+        if finalizeWhenComplete {
+            finalizeArchivedSeenReceiptsIfPossible()
+        }
+    }
 
+    private func finalizeArchivedSeenReceiptsIfPossible() {
         // Once every currently loaded new card has actually appeared, roll the
         // baseline forward and discard the per-item receipts. This keeps the
         // persisted set bounded while preserving exact on-screen semantics.
@@ -500,6 +519,12 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(newestDate, forKey: archivedViewedKey)
         archivedSeenItemIDs.removeAll()
         UserDefaults.standard.removeObject(forKey: archivedSeenItemIDsKey)
+    }
+
+    private func removeArchivedSeenReceipt(_ emailID: String) {
+        guard archivedSeenItemIDs.remove(emailID) != nil else { return }
+        UserDefaults.standard.set(Array(archivedSeenItemIDs), forKey: archivedSeenItemIDsKey)
+        updateArchivedUnseenCount()
     }
 
     func isArchivedItemUnseen(_ item: EmailItem) -> Bool {
