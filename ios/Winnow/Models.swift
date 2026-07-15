@@ -202,6 +202,10 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         trackedThreadMessageCount > 1
             || (!threadId.isEmpty && !messageId.isEmpty && threadId != messageId)
     }
+    var displayedUnreadThreadCount: Int? {
+        guard isConversation, unreadThreadMessageCount >= 2 else { return nil }
+        return unreadThreadMessageCount
+    }
     var meaningfulAction: String? {
         let value = action.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = value.lowercased()

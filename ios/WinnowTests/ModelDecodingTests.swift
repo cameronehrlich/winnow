@@ -143,6 +143,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertTrue(item.isConversation)
         XCTAssertEqual(item.trackedThreadMessageCount, 3)
         XCTAssertEqual(item.unreadThreadMessageCount, 2)
+        XCTAssertEqual(item.displayedUnreadThreadCount, 2)
         XCTAssertNil(item.handlingDecision)
         XCTAssertNil(item.undoAction)
     }
@@ -190,6 +191,7 @@ final class ModelDecodingTests: XCTestCase {
         let item = try JSONDecoder().decode(EmailItem.self, from: json)
 
         XCTAssertTrue(item.isConversation)
+        XCTAssertNil(item.displayedUnreadThreadCount)
     }
 
     func testFullEmailContentDecodes() throws {

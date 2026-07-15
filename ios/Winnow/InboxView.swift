@@ -351,7 +351,7 @@ struct EmailCard: View {
 
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, item.isConversation && item.unreadThreadMessageCount > 0 ? 38 : 30)
+                .padding(.trailing, item.displayedUnreadThreadCount == nil ? 30 : 38)
 
                 VStack {
                     Spacer(minLength: 0)
@@ -364,8 +364,8 @@ struct EmailCard: View {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color(.tertiaryLabel))
-                        if item.isConversation && item.unreadThreadMessageCount > 0 {
-                            Text("\(item.unreadThreadMessageCount)")
+                        if let unreadCount = item.displayedUnreadThreadCount {
+                            Text("\(unreadCount)")
                                 .font(.system(size: 8, weight: .bold, design: .rounded))
                                 .foregroundStyle(.white)
                                 .frame(minWidth: 14, minHeight: 14)
@@ -385,9 +385,8 @@ struct EmailCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityValue(
-            item.isConversation && item.unreadThreadMessageCount > 0
-                ? "Threaded conversation, \(item.unreadThreadMessageCount) unread messages"
-                : (item.isConversation ? "Threaded conversation" : "Single message")
+            item.displayedUnreadThreadCount.map { "Threaded conversation, \($0) unread messages" }
+                ?? (item.isConversation ? "Threaded conversation" : "Single message")
         )
         .accessibilityHint(item.isConversation ? "Shows conversation details" : "Shows email details")
         .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
