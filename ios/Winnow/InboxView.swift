@@ -100,7 +100,8 @@ struct InboxView: View {
                             item: item,
                             account: model.account(email: item.account),
                             isPerforming: model.performingEmailIDs.contains(item.id),
-                            isEmphasized: item.isUnread || (mailbox == .archived && model.isArchivedItemUnseen(item)),
+                            isArchivedCell: mailbox == .archived,
+                            isUnseenArchived: mailbox == .archived && model.isArchivedItemUnseen(item),
                             openAction: { navigationPath.append(item.id) }
                         )
                         .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
@@ -291,7 +292,8 @@ struct EmailCard: View {
     let item: EmailItem
     let account: AccountStatus?
     let isPerforming: Bool
-    let isEmphasized: Bool
+    let isArchivedCell: Bool
+    let isUnseenArchived: Bool
     let openAction: () -> Void
 
     var body: some View {
@@ -310,12 +312,10 @@ struct EmailCard: View {
                         }
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 5) {
-                                if item.isUnread {
-                                    Circle().fill(WinnowDesign.brightIndigo).frame(width: 6, height: 6)
-                                }
+                                seenStateIndicator
                                 Text(item.senderDisplayName)
-                                    .font(.subheadline.weight(isEmphasized ? .bold : .regular))
-                                    .foregroundStyle(isEmphasized ? .primary : .secondary)
+                                    .font(.subheadline.weight(item.isUnread ? .bold : .regular))
+                                    .foregroundStyle(item.isUnread ? .primary : .secondary)
                                     .lineLimit(1)
                             }
                             Text(item.account)
@@ -337,15 +337,15 @@ struct EmailCard: View {
 
                     if let subject = item.displaySubject {
                         Text(subject)
-                            .font(.subheadline.weight(isEmphasized ? .bold : .regular))
-                            .foregroundStyle(isEmphasized ? .primary : .secondary)
+                            .font(.subheadline.weight(item.isUnread ? .bold : .regular))
+                            .foregroundStyle(item.isUnread ? .primary : .secondary)
                             .lineLimit(2)
                     }
 
                     if !item.summary.isEmpty || !item.snippet.isEmpty {
                         Text(item.summary.isEmpty ? item.snippet : item.summary)
                             .font(.footnote)
-                            .foregroundStyle(isEmphasized ? .secondary : .tertiary)
+                            .foregroundStyle(item.isUnread ? .secondary : .tertiary)
                             .lineLimit(3)
                     }
 
@@ -396,5 +396,22 @@ struct EmailCard: View {
         )
         .opacity(isPerforming ? 0.68 : 1)
         .disabled(isPerforming)
+    }
+
+    @ViewBuilder
+    private var seenStateIndicator: some View {
+        if isArchivedCell {
+            Circle()
+                .fill(WinnowDesign.brightIndigo)
+                .frame(width: 6, height: 6)
+                .opacity(isUnseenArchived || item.isUnread ? 1 : 0)
+                .transaction { $0.animation = nil }
+                .accessibilityHidden(true)
+        } else if item.isUnread {
+            Circle()
+                .fill(WinnowDesign.brightIndigo)
+                .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
+        }
     }
 }
