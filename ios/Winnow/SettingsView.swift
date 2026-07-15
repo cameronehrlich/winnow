@@ -32,11 +32,16 @@ struct SettingsView: View {
                     }
 
                     Section {
-                        Toggle("Prefer HTML email", isOn: $preferHTMLEmail)
+                        Picker("Render emails as", selection: $preferHTMLEmail) {
+                            Text("Text").tag(false)
+                            Text("HTML").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityLabel("Email rendering mode")
                     } header: {
                         Text("Email Display")
                     } footer: {
-                        Text("When available, View Full Email opens with the original formatting. You can still switch between HTML and plain text inside the message.")
+                        Text("HTML preserves the original layout when available; remote images stay hidden for privacy. Text uses Winnow’s simplified reader.")
                     }
 
                     Section {

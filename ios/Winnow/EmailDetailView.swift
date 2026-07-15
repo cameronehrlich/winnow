@@ -1193,9 +1193,6 @@ private struct FullEmailView: View {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 14) {
                                 conversationHeader(content)
-                                if content.messages.contains(where: \.hasHTMLBody) {
-                                    emailFormatControl
-                                }
                                 let messages = content.messagesForDisplay
                                 ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
                                     FullEmailMessageCard(
@@ -1213,9 +1210,10 @@ private struct FullEmailView: View {
                                         .foregroundStyle(.secondary)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                         .winnowCard(padding: 14)
+                                        .padding(.horizontal, displayMode == .html ? 16 : 0)
                                 }
                             }
-                            .padding(.horizontal, 16)
+                            .padding(.horizontal, displayMode == .html ? 0 : 16)
                             .padding(.vertical, 12)
                         }
                     } else if isLoading {
@@ -1249,35 +1247,8 @@ private struct FullEmailView: View {
         }
     }
 
-    private var emailFormatControl: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Picker("Email format", selection: displayModeBinding) {
-                ForEach(FullEmailDisplayMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityLabel("Email display format")
-
-            if displayMode == .html {
-                Label("Remote and attachment-backed images stay hidden for privacy.", systemImage: "hand.raised")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .winnowCard(padding: 12)
-    }
-
     private var displayMode: FullEmailDisplayMode {
         preferHTMLEmail ? .html : .plain
-    }
-
-    private var displayModeBinding: Binding<FullEmailDisplayMode> {
-        Binding(
-            get: { displayMode },
-            set: { preferHTMLEmail = $0 == .html }
-        )
     }
 
     private func conversationHeader(_ content: EmailContent) -> some View {
@@ -1296,6 +1267,7 @@ private struct FullEmailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .winnowCard()
+        .padding(.horizontal, displayMode == .html ? 16 : 0)
     }
 
     @MainActor
@@ -1395,6 +1367,7 @@ private struct FullEmailMessageCard: View {
                 SafeEmailHTMLView(html: message.htmlBody, contentHeight: $htmlHeight)
                     .frame(height: htmlHeight)
                     .frame(maxWidth: .infinity)
+                    .padding(.horizontal, -16)
                     .accessibilityLabel("HTML email body")
             } else if message.body.isEmpty {
                 Text("This message has no displayable text body.")
@@ -1421,12 +1394,9 @@ private struct FullEmailMessageCard: View {
     }
 }
 
-private enum FullEmailDisplayMode: String, CaseIterable, Identifiable {
+private enum FullEmailDisplayMode {
     case plain
     case html
-
-    var id: String { rawValue }
-    var title: String { self == .plain ? "Plain" : "HTML" }
 }
 
 enum SafeEmailHTML {
