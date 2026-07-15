@@ -56,8 +56,10 @@ function latestThreadItem(account, threadId, fallback = null) {
   return findEmailItemByGmail({ account, threadId }) || fallback;
 }
 
-function syncPushBadge() {
-  void sendBadgeSync().catch(error => {
+function syncPushBadge(item = null) {
+  void sendBadgeSync({
+    clearNotifications: item?.mailboxState === 'archived' ? [item] : [],
+  }).catch(error => {
     console.error(`[winnow/push] Badge sync failed: ${error.message}`);
   });
 }
@@ -96,7 +98,7 @@ export async function archiveEmail({
   });
   appendEmailEvent('email.manual_archived', updated, { source, reason });
   if (syncSlack) await syncSlackDeliveryForItem(updated, reason);
-  syncPushBadge();
+  syncPushBadge(updated);
   return updated;
 }
 
@@ -132,7 +134,7 @@ export async function moveEmailToInbox({
   });
   appendEmailEvent('email.restored_to_inbox', updated, { source, reason });
   if (syncSlack) await syncSlackDeliveryForItem(updated, reason);
-  syncPushBadge();
+  syncPushBadge(updated);
   return updated;
 }
 
@@ -162,7 +164,7 @@ export async function markEmailRead({
     reason,
     metadata: { readState: 'read' },
   });
-  syncPushBadge();
+  syncPushBadge(updated);
   return updated;
 }
 
@@ -192,6 +194,6 @@ export async function markEmailUnread({
     reason,
     metadata: { readState: 'unread' },
   });
-  syncPushBadge();
+  syncPushBadge(updated);
   return updated;
 }

@@ -233,9 +233,22 @@ export async function sendBadgeSync(opts = {}) {
   const devices = opts.devices || listPushDevices();
   if (!devices.length) return { sent: false, reason: 'no_registered_devices' };
   const badge = (opts.mailboxCounts || getMailboxCounts()).inbox;
+  const clearNotifications = Array.from(new Map(
+    (Array.isArray(opts.clearNotifications) ? opts.clearNotifications : [])
+      .filter(item => item?.id || item?.emailId)
+      .map(item => {
+        const emailId = String(item.id || item.emailId);
+        return [emailId, {
+          emailId,
+          account: String(item.account || ''),
+          threadId: String(item.threadId || ''),
+        }];
+      }),
+  ).values()).slice(0, 50);
   const payload = {
     aps: { 'content-available': 1, badge },
     event: 'badge.sync',
+    ...(clearNotifications.length ? { clearNotifications } : {}),
   };
   return {
     ...await deliverPayload(payload, {

@@ -34,6 +34,7 @@ async function runScanCycle(accounts, searchQuery) {
 
 async function runReconcileCycle(accounts) {
   let badgeMayHaveChanged = false;
+  const clearNotifications = [];
   for (const account of accounts) {
     try {
       const syncResult = await syncGmailMailbox(account);
@@ -44,6 +45,7 @@ async function runReconcileCycle(accounts) {
         );
       }
       badgeMayHaveChanged ||= syncResult.changed > 0;
+      clearNotifications.push(...(syncResult.changes || []).filter(item => item.mailboxState === 'archived'));
     } catch (err) {
       console.error(`[winnow/daemon] Gmail sync error (${account}): ${err.message}`);
     }
@@ -59,11 +61,12 @@ async function runReconcileCycle(accounts) {
         console.log(`[winnow/daemon] Reconciled ${result.changed}/${result.checked} mailbox state changes for ${account}`);
         badgeMayHaveChanged = true;
       }
+      clearNotifications.push(...result.changes.filter(item => item.mailboxState === 'archived'));
     } catch (err) {
       console.error(`[winnow/daemon] Reconcile error (${account}): ${err.message}`);
     }
   }
-  if (badgeMayHaveChanged) await sendBadgeSync();
+  if (badgeMayHaveChanged) await sendBadgeSync({ clearNotifications });
 }
 
 function startSlackActionsInBackground() {

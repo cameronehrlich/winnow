@@ -19,11 +19,43 @@ struct WinnowPushContext: Equatable {
     let threadID: String
     let mailboxState: String
 
+    init(emailID: String, account: String = "", threadID: String = "", mailboxState: String = "inbox") {
+        self.emailID = emailID
+        self.account = account
+        self.threadID = threadID
+        self.mailboxState = mailboxState
+    }
+
     init(userInfo: [AnyHashable: Any]) {
-        emailID = userInfo["emailId"] as? String ?? ""
-        account = userInfo["account"] as? String ?? ""
-        threadID = userInfo["threadId"] as? String ?? ""
-        mailboxState = userInfo["mailboxState"] as? String ?? "inbox"
+        self.init(
+            emailID: userInfo["emailId"] as? String ?? "",
+            account: userInfo["account"] as? String ?? "",
+            threadID: userInfo["threadId"] as? String ?? "",
+            mailboxState: userInfo["mailboxState"] as? String ?? "inbox"
+        )
+    }
+
+    static func cleanupContexts(from userInfo: [AnyHashable: Any]) -> [WinnowPushContext] {
+        guard let entries = userInfo["clearNotifications"] as? [Any] else { return [] }
+        return entries.compactMap { entry in
+            let fields: [AnyHashable: Any]
+            if let dictionary = entry as? [AnyHashable: Any] {
+                fields = dictionary
+            } else if let dictionary = entry as? [String: Any] {
+                fields = dictionary.reduce(into: [AnyHashable: Any]()) { result, pair in
+                    result[pair.key] = pair.value
+                }
+            } else {
+                return nil
+            }
+            guard let emailID = fields["emailId"] as? String, !emailID.isEmpty else { return nil }
+            return WinnowPushContext(
+                emailID: emailID,
+                account: fields["account"] as? String ?? "",
+                threadID: fields["threadId"] as? String ?? "",
+                mailboxState: "archived"
+            )
+        }
     }
 }
 
@@ -155,12 +187,12 @@ final class PushNotificationManager {
         _ userInfo: [AnyHashable: Any],
         completion: @escaping (UIBackgroundFetchResult) -> Void
     ) {
-        guard let refreshHandler else {
-            completion(.noData)
-            return
-        }
+        let context = WinnowPushContext(userInfo: userInfo)
+        let cleanupContexts = WinnowPushContext.cleanupContexts(from: userInfo)
+            + (context.mailboxState == "archived" && !context.emailID.isEmpty ? [context] : [])
         Task {
-            let changed = await refreshHandler()
+            let changed = await refreshHandler?() ?? false
+            await removeDeliveredNotifications(for: cleanupContexts)
             completion(changed ? .newData : .noData)
         }
     }
@@ -175,6 +207,7 @@ final class PushNotificationManager {
                 .perform(.archive, emailID: context.emailID)
             if let badge = response.badge { setAppIconBadge(badge) }
             _ = await refreshHandler?()
+            await removeDeliveredNotifications(for: [context])
         } catch {
             // The next foreground or background refresh reconciles any failed action.
         }
@@ -182,6 +215,19 @@ final class PushNotificationManager {
 
     func setAppIconBadge(_ count: Int) {
         UNUserNotificationCenter.current().setBadgeCount(max(0, count))
+    }
+
+    func removeDeliveredNotifications(for contexts: [WinnowPushContext]) async {
+        let emailIDs = Set(contexts.map(\.emailID).filter { !$0.isEmpty })
+        guard !emailIDs.isEmpty else { return }
+        let center = UNUserNotificationCenter.current()
+        let delivered = await center.deliveredNotifications()
+        let identifiers = delivered.compactMap { notification -> String? in
+            let context = WinnowPushContext(userInfo: notification.request.content.userInfo)
+            return emailIDs.contains(context.emailID) ? notification.request.identifier : nil
+        }
+        guard !identifiers.isEmpty else { return }
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
     }
 
     private func registerCurrentToken() async {

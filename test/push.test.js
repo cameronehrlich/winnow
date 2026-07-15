@@ -142,4 +142,27 @@ describe('push notification policy', () => {
       event: 'badge.sync',
     });
   });
+
+  it('includes exact archived email identities for device notification cleanup', async () => {
+    let request;
+    await sendBadgeSync({
+      config: testConfiguration(),
+      devices: [device],
+      mailboxCounts: { inbox: 1, archived: 12 },
+      clearNotifications: [
+        { id: 'email-1', account: 'me@example.com', threadId: 'thread-1', mailboxState: 'archived' },
+        { id: 'email-1', account: 'me@example.com', threadId: 'thread-1', mailboxState: 'archived' },
+        { id: 'email-2', account: 'me@example.com', threadId: 'thread-2', mailboxState: 'inbox' },
+      ],
+      send: async value => {
+        request = value;
+        return { ok: true, status: 200, reason: '', apnsId: 'badge-2' };
+      },
+    });
+
+    assert.deepEqual(request.payload.clearNotifications, [
+      { emailId: 'email-1', account: 'me@example.com', threadId: 'thread-1' },
+      { emailId: 'email-2', account: 'me@example.com', threadId: 'thread-2' },
+    ]);
+  });
 });

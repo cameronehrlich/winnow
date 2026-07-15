@@ -197,6 +197,7 @@ export async function fullSyncGmailInbox(account, {
     imported,
     classified: unreadToClassify.length,
     changed: changed.length,
+    changes: changed,
     historyId,
   };
 }
@@ -281,6 +282,7 @@ export async function syncGmailMailbox(account, {
     imported,
     classified: unreadToClassify.length,
     changed: changed.length,
+    changes: changed,
     historyId: nextHistoryId,
   };
 }

@@ -20,6 +20,21 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(WinnowNotificationIdentifier.askAction, "WINNOW_ASK")
     }
 
+    func testPushContextDecodesExactNotificationCleanupEntries() {
+        let contexts = WinnowPushContext.cleanupContexts(from: [
+            "clearNotifications": [
+                ["emailId": "email-1", "account": "me@example.com", "threadId": "thread-1"],
+                ["emailId": "email-2", "account": "me@example.com", "threadId": "thread-2"],
+                ["account": "me@example.com"],
+            ],
+        ])
+
+        XCTAssertEqual(contexts.map(\.emailID), ["email-1", "email-2"])
+        XCTAssertEqual(contexts[0].account, "me@example.com")
+        XCTAssertEqual(contexts[0].threadID, "thread-1")
+        XCTAssertEqual(contexts[0].mailboxState, "archived")
+    }
+
     func testActionResponseDecodesAuthoritativeBadge() throws {
         let data = #"{"ok":true,"action":"archive","badge":3}"#.data(using: .utf8)!
         let response = try JSONDecoder().decode(ActionResponse.self, from: data)
