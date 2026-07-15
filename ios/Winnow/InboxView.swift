@@ -315,15 +315,6 @@ struct EmailCard: View {
                                     .font(.subheadline.weight(item.isUnread ? .bold : .regular))
                                     .foregroundStyle(item.isUnread ? .primary : .secondary)
                                     .lineLimit(1)
-                                if item.isUnread && item.unreadThreadMessageCount > 1 {
-                                    Text("\(item.unreadThreadMessageCount)")
-                                        .font(.caption2.weight(.bold))
-                                        .foregroundStyle(WinnowDesign.accent)
-                                        .padding(.horizontal, 5)
-                                        .frame(minWidth: 17, minHeight: 17)
-                                        .background(WinnowDesign.accent.opacity(0.12), in: Capsule())
-                                        .accessibilityLabel("\(item.unreadThreadMessageCount) unread messages")
-                                }
                             }
                             Text(item.account)
                                 .font(.caption2)
@@ -358,7 +349,7 @@ struct EmailCard: View {
 
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, 30)
+                .padding(.trailing, item.isConversation && item.unreadThreadMessageCount > 0 ? 38 : 30)
 
                 VStack {
                     Spacer(minLength: 0)
@@ -371,6 +362,14 @@ struct EmailCard: View {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color(.tertiaryLabel))
+                        if item.isConversation && item.unreadThreadMessageCount > 0 {
+                            Text("\(item.unreadThreadMessageCount)")
+                                .font(.system(size: 8, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .frame(minWidth: 14, minHeight: 14)
+                                .background(WinnowDesign.brightIndigo, in: Circle())
+                                .offset(x: 8, y: -8)
+                        }
                     }
                     .frame(width: 20, height: 20)
                     .accessibilityHidden(true)
@@ -383,7 +382,11 @@ struct EmailCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityValue(item.isConversation ? "Threaded conversation" : "Single message")
+        .accessibilityValue(
+            item.isConversation && item.unreadThreadMessageCount > 0
+                ? "Threaded conversation, \(item.unreadThreadMessageCount) unread messages"
+                : (item.isConversation ? "Threaded conversation" : "Single message")
+        )
         .accessibilityHint(item.isConversation ? "Shows conversation details" : "Shows email details")
         .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(
