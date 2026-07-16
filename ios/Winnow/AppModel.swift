@@ -510,12 +510,12 @@ final class AppModel: ObservableObject {
               archivedSeenItemIDs.insert(item.id).inserted
         else { return }
 
-        // Visibility can change for several recycled rows in a single scroll
-        // frame. Coalesce their persistence and published count update so the
-        // list is not invalidated once per row while the user's finger moves.
-        guard archivedSeenFlushTask == nil else { return }
+        // Visibility can change for many recycled rows during one gesture.
+        // Debounce persistence and the published count until exposure settles
+        // so a long scroll does not invalidate the whole list every 120 ms.
+        archivedSeenFlushTask?.cancel()
         archivedSeenFlushTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(120))
+            try? await Task.sleep(for: .milliseconds(240))
             guard !Task.isCancelled else { return }
             self?.flushArchivedSeenReceipts()
         }

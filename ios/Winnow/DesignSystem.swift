@@ -57,19 +57,23 @@ struct AppBackdrop: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        ZStack {
+        GeometryReader { geometry in
             Color(uiColor: colorScheme == .dark ? .systemBackground : .secondarySystemBackground)
-            RadialGradient(
-                colors: [
-                    WinnowDesign.brightIndigo.opacity(colorScheme == .dark ? 0.16 : 0.10),
-                    WinnowDesign.brightIndigo.opacity(0),
-                ],
-                center: .center,
-                startRadius: 0,
-                endRadius: 240
-            )
-                .frame(width: 480, height: 480)
-                .offset(x: 170, y: -350)
+                .overlay {
+                    RadialGradient(
+                        colors: [
+                            WinnowDesign.brightIndigo.opacity(colorScheme == .dark ? 0.16 : 0.10),
+                            WinnowDesign.brightIndigo.opacity(0),
+                        ],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: 240
+                    )
+                    .frame(width: 480, height: 480)
+                    .position(x: geometry.size.width - 45, y: 120)
+                    .allowsHitTesting(false)
+                }
+                .clipped()
         }
         .ignoresSafeArea()
     }
@@ -168,16 +172,22 @@ struct SenderAvatar: View {
 struct AccountAvatarBadge: View {
     let account: AccountStatus?
     var size: CGFloat = 18
-    @State private var cachedImage: UIImage?
+    @State private var loadedAvatar: LoadedAccountAvatar?
 
     private var fallbackLetter: String {
         account?.email.first.map { String($0).uppercased() } ?? "?"
     }
 
+    private var resolvedImage: UIImage? {
+        guard let url = account?.avatarURL else { return nil }
+        if loadedAvatar?.url == url { return loadedAvatar?.image }
+        return AccountAvatarImageCache.shared.cachedImage(for: url)
+    }
+
     var body: some View {
         Group {
-            if let cachedImage {
-                Image(uiImage: cachedImage).resizable().scaledToFill()
+            if let resolvedImage {
+                Image(uiImage: resolvedImage).resizable().scaledToFill()
             } else {
                 Text(fallbackLetter)
                     .font(.system(size: size * 0.48, weight: .bold, design: .rounded))
@@ -189,16 +199,25 @@ struct AccountAvatarBadge: View {
         .frame(width: size, height: size)
         .clipShape(Circle())
         .overlay(Circle().stroke(Color(uiColor: .systemBackground), lineWidth: 2))
-        .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
         .accessibilityHidden(true)
         .task(id: account?.avatarURL) {
             guard let url = account?.avatarURL else {
-                cachedImage = nil
+                loadedAvatar = nil
                 return
             }
-            cachedImage = await AccountAvatarImageCache.shared.image(for: url)
+            // Recycled rows can read a globally cached account image without
+            // publishing new local State and invalidating the row mid-scroll.
+            guard AccountAvatarImageCache.shared.cachedImage(for: url) == nil else { return }
+            if let image = await AccountAvatarImageCache.shared.image(for: url) {
+                loadedAvatar = LoadedAccountAvatar(url: url, image: image)
+            }
         }
     }
+}
+
+private struct LoadedAccountAvatar {
+    let url: URL
+    let image: UIImage
 }
 
 /// Decodes each account photo once for the entire feed instead of once per
@@ -211,8 +230,12 @@ private final class AccountAvatarImageCache {
     private let images = NSCache<NSURL, UIImage>()
     private var requests: [URL: Task<Data?, Never>] = [:]
 
+    func cachedImage(for url: URL) -> UIImage? {
+        images.object(forKey: url as NSURL)
+    }
+
     func image(for url: URL) async -> UIImage? {
-        if let image = images.object(forKey: url as NSURL) { return image }
+        if let image = cachedImage(for: url) { return image }
 
         let request: Task<Data?, Never>
         if let existing = requests[url] {
@@ -371,8 +394,13 @@ extension View {
     }
 }
 
+private let winnowRelativeDateFormat = Date.RelativeFormatStyle(
+    presentation: .named,
+    unitsStyle: .abbreviated
+)
+
 extension Date {
     var relativeWinnowTime: String {
-        formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+        formatted(winnowRelativeDateFormat)
     }
 }
