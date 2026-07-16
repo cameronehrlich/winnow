@@ -65,6 +65,7 @@ struct AssistantConversationView: View {
     private let account: String?
     private let emailItemID: String?
     private let contextTitle: String?
+    private let contextSummary: String?
     private let onMailboxChanged: () async -> Void
 
     init(
@@ -73,6 +74,7 @@ struct AssistantConversationView: View {
         account: String?,
         emailItemID: String?,
         contextTitle: String?,
+        contextSummary: String? = nil,
         onMailboxChanged: @escaping () async -> Void
     ) {
         self.configuration = configuration
@@ -80,6 +82,7 @@ struct AssistantConversationView: View {
         self.account = account
         self.emailItemID = emailItemID
         self.contextTitle = contextTitle
+        self.contextSummary = contextSummary
         self.onMailboxChanged = onMailboxChanged
     }
 
@@ -93,7 +96,18 @@ struct AssistantConversationView: View {
             presentation: .standalone,
             onMailboxChanged: onMailboxChanged
         ) {
-            EmptyView()
+            if let contextSummary, !contextSummary.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("EMAIL SUMMARY", systemImage: "text.alignleft")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(WinnowDesign.accent)
+                    Text(contextSummary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .winnowCard(padding: 14)
+            }
         }
     }
 }

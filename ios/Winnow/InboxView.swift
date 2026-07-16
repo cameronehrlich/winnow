@@ -352,22 +352,20 @@ struct EmailCard: View {
                         }
                     }
 
-                    if let subject = item.displaySubject {
-                        Text(subject)
-                            .font(.subheadline.weight(item.isUnread ? .bold : .regular))
-                            .foregroundStyle(item.isUnread ? .primary : .secondary)
-                            .lineLimit(2)
-                    }
+                    Text(item.displaySubject ?? "No subject")
+                        .font(.subheadline.weight(item.isUnread ? .bold : .regular))
+                        .foregroundStyle(item.isUnread ? .primary : .secondary)
+                        .lineLimit(2)
+                        .frame(height: 36, alignment: .topLeading)
 
-                    if !item.summary.isEmpty || !item.snippet.isEmpty {
-                        Text(item.summary.isEmpty ? item.snippet : item.summary)
-                            .font(.footnote)
-                            .foregroundStyle(item.isUnread ? .secondary : .tertiary)
-                            .lineLimit(3)
-                    }
+                    Text(item.summary.isEmpty ? item.snippet : item.summary)
+                        .font(.footnote)
+                        .foregroundStyle(item.isUnread ? .secondary : .tertiary)
+                        .lineLimit(3)
+                        .frame(height: 48, alignment: .topLeading)
 
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, minHeight: 130, maxHeight: 130, alignment: .leading)
                 .padding(.trailing, item.displayedUnreadThreadCount == nil ? 30 : 38)
 
                 VStack {

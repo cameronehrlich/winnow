@@ -9,11 +9,13 @@ struct EmailDetailView: View {
     @EnvironmentObject private var model: AppModel
     let emailID: String
     @State private var confirmUnsubscribe = false
-    @State private var assistantComposerRequest: AssistantComposerRequest?
-    @State private var assistantFocusRequest: UUID?
     @State private var editingRule: MailRule?
     @State private var showingCreateRule = false
-    @State private var showingFullEmail = false
+    @State private var showingAssistant = false
+    @State private var showingHandlingExplanation = false
+    @State private var emailContent: EmailContent?
+    @State private var isLoadingEmail = true
+    @State private var emailLoadError: String?
     @State private var fetchedAttachments: [EmailAttachment]?
     @State private var downloadingAttachmentID: String?
     @State private var attachmentPreviewURL: URL?
@@ -25,42 +27,9 @@ struct EmailDetailView: View {
         ZStack {
             AppBackdrop()
             if let item {
-                EmailAssistantThreadView(
-                    configuration: model.configuration,
-                    account: item.account,
-                    accountStatus: model.account(email: item.account),
-                    emailItemID: item.id,
-                    contextTitle: item.displaySubject ?? "No subject",
-                    composerRequest: $assistantComposerRequest,
-                    focusComposerRequest: $assistantFocusRequest,
-                    onMailboxChanged: { await model.refresh(silent: true) }
-                ) {
+                ScrollView {
                     VStack(spacing: 16) {
                         senderHeader(item)
-
-                        if let decision = item.handlingDecision {
-                            HandlingDecisionCard(
-                                decision: decision,
-                                isBusy: model.performingEmailIDs.contains(item.id),
-                                canUndo: item.undoAction != nil,
-                                undoConfirmationTitle: undoConfirmationTitle(for: item),
-                                undoConfirmationButton: undoConfirmationButton(for: item),
-                                undoConfirmationMessage: undoConfirmationMessage(for: item),
-                                undo: { Task { _ = await model.undoHandling(on: item) } },
-                                adjust: { adjustFutureHandling(item, decision: decision) },
-                                createRule: { showingCreateRule = true }
-                            )
-                        }
-
-                        if !item.snippet.isEmpty, item.snippet != item.summary {
-                            InsightBlock(
-                                title: "Message preview",
-                                symbol: "quote.opening",
-                                text: item.snippet,
-                                color: .secondary,
-                                detectLinks: true
-                            )
-                        }
 
                         if item.unsubscribeState == "succeeded" {
                             InsightBlock(title: "Unsubscribed", symbol: "checkmark.circle.fill", text: "Winnow completed the unsubscribe request.", color: WinnowDesign.mint)
@@ -68,21 +37,40 @@ struct EmailDetailView: View {
                             InsightBlock(title: "Manual step needed", symbol: "envelope.badge", text: "This sender requires an email-based unsubscribe that Winnow can’t complete automatically.", color: WinnowDesign.amber)
                         }
 
-                        ConversationPrelude(
-                            configuration: model.configuration,
-                            showsEarlierMessages: item.isConversation,
-                            emailID: item.id,
-                            focusedMessageID: item.messageId,
+                        InlineEmailReader(
                             fallbackSubject: item.displaySubject ?? "No subject",
                             account: item.account,
-                            summary: item.summary,
-                            attachments: fetchedAttachments ?? item.attachments,
+                            accountStatus: model.account(email: item.account),
+                            content: emailContent,
+                            isLoading: isLoadingEmail,
+                            errorMessage: emailLoadError,
+                            attachments: fetchedAttachments ?? emailContent?.attachments ?? item.attachments,
                             downloadingAttachmentID: downloadingAttachmentID,
-                            canLoadFullEmail: item.canLoadFullContent,
                             openAttachment: { openAttachment($0, from: item) },
-                            viewFullEmail: { showingFullEmail = true }
+                            retry: { Task { await loadEmail(item) } }
                         )
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .padding(.bottom, 72)
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .overlay(alignment: .bottomTrailing) {
+                    Button {
+                        showingAssistant = true
+                    } label: {
+                        Label("Ask Winnow", systemImage: "bubble.left.and.bubble.right.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 16)
+                            .frame(height: 48)
+                            .background(WinnowDesign.heroGradient, in: Capsule())
+                            .shadow(color: WinnowDesign.indigo.opacity(0.28), radius: 12, y: 6)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 14)
+                    .accessibilityHint("Opens a conversation about this email")
                 }
                 .sheet(item: $editingRule) { rule in
                     MailRuleEditorView(rule: rule)
@@ -92,13 +80,20 @@ struct EmailDetailView: View {
                     CreateRuleFromEmailView(item: item)
                         .environmentObject(model)
                 }
-                .sheet(isPresented: $showingFullEmail) {
-                    FullEmailView(
+                .sheet(isPresented: $showingAssistant) {
+                    EmailAssistantSheet(
                         configuration: model.configuration,
                         emailID: item.id,
-                        fallbackSubject: item.displaySubject ?? "No subject",
-                        account: item.account
+                        account: item.account,
+                        contextTitle: item.displaySubject ?? "No subject",
+                        summary: item.summary,
+                        onMailboxChanged: { await model.refresh(silent: true) }
                     )
+                }
+                .sheet(isPresented: $showingHandlingExplanation) {
+                    if let decision = item.handlingDecision {
+                        HandlingExplanationSheet(decision: decision)
+                    }
                 }
             } else {
                 ContentUnavailableView("Email unavailable", systemImage: "envelope.badge")
@@ -120,32 +115,39 @@ struct EmailDetailView: View {
         }
         .task(id: emailID) {
             guard let item = model.email(id: emailID) else { return }
-            focusConversationIfRequested()
             await model.markReadWhenOpened(item)
             if item.handlingDecision?.appliedRule != nil {
                 await model.loadMailRules(showsError: false)
             }
+            openAssistantIfRequested()
         }
-        .onChange(of: model.conversationFocusRequest) { _, _ in
-            focusConversationIfRequested()
-        }
-        .task(id: "attachments-\(emailID)") {
-            fetchedAttachments = nil
-            guard let item = model.email(id: emailID), item.canLoadFullContent else { return }
-            fetchedAttachments = try? await APIClient(configuration: model.configuration)
-                .emailAttachments(emailID: item.id)
+        .task(id: "content-\(emailID)") {
+            guard let item = model.email(id: emailID) else { return }
+            await loadEmail(item)
         }
         .onDisappear {
             if let attachmentPreviewURL {
                 AttachmentPreviewFile.remove(attachmentPreviewURL)
             }
         }
+        .onChange(of: model.conversationFocusRequest) { _, _ in
+            openAssistantIfRequested()
+        }
     }
 
-    private func focusConversationIfRequested() {
-        guard let request = model.conversationFocusRequest, request.emailID == emailID else { return }
-        assistantFocusRequest = request.id
-        model.consumeConversationFocus(request)
+    @MainActor
+    private func loadEmail(_ item: EmailItem) async {
+        isLoadingEmail = true
+        emailLoadError = nil
+        do {
+            let content = try await APIClient(configuration: model.configuration).emailContent(emailID: item.id)
+            emailContent = content
+            fetchedAttachments = content.attachments
+        } catch {
+            emailContent = nil
+            emailLoadError = error.localizedDescription
+        }
+        isLoadingEmail = false
     }
 
     private func undoConfirmationTitle(for item: EmailItem) -> String {
@@ -267,23 +269,24 @@ struct EmailDetailView: View {
                 }
             }
 
-            if item.canLoadFullContent, item.summary.isEmpty {
+            if item.handlingDecision != nil {
                 CompactDetailActionButton(
-                    title: "Full Email",
-                    symbol: "doc.text.magnifyingglass",
+                    title: "Why",
+                    symbol: "eye",
                     color: WinnowDesign.accent
                 ) {
-                    showingFullEmail = true
+                    showingHandlingExplanation = true
                 }
-                .accessibilityHint("Loads the complete message securely from Gmail.")
             }
 
-            if item.handlingDecision == nil {
-                CompactDetailActionButton(
-                    title: "New Rule",
-                    symbol: "checklist",
-                    color: WinnowDesign.mint
-                ) {
+            CompactDetailActionButton(
+                title: "Filter",
+                symbol: "line.3.horizontal.decrease.circle",
+                color: WinnowDesign.mint
+            ) {
+                if let decision = item.handlingDecision {
+                    adjustFutureHandling(item, decision: decision)
+                } else {
                     showingCreateRule = true
                 }
             }
@@ -334,7 +337,7 @@ struct EmailDetailView: View {
         if let gmailURL = item.gmailURL {
             openURL(gmailURL)
         } else {
-            showingFullEmail = true
+            attachmentError = "This attachment couldn’t be loaded from Gmail."
         }
     }
 
@@ -347,10 +350,16 @@ struct EmailDetailView: View {
                 editingRule = rule
                 return
             }
-            assistantComposerRequest = AssistantComposerRequest(
-                text: "Adjust how future messages like this email are handled. Propose the smallest safe rule change, test it against representative mail, and ask before saving."
-            )
+            showingCreateRule = true
         }
+    }
+
+    private func openAssistantIfRequested() {
+        guard let request = model.conversationFocusRequest,
+              request.emailID == emailID
+        else { return }
+        showingAssistant = true
+        model.consumeConversationFocus(request)
     }
 
 }
@@ -818,6 +827,293 @@ private struct InsightBlock: View {
     }
 }
 
+private struct EmailAssistantSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let configuration: ServerConfiguration
+    let emailID: String
+    let account: String
+    let contextTitle: String
+    let summary: String
+    let onMailboxChanged: () async -> Void
+
+    var body: some View {
+        NavigationStack {
+            AssistantConversationView(
+                configuration: configuration,
+                scope: .email,
+                account: account,
+                emailItemID: emailID,
+                contextTitle: contextTitle,
+                contextSummary: summary,
+                onMailboxChanged: onMailboxChanged
+            )
+            .navigationTitle("Ask Winnow")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct HandlingExplanationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let decision: EmailHandlingDecision
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Why Winnow handled this") {
+                    Label {
+                        Text(decision.effect == .archive ? "Archived" : "Kept in Inbox")
+                    } icon: {
+                        Image(systemName: decision.effect == .archive ? "archivebox.fill" : "tray.fill")
+                            .foregroundStyle(decision.effect == .archive ? WinnowDesign.accent : WinnowDesign.mint)
+                    }
+                    if !decision.explanation.isEmpty {
+                        Text(decision.explanation)
+                    }
+                    if let confidence = decision.confidence {
+                        LabeledContent("Confidence", value: "\(confidence)%")
+                    }
+                }
+
+                if let rule = decision.appliedRule {
+                    Section("Filter") {
+                        Text(rule.displayTitle)
+                            .font(.subheadline.weight(.semibold))
+                        Text(rule.attributionDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if let basis = decision.basis {
+                    Section("Basis") {
+                        Text(basis.title)
+                    }
+                }
+            }
+            .navigationTitle("Winnow’s Decision")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+private struct InlineEmailReader: View {
+    let fallbackSubject: String
+    let account: String
+    let accountStatus: AccountStatus?
+    let content: EmailContent?
+    let isLoading: Bool
+    let errorMessage: String?
+    let attachments: [EmailAttachment]
+    let downloadingAttachmentID: String?
+    let openAttachment: (EmailAttachment) -> Void
+    let retry: () -> Void
+    @State private var showingAttachmentChoices = false
+
+    private var focusedMessage: FullEmailMessage? {
+        content?.messagesForDisplay.first
+    }
+
+    private var previousMessages: [FullEmailMessage] {
+        guard let content else { return [] }
+        return content.messagesForDisplay.filter { $0.id != focusedMessage?.id }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !previousMessages.isEmpty {
+                NavigationLink {
+                    ConversationHistoryView(
+                        messages: previousMessages,
+                        fallbackSubject: fallbackSubject,
+                        account: account,
+                        accountStatus: accountStatus
+                    )
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .foregroundStyle(WinnowDesign.accent)
+                        Text("See previous emails")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text("\(previousMessages.count)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 48)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                }
+            }
+
+            if !attachments.isEmpty, let firstAttachment = attachments.first {
+                Button {
+                    if attachments.count == 1 {
+                        openAttachment(firstAttachment)
+                    } else {
+                        showingAttachmentChoices = true
+                    }
+                } label: {
+                    HStack(spacing: 9) {
+                        if downloadingAttachmentID != nil {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "paperclip")
+                        }
+                        Text(attachments.count == 1 ? firstAttachment.displayName : "\(attachments.count) attachments")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 14)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .confirmationDialog("Attachments", isPresented: $showingAttachmentChoices) {
+                    ForEach(attachments) { attachment in
+                        Button(attachment.displayName) { openAttachment(attachment) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                }
+            }
+
+            Group {
+                if let focusedMessage {
+                    InlineFocusedEmailBody(message: focusedMessage)
+                } else if isLoading {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading email…")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 120)
+                    .winnowCard()
+                } else {
+                    ContentUnavailableView {
+                        Label("Email unavailable", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(errorMessage ?? "Winnow couldn’t load this message from Gmail.")
+                    } actions: {
+                        Button("Try Again", action: retry)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 220)
+                    .winnowCard()
+                }
+            }
+
+            if content?.truncated == true {
+                Label("This unusually long email was shortened for display.", systemImage: "scissors")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+}
+
+private struct InlineFocusedEmailBody: View {
+    let message: FullEmailMessage
+    @State private var htmlHeight: CGFloat = 320
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Label("Email", systemImage: "envelope.open")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            if message.hasHTMLBody {
+                SafeEmailHTMLView(html: message.htmlBody, contentHeight: $htmlHeight)
+                    .frame(height: htmlHeight)
+                    .frame(maxWidth: .infinity)
+                    .padding(14)
+                    .accessibilityLabel("Email body")
+            } else if !message.body.isEmpty {
+                Text(EmailBodyLinks.render(message.body))
+                    .font(.body)
+                    .tint(WinnowDesign.accent)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+            } else {
+                Text("This message has no displayable body.")
+                    .font(.subheadline)
+                    .italic()
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 120)
+            }
+        }
+        .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+        }
+    }
+}
+
+private struct ConversationHistoryView: View {
+    let messages: [FullEmailMessage]
+    let fallbackSubject: String
+    let account: String
+    let accountStatus: AccountStatus?
+
+    var body: some View {
+        ZStack {
+            AppBackdrop()
+            List(messages) { message in
+                NavigationLink {
+                    ConversationMessageDetailView(
+                        message: message,
+                        fallbackSubject: fallbackSubject,
+                        account: account,
+                        accountStatus: accountStatus
+                    )
+                } label: {
+                    ConversationMessageRow(message: message, account: account)
+                }
+                .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+        }
+        .navigationTitle("Previous Emails")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 private struct ConversationPrelude: View {
     let configuration: ServerConfiguration
     let showsEarlierMessages: Bool
@@ -1138,6 +1434,7 @@ private struct ConversationMessageDetailView: View {
     let message: FullEmailMessage
     let fallbackSubject: String
     let account: String
+    var accountStatus: AccountStatus? = nil
 
     var body: some View {
         ZStack {
@@ -1160,7 +1457,10 @@ private struct ConversationMessageDetailView: View {
                         position: 0,
                         count: 1,
                         isSelectedMessage: false,
-                        initiallyExpanded: true
+                        initiallyExpanded: true,
+                        displayMode: .html,
+                        fallbackSubject: fallbackSubject,
+                        account: accountStatus
                     )
                 }
                 .padding(.horizontal, 16)
@@ -1516,12 +1816,14 @@ private struct SafeEmailHTMLView: UIViewRepresentable {
     func updateUIView(_ webView: WKWebView, context: Context) {
         guard context.coordinator.loadedHTML != html else { return }
         context.coordinator.loadedHTML = html
+        context.coordinator.lastReportedHeight = 0
         webView.loadHTMLString(SafeEmailHTML.document(for: html), baseURL: nil)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         @Binding private var contentHeight: CGFloat
         var loadedHTML = ""
+        var lastReportedHeight: CGFloat = 0
         private var contentSizeObservation: NSKeyValueObservation?
 
         init(contentHeight: Binding<CGFloat>) {
@@ -1533,6 +1835,8 @@ private struct SafeEmailHTMLView: UIViewRepresentable {
                 guard let self, let webView, let measuredHeight = change.newValue?.height,
                       measuredHeight.isFinite, measuredHeight > 0 else { return }
                 let boundedHeight = min(max(measuredHeight, 120), SafeEmailHTMLView.maximumHeight)
+                guard abs(boundedHeight - self.lastReportedHeight) > 2 else { return }
+                self.lastReportedHeight = boundedHeight
                 DispatchQueue.main.async {
                     self.contentHeight = boundedHeight
                     webView.scrollView.isScrollEnabled = measuredHeight > SafeEmailHTMLView.maximumHeight
