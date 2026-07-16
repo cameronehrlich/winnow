@@ -5,6 +5,7 @@ import {
   MAX_ASSISTANT_ATTACHMENT_ITEMS,
   SUPPORTED_ATTACHMENT_TYPES,
 } from './email-attachments.js';
+import { emailBodyToText } from './message-content.js';
 
 const MAX_CONTEXT_CHARS = 24000;
 const MAX_OUTPUT_CHARS = 12000;
@@ -121,8 +122,18 @@ function boundedInput(input, compact = false) {
   const chatLimit = compact ? 8 : 16;
   const chatTextLimit = compact ? 500 : 1200;
   const contextLimit = compact ? 4 : 8;
-  const contextBodyLimit = compact ? 500 : 1400;
+  const contextBodyLimit = compact ? 700 : 1600;
+  const focusedBodyLimit = compact ? 6000 : 8000;
   const toolResultLimit = compact ? 800 : 2400;
+  const allContextMessages = input.contextualEmail?.messages || [];
+  const focusedMessageId = String(input.contextualEmail?.reference?.messageId || '');
+  const contextMessages = allContextMessages.slice(-contextLimit);
+  const focusedMessage = focusedMessageId
+    ? allContextMessages.find(message => String(message?.messageId || message?.id || '') === focusedMessageId)
+    : null;
+  if (focusedMessage && !contextMessages.includes(focusedMessage)) {
+    contextMessages.splice(0, Math.min(1, contextMessages.length), focusedMessage);
+  }
   const contextualEmail = input.contextualEmail ? {
     trust: 'untrusted_email_data',
     reference: input.contextualEmail.reference,
@@ -134,13 +145,24 @@ function boundedInput(input, compact = false) {
       mimeType: String(attachment?.mimeType || '').slice(0, 200),
       sizeBytes: Number(attachment?.sizeBytes) || 0,
     })),
-    messages: (input.contextualEmail.messages || []).slice(-contextLimit).map(message => ({
-      ...message,
-      from: String(message.from || '').slice(0, 500),
-      to: String(message.to || '').slice(0, 1000),
-      subject: String(message.subject || '').slice(0, 500),
-      body: String(message.body || '').slice(0, contextBodyLimit),
-    })),
+    messages: contextMessages.map((message, index) => {
+      const messageId = String(message?.messageId || message?.id || '').slice(0, 256);
+      const isFocused = messageId === focusedMessageId
+        || (!focusedMessageId && index === contextMessages.length - 1);
+      const bodyLimit = isFocused ? focusedBodyLimit : contextBodyLimit;
+      const plainBody = emailBodyToText(message?.body || '');
+      return {
+        messageId,
+        threadId: String(message?.threadId || '').slice(0, 256),
+        from: String(message?.from || '').slice(0, 500),
+        to: String(message?.to || '').slice(0, 1000),
+        date: String(message?.date || '').slice(0, 100),
+        subject: String(message?.subject || '').slice(0, 500),
+        body: plainBody.slice(0, bodyLimit),
+        bodyTruncated: plainBody.length > bodyLimit,
+        focused: isFocused,
+      };
+    }),
   } : null;
   return {
     environment: input.environment,

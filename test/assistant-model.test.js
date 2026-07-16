@@ -49,6 +49,33 @@ describe('assistant model context', () => {
     assert.equal(parsed.toolResults[0].trust, 'untrusted_tool_data');
   });
 
+  it('uses plain text and preserves useful content later in the focused email', () => {
+    const padding = 'Rental market commentary. '.repeat(150);
+    const input = {
+      conversation: { scope: 'email', account: 'me@example.com' },
+      chatMessages: [{ role: 'user', text: 'How much is the rent estimate now?' }],
+      contextualEmail: {
+        reference: { messageId: 'focused', threadId: 'thread-1' },
+        metadata: { subject: 'Rental market update' },
+        messages: [{
+          messageId: 'focused',
+          threadId: 'thread-1',
+          subject: 'Rental market update',
+          body: `<html><body><style>.hidden { color: red; }</style><p>${padding}</p><p>Rent Zestimate: <strong>$4,250 per month</strong></p></body></html>`,
+          htmlBody: '<p>This display-only field must never reach the model.</p>',
+        }],
+      },
+      availableTools: [],
+    };
+
+    const parsed = JSON.parse(serializeAssistantModelInput(input));
+    const message = parsed.contextualEmail.messages[0];
+    assert.equal(message.focused, true);
+    assert.match(message.body, /Rent Zestimate: \$4,250 per month/);
+    assert.doesNotMatch(message.body, /<html|<style|<strong/i);
+    assert.equal(Object.hasOwn(message, 'htmlBody'), false);
+  });
+
   it('keeps private attachment bytes out of JSON context and creates supported inline parts', () => {
     const input = {
       contextualEmail: {

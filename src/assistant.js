@@ -10,6 +10,7 @@ import {
   prepareAssistantTool,
 } from './assistant-tools.js';
 import { getAccounts } from './config.js';
+import { emailBodyToText } from './message-content.js';
 import {
   addAssistantMessage,
   assistantRunHasTerminalOutput,
@@ -215,7 +216,10 @@ async function contextualEmail(conversation, dependencies) {
       to: String(message?.to || '').slice(0, 1000),
       date: String(message?.date || '').slice(0, 100),
       subject: String(message?.subject || '').slice(0, 500),
-      body: String(message?.body || '').slice(0, 12000),
+      // Gmail may expose HTML as the generic body when no text/plain part is
+      // available. Keep rendering concerns out of model context and always
+      // hand prompt assembly normalized text.
+      body: emailBodyToText(message?.body || '').slice(0, 12000),
     })),
   };
 }
