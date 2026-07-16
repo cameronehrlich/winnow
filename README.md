@@ -480,7 +480,17 @@ tailscale serve status
 curl "https://<mac-hostname>.<tailnet>.ts.net:9443/health"
 ```
 
-Use `https://<mac-hostname>.<tailnet>.ts.net:9443` as the app's server URL and the same bearer token from `.env`. The iPhone must be signed into the tailnet. Do not use Tailscale Funnel for this personal API.
+Use `https://<mac-hostname>.<tailnet>.ts.net:9443` as the app's server URL and the same bearer token from `.env`. The iPhone must be signed into the tailnet.
+
+If the app must work without an active Tailscale connection, expose Winnow through Funnel under a dedicated path on an already-approved Funnel port:
+
+```bash
+tailscale funnel --bg --https=443 --set-path=/winnow --yes http://127.0.0.1:3777
+tailscale funnel status
+curl "https://<mac-hostname>.<tailnet>.ts.net/winnow/health"
+```
+
+Use `https://<mac-hostname>.<tailnet>.ts.net/winnow` as the app's server URL. Funnel makes the route internet-accessible, but Winnow still requires the bearer token for every `/v1` request; only the minimal `/health` response is unauthenticated. Keep the token long and random, leave the API bound to loopback, and do not place the token in the Funnel or Serve configuration.
 
 Useful endpoints:
 
