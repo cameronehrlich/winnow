@@ -56,60 +56,59 @@ struct InboxView: View {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var filteredEmails: [EmailItem] {
-        return model.emails.filter { item in
-            let matchesAccount = account.isEmpty || item.account == account
-            let matchesQuery = searchQuery.isEmpty || [
-                item.displaySubject ?? "",
-                item.senderDisplayName,
-                item.fromEmail,
-                item.summary,
-                item.snippet,
-                item.action,
-                item.deadline,
-                item.impact,
-            ].contains(where: { $0.localizedCaseInsensitiveContains(searchQuery) })
-            return mailbox.includes(item) && matchesAccount && matchesQuery
-        }
-    }
+    private var mailboxSnapshot: MailboxSnapshot {
+        let query = searchQuery
+        var items: [EmailItem] = []
+        items.reserveCapacity(model.emails.count / 2)
 
-    private var newItemsDividerID: String? {
-        guard searchQuery.isEmpty,
+        for item in model.emails {
+            let matchesAccount = account.isEmpty || item.account == account
+            guard mailbox.includes(item), matchesAccount else { continue }
+            guard query.isEmpty || item.matchesMailboxSearch(query) else { continue }
+            items.append(item)
+        }
+
+        let dividerID: String?
+        if query.isEmpty,
               let cutoff = model.newItemsCutoff(for: mailbox),
-              let firstPreviouslySeen = filteredEmails.first(where: {
-                  ($0.displayDate ?? .distantPast) <= cutoff
-              }),
-              filteredEmails.first?.id != firstPreviouslySeen.id
-        else { return nil }
-        return firstPreviouslySeen.id
+           let firstPreviouslySeen = items.first(where: { ($0.displayDate ?? .distantPast) <= cutoff }),
+           items.first?.id != firstPreviouslySeen.id {
+            dividerID = firstPreviouslySeen.id
+        } else {
+            dividerID = nil
+        }
+        return MailboxSnapshot(items: items, newItemsDividerID: dividerID)
     }
 
     var body: some View {
+        let snapshot = mailboxSnapshot
         NavigationStack(path: $navigationPath) {
             ZStack {
                 AppBackdrop()
                 List {
-                    ForEach(filteredEmails) { item in
-                        if item.id == newItemsDividerID {
+                    ForEach(snapshot.items) { item in
+                        if item.id == snapshot.newItemsDividerID {
                             NewItemsDivider()
                                 .listRowInsets(EdgeInsets(top: 4, leading: 18, bottom: 4, trailing: 18))
                                 .listRowSeparator(.hidden)
                                 .listRowBackground(Color.clear)
                         }
+                        let isUnseenArchived = mailbox == .archived && model.isArchivedItemUnseen(item)
                         EmailCard(
                             item: item,
                             account: model.account(email: item.account),
                             isPerforming: model.performingEmailIDs.contains(item.id),
                             isArchivedCell: mailbox == .archived,
-                            isUnseenArchived: mailbox == .archived && model.isArchivedItemUnseen(item),
+                            isUnseenArchived: isUnseenArchived,
                             openAction: { navigationPath.append(item.id) }
                         )
+                        .equatable()
                         .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
                         .modifier(
-                            ArchivedExposureModifier(isEnabled: mailbox == .archived) {
-                                model.markArchivedItemSeen(item.id)
+                            ArchivedExposureModifier(isEnabled: isUnseenArchived) {
+                                model.markArchivedItemSeen(item)
                             }
                         )
                         .swipeActions(edge: mailbox.swipeEdge, allowsFullSwipe: true) {
@@ -139,7 +138,7 @@ struct InboxView: View {
                     ProgressView("Distilling your inbox…")
                         .padding(22)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                } else if filteredEmails.isEmpty {
+                } else if snapshot.items.isEmpty {
                     ContentUnavailableView {
                         Label(emptyTitle, systemImage: emptySymbol)
                     } description: {
@@ -202,6 +201,24 @@ struct InboxView: View {
 
     private func perform(_ action: EmailAction, on item: EmailItem) {
         Task { _ = await model.perform(action, on: item, optimisticDelay: .milliseconds(140)) }
+    }
+}
+
+private struct MailboxSnapshot {
+    let items: [EmailItem]
+    let newItemsDividerID: String?
+}
+
+private extension EmailItem {
+    func matchesMailboxSearch(_ query: String) -> Bool {
+        (displaySubject?.localizedCaseInsensitiveContains(query) == true)
+            || senderDisplayName.localizedCaseInsensitiveContains(query)
+            || fromEmail.localizedCaseInsensitiveContains(query)
+            || summary.localizedCaseInsensitiveContains(query)
+            || snippet.localizedCaseInsensitiveContains(query)
+            || action.localizedCaseInsensitiveContains(query)
+            || deadline.localizedCaseInsensitiveContains(query)
+            || impact.localizedCaseInsensitiveContains(query)
     }
 }
 
@@ -413,5 +430,15 @@ struct EmailCard: View {
                 .frame(width: 6, height: 6)
                 .accessibilityHidden(true)
         }
+    }
+}
+
+extension EmailCard: Equatable {
+    static func == (lhs: EmailCard, rhs: EmailCard) -> Bool {
+        lhs.item == rhs.item
+            && lhs.account == rhs.account
+            && lhs.isPerforming == rhs.isPerforming
+            && lhs.isArchivedCell == rhs.isArchivedCell
+            && lhs.isUnseenArchived == rhs.isUnseenArchived
     }
 }

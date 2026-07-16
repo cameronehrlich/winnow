@@ -334,7 +334,12 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
 
             composer
         }
-        .background { AppBackdrop() }
+        .background {
+            if presentation == .standalone {
+                AppBackdrop()
+            }
+        }
+        .environment(\.winnowCardShadowsEnabled, presentation != .inlineEmail)
         .task { await viewModel.startIfNeeded() }
         .task {
             guard presentation == .standalone else { return }

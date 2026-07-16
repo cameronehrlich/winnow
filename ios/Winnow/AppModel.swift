@@ -33,6 +33,7 @@ final class AppModel: ObservableObject {
     private var visibleMailbox: MailboxTab?
     private var sessionCutoffMailboxes: Set<MailboxTab> = []
     private var archivedSeenItemIDs: Set<String> = []
+    private var archivedSeenFlushTask: Task<Void, Never>?
     private let inboxViewedKey = "winnow.inbox-last-viewed"
     private let archivedViewedKey = "winnow.archived-last-viewed"
     private let archivedSeenItemIDsKey = "winnow.archived-seen-item-ids"
@@ -197,6 +198,8 @@ final class AppModel: ObservableObject {
             visibleMailbox = nil
             sessionCutoffMailboxes.removeAll()
             archivedSeenItemIDs.removeAll()
+            archivedSeenFlushTask?.cancel()
+            archivedSeenFlushTask = nil
             unseenArchivedItemCount = 0
             UserDefaults.standard.removeObject(forKey: archivedSeenItemIDsKey)
             stopAutoRefresh()
@@ -500,14 +503,29 @@ final class AppModel: ObservableObject {
     /// Records actual exposure of an archived card. Merely opening the tab is
     /// not enough: a new archived item remains badged until its row has entered
     /// the visible list region.
-    func markArchivedItemSeen(_ emailID: String) {
-        guard let item = email(id: emailID),
-              item.isArchived,
+    func markArchivedItemSeen(_ item: EmailItem) {
+        guard item.isArchived,
               let cutoff = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date,
-              (item.displayDate ?? .distantPast) > cutoff
+              (item.displayDate ?? .distantPast) > cutoff,
+              archivedSeenItemIDs.insert(item.id).inserted
         else { return }
 
-        recordArchivedSeenReceipt(emailID)
+        // Visibility can change for several recycled rows in a single scroll
+        // frame. Coalesce their persistence and published count update so the
+        // list is not invalidated once per row while the user's finger moves.
+        guard archivedSeenFlushTask == nil else { return }
+        archivedSeenFlushTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            self?.flushArchivedSeenReceipts()
+        }
+    }
+
+    private func flushArchivedSeenReceipts() {
+        archivedSeenFlushTask = nil
+        UserDefaults.standard.set(Array(archivedSeenItemIDs), forKey: archivedSeenItemIDsKey)
+        updateArchivedUnseenCount()
+        finalizeArchivedSeenReceiptsIfPossible()
     }
 
     private func recordArchivedSeenReceipt(_ emailID: String, finalizeWhenComplete: Bool = true) {
