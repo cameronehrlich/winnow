@@ -361,11 +361,11 @@ struct EmailCard: View {
                     Text(item.summary.isEmpty ? item.snippet : item.summary)
                         .font(.footnote)
                         .foregroundStyle(item.isUnread ? .secondary : .tertiary)
-                        .lineLimit(3)
-                        .frame(height: 48, alignment: .topLeading)
+                        .lineLimit(3, reservesSpace: true)
+                        .frame(height: 54, alignment: .topLeading)
 
                 }
-                .frame(maxWidth: .infinity, minHeight: 130, maxHeight: 130, alignment: .leading)
+                .frame(maxWidth: .infinity, minHeight: 136, maxHeight: 136, alignment: .leading)
                 .padding(.trailing, item.displayedUnreadThreadCount == nil ? 30 : 38)
 
                 VStack {

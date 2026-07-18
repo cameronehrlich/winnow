@@ -307,15 +307,36 @@ function assistantFailureCode(err) {
   return 'assistant_failed';
 }
 
+function safeModelDiagnostic(err) {
+  const diagnostic = err?.diagnostic;
+  if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)) return null;
+  const result = {};
+  for (const key of ['candidateCount', 'responseCharacters']) {
+    const value = Number(diagnostic[key]);
+    if (Number.isSafeInteger(value) && value >= 0) result[key] = value;
+  }
+  for (const key of ['hasContent', 'responseTruncated']) {
+    if (typeof diagnostic[key] === 'boolean') result[key] = diagnostic[key];
+  }
+  if (typeof diagnostic.finishReason === 'string') {
+    result.finishReason = diagnostic.finishReason.slice(0, 80);
+  } else if (diagnostic.finishReason === null) {
+    result.finishReason = null;
+  }
+  return Object.keys(result).length ? result : null;
+}
+
 function logAssistantFailure(run, err, errorCode) {
   if (err instanceof AssistantToolError) return;
   if (process.env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT) return;
   const status = Number(err?.status || err?.statusCode || err?.response?.status || 0) || null;
+  const diagnostic = safeModelDiagnostic(err);
   console.error('[assistant] run failed', {
     runId: run.id,
     errorCode,
     errorName: String(err?.name || 'Error').slice(0, 120),
     providerStatus: status,
+    ...(diagnostic ? { modelDiagnostic: diagnostic } : {}),
   });
 }
 
@@ -406,11 +427,13 @@ async function boundedModelResponse(model, input) {
       return await request();
     } catch (retryErr) {
       if (isInvalidModelResponse(retryErr)) {
-        throw new AssistantError(
+        const failure = new AssistantError(
           502,
           'assistant_model_invalid_response',
           'The assistant model returned an incomplete response',
         );
+        failure.diagnostic = retryErr.diagnostic;
+        throw failure;
       }
       if (!isTransientModelProviderError(retryErr)) throw retryErr;
       throw new AssistantError(

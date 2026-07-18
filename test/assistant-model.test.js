@@ -2,9 +2,11 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ASSISTANT_SYSTEM_PROMPT,
+  assistantResponseSchema,
   inlineAttachmentParts,
   serializeAssistantModelInput,
 } from '../src/assistant-model.js';
+import { ASSISTANT_TOOL_DEFINITIONS } from '../src/assistant-tools.js';
 
 describe('assistant model context', () => {
   it('requires rule deduplication and preview before a future-mail proposal', () => {
@@ -21,6 +23,63 @@ describe('assistant model context', () => {
     assert.match(ASSISTANT_SYSTEM_PROMPT, /Do not search the mailbox or fetch the same thread again/i);
     assert.match(ASSISTANT_SYSTEM_PROMPT, /finalAnswerRequired is true, make no tool calls/i);
     assert.match(ASSISTANT_SYSTEM_PROMPT, /use mail\.read_attachment only when contextualEmail lists/i);
+  });
+
+  it('builds a stable response envelope from the currently available tools', () => {
+    const schema = assistantResponseSchema([
+      {
+        name: 'mail.search',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            limit: { type: 'integer' },
+          },
+        },
+      },
+      {
+        name: 'device.create_reminder',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            dueAt: { type: 'string' },
+          },
+        },
+      },
+    ]);
+
+    assert.deepEqual(schema.required, ['text', 'toolCalls', 'draft']);
+    assert.deepEqual(
+      schema.properties.toolCalls.items.properties.name.enum,
+      ['mail.search', 'device.create_reminder'],
+    );
+    assert.deepEqual(
+      Object.keys(schema.properties.toolCalls.items.properties.arguments.properties).sort(),
+      ['dueAt', 'limit', 'query', 'title'],
+    );
+    assert.equal(schema.properties.draft.nullable, true);
+    assert.deepEqual(
+      schema.properties.draft.required,
+      ['kind', 'to', 'cc', 'bcc', 'subject', 'body'],
+    );
+  });
+
+  it('keeps the no-tools final-answer schema valid without widening tool behavior', () => {
+    const schema = assistantResponseSchema([]);
+    const toolCall = schema.properties.toolCalls.items;
+    assert.equal(toolCall.properties.name.enum, undefined);
+    assert.deepEqual(Object.keys(toolCall.properties.arguments.properties), ['unused']);
+    assert.equal(schema.properties.toolCalls.maxItems, 3);
+  });
+
+  it('represents every registered assistant tool without schema conflicts', () => {
+    const schema = assistantResponseSchema(ASSISTANT_TOOL_DEFINITIONS);
+    assert.equal(
+      schema.properties.toolCalls.items.properties.name.enum.length,
+      ASSISTANT_TOOL_DEFINITIONS.length,
+    );
+    assert.ok(schema.properties.toolCalls.items.properties.arguments.properties.draft);
   });
 
   it('keeps oversized context valid, bounded, and preserves tools and newest chat', () => {
