@@ -235,6 +235,9 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertTrue(document.contains("connect-src 'none'"))
         XCTAssertTrue(document.contains("form-action 'none'"))
         XCTAssertTrue(document.contains("img:not([src^=\"data:\" i])"))
+        XCTAssertTrue(document.contains("color-scheme: light only"))
+        XCTAssertTrue(document.contains("overflow-x: hidden"))
+        XCTAssertTrue(document.contains("max-width: 100% !important"))
         XCTAssertTrue(document.contains("<script>window.bad = true</script>"))
     }
 

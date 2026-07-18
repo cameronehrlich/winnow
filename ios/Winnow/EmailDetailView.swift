@@ -1760,23 +1760,37 @@ enum SafeEmailHTML {
             <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">
             <meta http-equiv="Content-Security-Policy" content="\(contentSecurityPolicy)">
             <style>
-              :root { color-scheme: light dark; }
-              html, body { margin: 0; padding: 0; background: transparent; }
+              :root { color-scheme: light only; }
+              html, body {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+                width: 100%;
+                max-width: 100%;
+                overflow-x: hidden;
+                background: #ffffff;
+              }
+              *, *::before, *::after { box-sizing: border-box; }
               body {
                 color: #1c1c1e;
                 font: -apple-system-body;
                 overflow-wrap: anywhere;
                 word-break: normal;
               }
-              img, video, table { max-width: 100% !important; }
-              img { height: auto !important; }
+              body > table { width: 100% !important; }
+              table, tbody, thead, tfoot, tr, td, th,
+              div, section, article, main, header, footer, p, pre {
+                max-width: 100% !important;
+                overflow-wrap: anywhere;
+              }
+              table { table-layout: fixed; }
+              img, video, svg, canvas {
+                max-width: 100% !important;
+                height: auto !important;
+              }
               img:not([src^="data:" i]) { display: none !important; }
               pre { white-space: pre-wrap; overflow-wrap: anywhere; }
               a { color: #6657e8; }
-              @media (prefers-color-scheme: dark) {
-                body { color: #f2f2f7; }
-                a { color: #9b8cff; }
-              }
             </style>
           </head>
           <body>\(source)</body>
@@ -1786,6 +1800,7 @@ enum SafeEmailHTML {
 }
 
 private struct SafeEmailHTMLView: UIViewRepresentable {
+    @Environment(\.openURL) private var openURL
     let html: String
     @Binding var contentHeight: CGFloat
 
@@ -1806,14 +1821,20 @@ private struct SafeEmailHTMLView: UIViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.isOpaque = false
-        webView.backgroundColor = .clear
-        webView.scrollView.backgroundColor = .clear
+        webView.backgroundColor = .white
+        webView.scrollView.backgroundColor = .white
         webView.scrollView.isScrollEnabled = false
+        webView.scrollView.alwaysBounceHorizontal = false
+        webView.scrollView.showsHorizontalScrollIndicator = false
+        webView.overrideUserInterfaceStyle = .light
         context.coordinator.observeContentSize(of: webView)
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
+        context.coordinator.openURL = { url in
+            openURL(url)
+        }
         guard context.coordinator.loadedHTML != html else { return }
         context.coordinator.loadedHTML = html
         context.coordinator.lastReportedHeight = 0
@@ -1824,6 +1845,7 @@ private struct SafeEmailHTMLView: UIViewRepresentable {
         @Binding private var contentHeight: CGFloat
         var loadedHTML = ""
         var lastReportedHeight: CGFloat = 0
+        var openURL: ((URL) -> Void)?
         private var contentSizeObservation: NSKeyValueObservation?
 
         init(contentHeight: Binding<CGFloat>) {
@@ -1852,7 +1874,19 @@ private struct SafeEmailHTMLView: UIViewRepresentable {
             let isInitialDocument = navigationAction.navigationType == .other
                 && navigationAction.targetFrame?.isMainFrame == true
                 && navigationAction.request.url?.scheme == "about"
-            decisionHandler(isInitialDocument ? .allow : .cancel)
+            if isInitialDocument {
+                decisionHandler(.allow)
+                return
+            }
+
+            if let url = navigationAction.request.url,
+               let scheme = url.scheme?.lowercased(),
+               ["http", "https", "mailto", "tel", "sms"].contains(scheme) {
+                DispatchQueue.main.async { [weak self] in
+                    self?.openURL?(url)
+                }
+            }
+            decisionHandler(.cancel)
         }
     }
 }

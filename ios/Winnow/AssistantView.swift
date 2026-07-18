@@ -373,24 +373,26 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
             focusComposerRequest = nil
         }
         .sheet(item: $reviewedProposal) { proposal in
-            if proposal.isDeviceAction {
-                DeviceProposalReviewView(
-                    proposal: proposal,
-                    isWorking: viewModel.activeProposalID == proposal.id,
-                    complete: { completeClientAction(proposal) },
-                    cancel: { cancel(proposal) },
-                    selectedContact: { name, email in selectContact(name: name, email: email, for: proposal) }
-                )
-            } else {
-                ProposalConfirmationView(
-                    proposal: proposal,
-                    scopeTitle: scopeDescription,
-                    isWorking: viewModel.activeProposalID == proposal.id,
-                    confirm: { confirm(proposal) },
-                    cancel: { cancel(proposal) }
-                )
-                .presentationDetents([.medium, .large])
+            Group {
+                if proposal.isDeviceAction {
+                    DeviceProposalReviewView(
+                        proposal: proposal,
+                        isWorking: viewModel.activeProposalID == proposal.id,
+                        complete: { completeClientAction(proposal) },
+                        cancel: { cancel(proposal) },
+                        selectedContact: { name, email in selectContact(name: name, email: email, for: proposal) }
+                    )
+                } else {
+                    ProposalConfirmationView(
+                        proposal: proposal,
+                        scopeTitle: scopeDescription,
+                        isWorking: viewModel.activeProposalID == proposal.id,
+                        confirm: { confirm(proposal) },
+                        cancel: { cancel(proposal) }
+                    )
+                }
             }
+            .presentationDetents([.large])
         }
     }
 
