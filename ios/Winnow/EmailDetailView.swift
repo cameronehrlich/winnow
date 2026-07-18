@@ -1751,51 +1751,88 @@ private enum FullEmailDisplayMode {
 enum SafeEmailHTML {
     static let contentSecurityPolicy = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'"
 
-    static func document(for source: String) -> String {
+    private static var securityMetadata: String {
         """
+        <meta charset="utf-8">
+        <meta http-equiv="Content-Security-Policy" content="\(contentSecurityPolicy)">
+        """
+    }
+
+    private static let presentationHead = """
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">
+        <style id="winnow-email-presentation">
+          :root { color-scheme: light only; }
+          html, body {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            max-width: 100%;
+            overflow-x: hidden;
+            background: #ffffff;
+          }
+          *, *::before, *::after { box-sizing: border-box; }
+          body {
+            color: #1c1c1e;
+            font: -apple-system-body;
+            overflow-wrap: anywhere;
+            word-break: normal;
+          }
+          body > table { width: 100% !important; }
+          table, tbody, thead, tfoot, tr, td, th,
+          div, section, article, main, header, footer, p, pre {
+            max-width: 100% !important;
+            overflow-wrap: anywhere;
+          }
+          table { table-layout: fixed; }
+          img, video, svg, canvas {
+            max-width: 100% !important;
+            height: auto !important;
+          }
+          img:not([src^="data:" i]) { display: none !important; }
+          pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+          a { color: #6657e8; }
+        </style>
+        """
+
+    static func document(for source: String) -> String {
+        if let head = openingTag("head", in: source) {
+            var document = source
+            document.insert(contentsOf: securityMetadata, at: head.upperBound)
+            if let closingHead = document.range(of: "(?i)</head\\s*>", options: .regularExpression) {
+                document.insert(contentsOf: presentationHead, at: closingHead.lowerBound)
+            } else if let updatedHead = openingTag("head", in: document) {
+                document.insert(contentsOf: presentationHead, at: updatedHead.upperBound)
+            }
+            return document
+        }
+
+        if let html = openingTag("html", in: source) {
+            var document = source
+            document.insert(
+                contentsOf: "<head>\(securityMetadata)\(presentationHead)</head>",
+                at: html.upperBound
+            )
+            return document
+        }
+
+        return """
         <!doctype html>
         <html>
           <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">
-            <meta http-equiv="Content-Security-Policy" content="\(contentSecurityPolicy)">
-            <style>
-              :root { color-scheme: light only; }
-              html, body {
-                box-sizing: border-box;
-                margin: 0;
-                padding: 0;
-                width: 100%;
-                max-width: 100%;
-                overflow-x: hidden;
-                background: #ffffff;
-              }
-              *, *::before, *::after { box-sizing: border-box; }
-              body {
-                color: #1c1c1e;
-                font: -apple-system-body;
-                overflow-wrap: anywhere;
-                word-break: normal;
-              }
-              body > table { width: 100% !important; }
-              table, tbody, thead, tfoot, tr, td, th,
-              div, section, article, main, header, footer, p, pre {
-                max-width: 100% !important;
-                overflow-wrap: anywhere;
-              }
-              table { table-layout: fixed; }
-              img, video, svg, canvas {
-                max-width: 100% !important;
-                height: auto !important;
-              }
-              img:not([src^="data:" i]) { display: none !important; }
-              pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-              a { color: #6657e8; }
-            </style>
+            \(securityMetadata)
+            \(presentationHead)
           </head>
           <body>\(source)</body>
         </html>
         """
+    }
+
+    private static func openingTag(_ name: String, in source: String) -> Range<String.Index>? {
+        source.range(
+            of: "(?i)<\(name)(?:\\s[^>]*)?>",
+            options: .regularExpression
+        )
     }
 }
 
@@ -1875,6 +1912,13 @@ private struct SafeEmailHTMLView: UIViewRepresentable {
                 && navigationAction.targetFrame?.isMainFrame == true
                 && navigationAction.request.url?.scheme == "about"
             if isInitialDocument {
+                decisionHandler(.allow)
+                return
+            }
+
+            if navigationAction.navigationType == .linkActivated,
+               navigationAction.request.url?.scheme == "about",
+               navigationAction.request.url?.fragment != nil {
                 decisionHandler(.allow)
                 return
             }

@@ -241,6 +241,25 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertTrue(document.contains("<script>window.bad = true</script>"))
     }
 
+    func testSafeEmailHTMLInjectsPolicyIntoCompleteDocumentsWithoutNestingThem() throws {
+        let source = "<!doctype html><html><head><style>body { color: navy; }</style></head><body bgcolor='#fff'>Hello</body></html>"
+        let document = SafeEmailHTML.document(for: source)
+
+        XCTAssertEqual(document.components(separatedBy: "<html").count - 1, 1)
+        XCTAssertEqual(document.components(separatedBy: "<body").count - 1, 1)
+        XCTAssertTrue(document.contains("<body bgcolor='#fff'>"))
+        XCTAssertTrue(document.contains("Content-Security-Policy"))
+        XCTAssertTrue(document.contains("winnow-email-presentation"))
+        XCTAssertLessThan(
+            try XCTUnwrap(document.range(of: "Content-Security-Policy")?.lowerBound),
+            try XCTUnwrap(document.range(of: "<style>body { color: navy; }</style>")?.lowerBound)
+        )
+        XCTAssertGreaterThan(
+            try XCTUnwrap(document.range(of: "winnow-email-presentation")?.lowerBound),
+            try XCTUnwrap(document.range(of: "<style>body { color: navy; }</style>")?.lowerBound)
+        )
+    }
+
     func testFullEmailContentDecodesThreadAttachments() throws {
         let json = #"{"emailItemId":"abc","messages":[],"attachments":[{"messageId":"m1","attachmentId":"a1","filename":"Invoice.pdf","mimeType":"application/pdf","sizeBytes":143501}]}"#.data(using: .utf8)!
         let content = try JSONDecoder().decode(EmailContent.self, from: json)
