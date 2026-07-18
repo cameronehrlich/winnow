@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getAssistantModelName, loadConfig } from './config.js';
 import {
   MAX_ASSISTANT_ATTACHMENT_BYTES,
@@ -9,121 +9,6 @@ import { emailBodyToText } from './message-content.js';
 
 const MAX_CONTEXT_CHARS = 24000;
 const MAX_OUTPUT_CHARS = 12000;
-
-function mergeResponseSchemas(left, right) {
-  if (!left) return right;
-  if (!right) return left;
-  if (left.type !== right.type) {
-    throw codedModelError('assistant_tool_schema_conflict');
-  }
-  if (left.type === SchemaType.OBJECT) {
-    const keys = new Set([...Object.keys(left.properties), ...Object.keys(right.properties)]);
-    return {
-      type: SchemaType.OBJECT,
-      properties: Object.fromEntries([...keys].map(key => [
-        key,
-        mergeResponseSchemas(left.properties[key], right.properties[key]),
-      ])),
-    };
-  }
-  if (left.type === SchemaType.ARRAY) {
-    return { type: SchemaType.ARRAY, items: mergeResponseSchemas(left.items, right.items) };
-  }
-  if (left.type === SchemaType.STRING) {
-    const leftValues = Array.isArray(left.enum) ? left.enum : null;
-    const rightValues = Array.isArray(right.enum) ? right.enum : null;
-    if (!leftValues || !rightValues) return { type: SchemaType.STRING };
-    return {
-      type: SchemaType.STRING,
-      format: 'enum',
-      enum: [...new Set([...leftValues, ...rightValues])],
-    };
-  }
-  return { type: left.type };
-}
-
-function responseSchemaFromToolValue(schema) {
-  if (Array.isArray(schema?.enum) && schema.enum.every(value => typeof value === 'string')) {
-    return { type: SchemaType.STRING, format: 'enum', enum: schema.enum };
-  }
-  switch (schema?.type) {
-    case 'boolean':
-      return { type: SchemaType.BOOLEAN };
-    case 'integer':
-      return { type: SchemaType.INTEGER };
-    case 'number':
-      return { type: SchemaType.NUMBER };
-    case 'array':
-      return {
-        type: SchemaType.ARRAY,
-        items: responseSchemaFromToolValue(schema.items),
-      };
-    case 'object': {
-      const properties = Object.fromEntries(
-        Object.entries(schema.properties || {}).map(([key, value]) => [
-          key,
-          responseSchemaFromToolValue(value),
-        ]),
-      );
-      if (!Object.keys(properties).length) {
-        throw codedModelError('assistant_tool_schema_empty_object');
-      }
-      return { type: SchemaType.OBJECT, properties };
-    }
-    default:
-      return { type: SchemaType.STRING };
-  }
-}
-
-export function assistantResponseSchema(availableTools = []) {
-  const toolNames = availableTools.map(tool => tool?.name).filter(Boolean);
-  const argumentSchemas = availableTools
-    .map(tool => tool?.inputSchema)
-    .filter(schema => schema?.type === 'object' && Object.keys(schema.properties || {}).length)
-    .map(responseSchemaFromToolValue);
-  const argumentsSchema = argumentSchemas.reduce(mergeResponseSchemas, null) || {
-    type: SchemaType.OBJECT,
-    // Gemini requires object schemas to declare at least one property. This
-    // placeholder is unreachable when no tools are available because the
-    // system prompt requires an empty toolCalls array.
-    properties: { unused: { type: SchemaType.STRING, nullable: true } },
-  };
-  const toolNameSchema = toolNames.length
-    ? { type: SchemaType.STRING, format: 'enum', enum: [...new Set(toolNames)] }
-    : { type: SchemaType.STRING };
-  return {
-    type: SchemaType.OBJECT,
-    properties: {
-      text: { type: SchemaType.STRING },
-      toolCalls: {
-        type: SchemaType.ARRAY,
-        maxItems: 3,
-        items: {
-          type: SchemaType.OBJECT,
-          properties: {
-            name: toolNameSchema,
-            arguments: argumentsSchema,
-          },
-          required: ['name', 'arguments'],
-        },
-      },
-      draft: {
-        type: SchemaType.OBJECT,
-        nullable: true,
-        properties: {
-          kind: { type: SchemaType.STRING, format: 'enum', enum: ['reply', 'forward'] },
-          to: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-          cc: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-          bcc: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-          subject: { type: SchemaType.STRING },
-          body: { type: SchemaType.STRING },
-        },
-        required: ['kind', 'to', 'cc', 'bcc', 'subject', 'body'],
-      },
-    },
-    required: ['text', 'toolCalls', 'draft'],
-  };
-}
 
 export const ASSISTANT_SYSTEM_PROMPT = `You are Winnow, a private email assistant.
 
@@ -203,10 +88,9 @@ function parseModelJson(text) {
   }
 }
 
-function codedModelError(code, diagnostic = null) {
+function codedModelError(code) {
   const error = new Error(code);
   error.code = code;
-  if (diagnostic) error.diagnostic = diagnostic;
   return error;
 }
 
@@ -342,38 +226,14 @@ export class GeminiAssistantModel {
     const model = this.#client.getGenerativeModel({
       model: getAssistantModelName(config),
       systemInstruction: ASSISTANT_SYSTEM_PROMPT,
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: assistantResponseSchema(input.availableTools),
-      },
+      generationConfig: { responseMimeType: 'application/json' },
     });
     const serialized = serializeAssistantModelInput(input);
     const attachments = inlineAttachmentParts(input);
     const response = await model.generateContent(attachments.length
       ? [...attachments, { text: serialized }]
       : serialized);
-    const candidate = response.response.candidates?.[0];
-    let responseText;
-    try {
-      responseText = response.response.text();
-    } catch (error) {
-      error.diagnostic = {
-        candidateCount: response.response.candidates?.length || 0,
-        finishReason: String(candidate?.finishReason || '').slice(0, 80) || null,
-        hasContent: Boolean(candidate?.content?.parts?.length),
-      };
-      throw error;
-    }
-    try {
-      return normalizeResponse(parseModelJson(responseText));
-    } catch (error) {
-      error.diagnostic = {
-        responseCharacters: responseText.length,
-        responseTruncated: responseText.length > MAX_OUTPUT_CHARS,
-        finishReason: String(candidate?.finishReason || '').slice(0, 80) || null,
-      };
-      throw error;
-    }
+    return normalizeResponse(parseModelJson(response.response.text()));
   }
 }
 
