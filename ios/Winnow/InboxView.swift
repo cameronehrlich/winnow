@@ -100,7 +100,12 @@ struct InboxView: View {
                             isPerforming: model.performingEmailIDs.contains(item.id),
                             isArchivedCell: mailbox == .archived,
                             isUnseenArchived: isUnseenArchived,
-                            openAction: { navigationPath.append(item.id) }
+                            openAction: {
+                                if mailbox == .archived {
+                                    model.markArchivedItemSeen(item)
+                                }
+                                navigationPath.append(item.id)
+                            }
                         )
                         .equatable()
                         .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
