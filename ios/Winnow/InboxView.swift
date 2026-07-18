@@ -225,19 +225,36 @@ private extension EmailItem {
 private struct ArchivedExposureModifier: ViewModifier {
     let isEnabled: Bool
     let markSeen: () -> Void
+    @State private var exposureTask: Task<Void, Never>?
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if isEnabled {
             if #available(iOS 18.0, *) {
-                content.onScrollVisibilityChange(threshold: 0.5) { isVisible in
-                    if isVisible { markSeen() }
-                }
+                content
+                    .onScrollVisibilityChange(threshold: 0.9) { isVisible in
+                        updateExposure(isVisible: isVisible)
+                    }
+                    .onDisappear { exposureTask?.cancel() }
             } else {
-                content.onAppear(perform: markSeen)
+                content
+                    .onAppear { updateExposure(isVisible: true) }
+                    .onDisappear { updateExposure(isVisible: false) }
             }
         } else {
             content
+        }
+    }
+
+    private func updateExposure(isVisible: Bool) {
+        exposureTask?.cancel()
+        exposureTask = nil
+        guard isVisible else { return }
+        exposureTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            markSeen()
+            exposureTask = nil
         }
     }
 }

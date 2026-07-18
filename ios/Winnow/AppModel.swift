@@ -34,6 +34,7 @@ final class AppModel: ObservableObject {
     private var sessionCutoffMailboxes: Set<MailboxTab> = []
     private var archivedSeenItemIDs: Set<String> = []
     private var archivedSeenFlushTask: Task<Void, Never>?
+    @Published private var archivedVisitUnseenItemIDs: Set<String>?
     private let inboxViewedKey = "winnow.inbox-last-viewed"
     private let archivedViewedKey = "winnow.archived-last-viewed"
     private let archivedSeenItemIDsKey = "winnow.archived-seen-item-ids"
@@ -477,12 +478,17 @@ final class AppModel: ObservableObject {
 
     func setVisibleMailbox(_ mailbox: MailboxTab?) {
         guard let mailbox else {
+            endArchivedVisitIfNeeded()
             visibleMailbox = nil
             sessionCutoffMailboxes.removeAll()
             return
         }
         guard visibleMailbox != mailbox else { return }
+        endArchivedVisitIfNeeded()
         visibleMailbox = mailbox
+        if mailbox == .archived {
+            archivedVisitUnseenItemIDs = persistedUnseenArchivedItemIDs()
+        }
 
         // Freeze the divider at the mailbox's pre-session seen position. We
         // still advance the persisted position below so the next foreground
@@ -559,8 +565,11 @@ final class AppModel: ObservableObject {
     }
 
     func isArchivedItemUnseen(_ item: EmailItem) -> Bool {
+        if let archivedVisitUnseenItemIDs, visibleMailbox == .archived {
+            return item.isArchived && archivedVisitUnseenItemIDs.contains(item.id)
+        }
         guard item.isArchived,
-              !archivedSeenItemIDs.contains(item.id),
+              !self.archivedSeenItemIDs.contains(item.id),
               let cutoff = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date
         else { return false }
         return (item.displayDate ?? .distantPast) > cutoff
@@ -618,12 +627,36 @@ final class AppModel: ObservableObject {
             unseenArchivedItemCount = 0
             return
         }
+        if visibleMailbox == .archived {
+            archivedVisitUnseenItemIDs?.formUnion(persistedUnseenArchivedItemIDs())
+        }
         unseenArchivedItemCount = Self.itemCount(
             in: emails,
             mailbox: .archived,
             newerThan: cutoff,
             excluding: archivedSeenItemIDs
         )
+    }
+
+    private func persistedUnseenArchivedItemIDs() -> Set<String> {
+        guard let cutoff = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date
+        else { return [] }
+        return Set(emails.lazy.compactMap { item in
+            guard item.isArchived,
+                  !self.archivedSeenItemIDs.contains(item.id),
+                  (item.displayDate ?? .distantPast) > cutoff
+            else { return nil }
+            return item.id
+        })
+    }
+
+    private func endArchivedVisitIfNeeded() {
+        guard visibleMailbox == .archived else { return }
+        archivedSeenFlushTask?.cancel()
+        if archivedSeenFlushTask != nil {
+            flushArchivedSeenReceipts()
+        }
+        archivedVisitUnseenItemIDs = nil
     }
 
     static func itemCount(
