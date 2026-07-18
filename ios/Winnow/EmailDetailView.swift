@@ -249,12 +249,13 @@ struct EmailDetailView: View {
 
             if item.canUnsubscribe {
                 CompactDetailActionButton(
-                    title: "Unsubscribe",
+                    title: "Unsub",
                     symbol: "person.crop.circle.badge.minus",
                     color: WinnowDesign.rose
                 ) {
                     confirmUnsubscribe = true
                 }
+                .accessibilityLabel("Unsubscribe")
                 .confirmationDialog(
                     "Unsubscribe from this sender?",
                     isPresented: $confirmUnsubscribe,
