@@ -67,4 +67,21 @@ describe('unsubscribe discovery', () => {
     assert.equal(result.preferred.url, 'https://example.com/mime-leave');
     assert.equal(result.preferred.source, 'body');
   });
+
+  it('uses the full MIME body when a normalized top-level body is only a stub', () => {
+    const html = '<a href="https://example.com/full-message-leave">Unsubscribe</a>';
+    const result = discoverUnsubscribeMethods({
+      body: 'stub',
+      unsubscribe: 'mailto:leave@example.com',
+      message: {
+        payload: {
+          mimeType: 'multipart/alternative',
+          parts: [{ mimeType: 'text/html', body: { data: Buffer.from(html).toString('base64url') } }],
+        },
+      },
+    });
+
+    assert.equal(result.preferred.url, 'https://example.com/full-message-leave');
+    assert.deepEqual(result.methods.map(method => method.type), ['http', 'mailto']);
+  });
 });

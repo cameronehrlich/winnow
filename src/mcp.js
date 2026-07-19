@@ -2,7 +2,7 @@ import { archiveEmail, markEmailRead, markEmailUnread, moveEmailToInbox } from '
 import { getAccounts } from './config.js';
 import { scan } from './scan.js';
 import { findUnsubscribeForEmail, recordUnsubscribe } from './state.js';
-import { followUnsubscribeLink } from './slack-actions.js';
+import { executeEmailUnsubscribe } from './unsubscribe.js';
 import {
   getDailyActionSummary,
   getEmailItem,
@@ -222,7 +222,7 @@ async function unsubscribeEmail(id) {
   }
 
   try {
-    const result = await followUnsubscribeLink(item.unsubscribeLink);
+    const result = await executeEmailUnsubscribe(item);
     const entry = recordUnsubscribe({
       sender: item.from,
       subject: item.subject,

@@ -5,7 +5,7 @@ import { archiveEmail, markEmailRead, markEmailUnread, moveEmailToInbox } from '
 import { handlingDecisionKey, handlingUndoAction } from './handling-decisions.js';
 import { scan } from './scan.js';
 import { findUnsubscribeForEmail, getUnsubscribes, recordUnsubscribe } from './state.js';
-import { followUnsubscribeLink } from './slack-actions.js';
+import { executeEmailUnsubscribe } from './unsubscribe.js';
 import { handleMcpMessage } from './mcp.js';
 import { getRuntimeStatus, listAccountStatus } from './status.js';
 import { getPushCapabilities } from './push.js';
@@ -739,7 +739,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
         return;
       }
       try {
-        const result = await followUnsubscribeLink(item.unsubscribeLink);
+        const result = await (dependencies.executeEmailUnsubscribe || executeEmailUnsubscribe)(item);
         const entry = recordUnsubscribe({
           sender: item.from,
           subject: item.subject,
@@ -760,6 +760,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
           entry,
         });
       } catch (err) {
+        console.error(`[winnow/api] Unsubscribe failed for ${item.id}: ${err.message}`);
         const entry = recordUnsubscribe({
           sender: item.from,
           subject: item.subject,

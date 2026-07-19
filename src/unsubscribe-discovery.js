@@ -129,8 +129,10 @@ function messageBody(message) {
     decodePayloadBody(message?.payload),
     decodePayloadBody(message?.message?.payload),
   ];
-  return String(candidates.find(value => typeof value === 'string' && value) || '')
-    .slice(0, MAX_DISCOVERY_BODY_LENGTH);
+  return candidates
+    .filter(value => typeof value === 'string' && value)
+    .map(value => value.slice(0, MAX_DISCOVERY_BODY_LENGTH))
+    .sort((left, right) => right.length - left.length)[0] || '';
 }
 
 /**
@@ -171,7 +173,9 @@ export function discoverUnsubscribeMethods(message) {
   for (const candidate of plainTextCandidates(body)) add(candidate, 'body');
 
   discovered.sort((left, right) => {
-    const rank = method => (method.source === 'header' ? 0 : 2) + (method.type === 'http' ? 0 : 1);
+    // Prefer an automatable body link over a mailto-only header. Header
+    // provenance remains the tie-breaker within the same method type.
+    const rank = method => (method.type === 'http' ? 0 : 2) + (method.source === 'header' ? 0 : 1);
     return rank(left) - rank(right);
   });
   return { methods: discovered, preferred: discovered[0] || null };
