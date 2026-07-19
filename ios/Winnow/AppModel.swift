@@ -274,6 +274,20 @@ final class AppModel: ObservableObject {
             }
 
             if requiresManualUnsubscribe {
+                if
+                    let value = response.manualActionUrl,
+                    let url = URL(string: value),
+                    ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+                    url.host?.isEmpty == false
+                {
+                    presentedError = PresentedError(
+                        title: "Finish Unsubscribing",
+                        message: "This sender requires a browser check before it can unsubscribe you.",
+                        actionTitle: "Continue in Browser",
+                        actionURL: url
+                    )
+                    return true
+                }
                 presentedError = PresentedError(
                     title: "Manual unsubscribe required",
                     message: "This sender uses an email-based unsubscribe flow. Open the message in Gmail to finish it."
@@ -738,6 +752,8 @@ struct PresentedError: Identifiable {
     let id = UUID()
     let title: String
     let message: String
+    var actionTitle: String? = nil
+    var actionURL: URL? = nil
 }
 
 struct ToastMessage: Identifiable, Equatable {

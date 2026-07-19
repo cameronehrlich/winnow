@@ -577,6 +577,7 @@ struct ActionResponse: Decodable {
     let item: EmailItem?
     let outcome: String?
     let requiresManualAction: Bool?
+    let manualActionUrl: String?
 }
 
 struct PushDeviceResponse: Decodable {

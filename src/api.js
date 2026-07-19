@@ -726,7 +726,11 @@ async function handleAuthed(req, res, url, dependencies = {}) {
         threadId: item.threadId,
         sender: item.from,
       });
-      if (previous && ['succeeded', 'attempted'].includes(previous.status)) {
+      if (
+        previous
+        && (previous.status === 'succeeded'
+          || (previous.status === 'attempted' && previous.method !== 'browser'))
+      ) {
         sendJson(res, 200, {
           ok: previous.status === 'succeeded',
           action: 'unsubscribe',
@@ -756,6 +760,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
           action: 'unsubscribe',
           outcome: result.status,
           requiresManualAction: result.status === 'attempted',
+          manualActionUrl: result.manualActionUrl || null,
           item: mobileEmailItem(getEmailItem(item.id) || item),
           entry,
         });

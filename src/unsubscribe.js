@@ -53,12 +53,28 @@ export async function executeEmailUnsubscribe(item, {
   if (!methods.length) throw new Error('No unsubscribe method was found');
 
   const failures = [];
+  let browserFallback = null;
   for (const method of methods) {
     try {
       return await follow(method.url);
     } catch (error) {
       failures.push(error);
+      if (
+        method.type === 'http'
+        && /(?:GET|Form submit|One-click POST) returned HTTP [45]\d\d/.test(error.message)
+      ) {
+        browserFallback = method;
+      }
     }
+  }
+  if (browserFallback) {
+    return {
+      status: 'attempted',
+      method: 'browser',
+      note: 'Sender requires completion in a browser',
+      urlHost: new URL(browserFallback.url).hostname,
+      manualActionUrl: browserFallback.url,
+    };
   }
   throw failures.at(-1) || new Error('Unsubscribe failed');
 }

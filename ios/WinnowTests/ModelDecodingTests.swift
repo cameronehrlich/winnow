@@ -36,9 +36,10 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testActionResponseDecodesAuthoritativeBadge() throws {
-        let data = #"{"ok":true,"action":"archive","badge":3}"#.data(using: .utf8)!
+        let data = #"{"ok":false,"action":"unsubscribe","badge":3,"outcome":"attempted","requiresManualAction":true,"manualActionUrl":"https://example.com/unsubscribe"}"#.data(using: .utf8)!
         let response = try JSONDecoder().decode(ActionResponse.self, from: data)
         XCTAssertEqual(response.badge, 3)
+        XCTAssertEqual(response.manualActionUrl, "https://example.com/unsubscribe")
     }
 
     @MainActor

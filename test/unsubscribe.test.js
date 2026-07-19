@@ -67,4 +67,45 @@ describe('email unsubscribe execution', () => {
     assert.equal(result.status, 'succeeded');
     assert.deepEqual(attempts, ['https://sender.example/leave']);
   });
+
+  it('returns a browser handoff when every validated web method is HTTP-blocked', async () => {
+    const result = await executeEmailUnsubscribe({
+      account: 'person@example.com',
+      messageId: 'message-1',
+      unsubscribeLink: 'https://sender.example/unsubscribe',
+    }, {
+      async getMessage() {
+        return { unsubscribe: 'https://sender.example/unsubscribe' };
+      },
+      async follow() {
+        throw new Error('GET returned HTTP 403');
+      },
+    });
+
+    assert.deepEqual(result, {
+      status: 'attempted',
+      method: 'browser',
+      note: 'Sender requires completion in a browser',
+      urlHost: 'sender.example',
+      manualActionUrl: 'https://sender.example/unsubscribe',
+    });
+  });
+
+  it('does not offer a browser handoff for a blocked unsafe URL', async () => {
+    await assert.rejects(
+      () => executeEmailUnsubscribe({
+        account: 'person@example.com',
+        messageId: 'message-1',
+        unsubscribeLink: 'https://sender.example/unsubscribe',
+      }, {
+        async getMessage() {
+          return { unsubscribe: 'https://sender.example/unsubscribe' };
+        },
+        async follow() {
+          throw new Error('Blocked unsafe unsubscribe URL address');
+        },
+      }),
+      /Blocked unsafe unsubscribe URL address/
+    );
+  });
 });

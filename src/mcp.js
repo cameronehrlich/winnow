@@ -210,7 +210,11 @@ async function unsubscribeEmail(id) {
     threadId: item.threadId,
     sender: item.from,
   });
-  if (previous && ['succeeded', 'attempted'].includes(previous.status)) {
+  if (
+    previous
+    && (previous.status === 'succeeded'
+      || (previous.status === 'attempted' && previous.method !== 'browser'))
+  ) {
     return {
       ok: previous.status === 'succeeded',
       outcome: previous.status,
@@ -238,6 +242,7 @@ async function unsubscribeEmail(id) {
       ok: result.status === 'succeeded',
       outcome: result.status,
       requiresManualAction: result.status === 'attempted',
+      manualActionUrl: result.manualActionUrl || null,
       entry,
     };
   } catch (err) {

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab: RootTab = .inbox
     @State private var settingsPresented = false
@@ -71,7 +72,18 @@ struct RootView: View {
             )
         }
         .alert(item: $model.presentedError) { error in
-            Alert(title: Text(error.title), message: Text(error.message), dismissButton: .default(Text("OK")))
+            if let actionTitle = error.actionTitle, let actionURL = error.actionURL {
+                Alert(
+                    title: Text(error.title),
+                    message: Text(error.message),
+                    primaryButton: .default(Text(actionTitle)) {
+                        openURL(actionURL)
+                    },
+                    secondaryButton: .cancel()
+                )
+            } else {
+                Alert(title: Text(error.title), message: Text(error.message), dismissButton: .default(Text("OK")))
+            }
         }
         .overlay(alignment: .bottom) {
             if let toast = model.toast {
