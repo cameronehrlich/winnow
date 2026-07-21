@@ -25,6 +25,12 @@ describe('assistant model context', () => {
     assert.match(ASSISTANT_SYSTEM_PROMPT, /use mail\.read_attachment only when contextualEmail lists/i);
   });
 
+  it('treats reply-writing language as a draft rather than a send request', () => {
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /reply saying/i);
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /editable draft, not a send proposal/i);
+    assert.match(ASSISTANT_SYSTEM_PROMPT, /top-level draft field with no mail\.send_reply tool call/i);
+  });
+
   it('builds a stable response envelope from the currently available tools', () => {
     const schema = assistantResponseSchema([
       {

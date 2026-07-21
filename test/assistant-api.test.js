@@ -1114,6 +1114,85 @@ describe('assistant API', () => {
     assert.equal(calls.reply, 0);
   });
 
+  it('keeps a reply-writing request on the editable draft path', async () => {
+    responses.push({
+      text: 'I drafted that reply.',
+      toolCalls: [],
+      draft: {
+        kind: 'reply', to: ['sender@example.com'], cc: [], bcc: [],
+        subject: 'Re: Order 123',
+        body: 'If you have any other feedback or feature requests, please don\u2019t hesitate to reach out.',
+      },
+    });
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Reply saying: if you have any other feedback or feature requests please don\u2019t hesitate to reach out',
+      idempotencyKey: 'reply-draft-only',
+    });
+    const envelope = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(envelope.messages.at(-1).draft.kind, 'reply');
+    assert.match(envelope.messages.at(-1).draft.body, /other feedback or feature requests/i);
+    assert.equal(calls.reply, 0);
+    assert.ok(!calls.requests[0].availableTools.some(tool => tool.name === 'mail.send_reply'));
+    assert.ok(!calls.requests[0].availableTools.some(tool => tool.name === 'mail.send_forward'));
+  });
+
+  it('gives one malformed tool call a bounded correction turn', async () => {
+    responses.push(
+      {
+        text: 'Preparing the reminder.',
+        toolCalls: [{ name: 'device.create_reminder', arguments: { type: 'reminder' } }],
+        draft: null,
+      },
+      {
+        text: 'Review this reminder.',
+        toolCalls: [{ name: 'device.create_reminder', arguments: { title: 'Follow up on Order 123' } }],
+        draft: null,
+      },
+    );
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Make a reminder to follow up on this', idempotencyKey: 'repair-malformed-tool',
+    });
+    const envelope = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(calls.model, 2);
+    assert.equal(envelope.messages.at(-1).proposal.tool, 'device.create_reminder');
+    assert.equal(envelope.messages.at(-1).proposal.arguments.title, 'Follow up on Order 123');
+    assert.deepEqual(calls.requests[1].toolResults.at(-1).result, {
+      error: 'invalid_tool_arguments',
+      message: 'Unexpected argument: type',
+    });
+  });
+
+  it('does not expose validator details after a failed correction', async () => {
+    responses.push(
+      {
+        text: 'Preparing the reminder.',
+        toolCalls: [{ name: 'device.create_reminder', arguments: { type: 'reminder' } }],
+        draft: null,
+      },
+      {
+        text: 'Trying again.',
+        toolCalls: [{ name: 'device.create_reminder', arguments: { type: 'reminder' } }],
+        draft: null,
+      },
+    );
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Make a reminder to follow up on this', idempotencyKey: 'bounded-malformed-tool',
+    });
+    const envelope = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(calls.model, 2);
+    assert.equal(envelope.messages.at(-1).text, 'I couldn\u2019t prepare that request correctly. Please try again.');
+    assert.doesNotMatch(envelope.messages.at(-1).text, /unexpected argument|type/i);
+  });
+
   it('does not treat negated or retrospective archive language as authorization', async () => {
     for (const [index, text] of ["Don't archive this", 'Why did you archive this?'].entries()) {
       responses.push({

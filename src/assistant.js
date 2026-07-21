@@ -150,16 +150,31 @@ function explicitlyRequestsMailboxSearch(text) {
     || /\b(?:other|another|previous|earlier|older|all)\b.{0,40}\b(?:email|emails|mail|message|messages|invoice|invoices|receipt|receipts)\b/.test(request);
 }
 
+function explicitlyRequestsImmediateSend(text) {
+  const request = String(text || '').toLowerCase();
+  const sendVerb = /\b(?:send|transmit)\b/.test(request)
+    || /\bemail\s+(?:it|this|that|them|him|her)\b/.test(request);
+  return sendVerb && /\b(?:reply|respond|forward|draft|message|it|this|that|them|him|her)\b/.test(request);
+}
+
 function availableToolsForRequest(conversation, text) {
+  const excludes = new Set();
+  if (!explicitlyRequestsImmediateSend(text)) {
+    // Ordinary "reply saying..." and "forward this..." requests produce an
+    // editable draft. The dedicated draft-send endpoint materializes the exact
+    // outbound proposal after the user reviews that draft.
+    excludes.add('mail.send_reply');
+    excludes.add('mail.send_forward');
+  }
   if (conversation.scope !== 'email') {
-    return ASSISTANT_TOOL_DEFINITIONS.filter(definition => definition.name !== 'mail.read_attachment');
+    excludes.add('mail.read_attachment');
+    return ASSISTANT_TOOL_DEFINITIONS.filter(definition => !excludes.has(definition.name));
   }
-  if (explicitlyRequestsMailboxSearch(text)) {
-    return ASSISTANT_TOOL_DEFINITIONS;
+  if (!explicitlyRequestsMailboxSearch(text)) {
+    excludes.add('mail.search');
+    excludes.add('mail.get_thread');
   }
-  return ASSISTANT_TOOL_DEFINITIONS.filter(definition =>
-    !['mail.search', 'mail.get_thread'].includes(definition.name)
-  );
+  return ASSISTANT_TOOL_DEFINITIONS.filter(definition => !excludes.has(definition.name));
 }
 
 function assistantToolDefinition(name) {
@@ -286,6 +301,9 @@ async function waitForExistingRun(run, timeoutMs = 80_000) {
 }
 
 function errorText(err) {
+  if (err instanceof AssistantToolError && err.code === 'invalid_tool_arguments') {
+    return 'I couldn\u2019t prepare that request correctly. Please try again.';
+  }
   if (err instanceof AssistantToolError) return err.message;
   if (err instanceof AssistantError && err.code === 'assistant_model_unavailable') {
     return 'Winnow’s model is temporarily unavailable. Please try again in a moment.';
@@ -696,6 +714,7 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
   const evidence = [];
   const evidenceKeys = new Set();
   const completedToolCalls = new Set();
+  let invalidToolRepairUsed = false;
   const stopHeartbeat = startAssistantRunHeartbeat(run);
   try {
     requireAssistantRunLease(run);
@@ -860,6 +879,7 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
           });
           if (err instanceof AssistantToolError
               && [
+                ...(!invalidToolRepairUsed ? ['invalid_tool_arguments'] : []),
                 'duplicate_tool_call',
                 'tool_not_available_for_request',
                 'attachment_not_found',
@@ -867,12 +887,14 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
                 'attachment_size_not_supported',
                 'rule_scope_clarification_required',
               ].includes(err.code)) {
+            if (err.code === 'invalid_tool_arguments') invalidToolRepairUsed = true;
             toolResults.push({
               tool: call.name,
               result: { error: err.code, message: err.message },
               trust: 'untrusted_tool_data',
             });
             await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.toolComplete));
+            if (err.code === 'invalid_tool_arguments') break;
             continue;
           }
           throw err;
