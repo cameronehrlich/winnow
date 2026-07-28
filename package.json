@@ -34,7 +34,7 @@
     "@slack/socket-mode": "^2.0.6",
     "@slack/web-api": "^7.15.1",
     "commander": "^13.1.0",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.3.0"
   },
   "license": "MIT"
 }
