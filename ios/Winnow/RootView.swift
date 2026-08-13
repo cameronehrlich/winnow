@@ -284,7 +284,7 @@ private struct OnboardingView: View {
                             Text("Your inbox, distilled.")
                                 .font(.largeTitle.bold())
                                 .multilineTextAlignment(.center)
-                            Text("Fast private triage without Slack in the way.")
+                            Text("Spend less time in email. Winnow keeps what matters and handles the rest.")
                                 .font(.title3)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
