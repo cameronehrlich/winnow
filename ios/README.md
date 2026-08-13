@@ -89,19 +89,20 @@ The values are persisted once to preferences/Keychain, so a signed development b
 
 ## Push and widget provisioning
 
-The development identifiers are `com.cameronehrlich.Winnow` and
-`com.cameronehrlich.Winnow.WinnowWidget`. They share the
-`group.com.cameronehrlich.Winnow` App Group. Xcode automatic signing manages the
-development profiles; an App Store Connect app record is not required.
+The app identifiers are `technology.37.Winnow` and
+`technology.37.Winnow.WinnowWidget`. They retain the existing
+`group.com.cameronehrlich.Winnow` App Group so the app and widget continue to
+share data. Xcode automatic signing manages development and distribution
+profiles.
 
-One Apple Developer account-holder step remains before the backend can deliver
-real pushes:
+To configure backend push delivery:
 
-1. Open **Apple Developer → Certificates, Identifiers & Profiles → Keys**.
-2. Create a key named **Winnow APNs**, enable **Apple Push Notifications service
-   (APNs)**, and download its `.p8` file. Apple permits this download only once.
-3. Put the key outside the repository with owner-only permissions and configure
-   `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_BUNDLE_ID=com.cameronehrlich.Winnow`, and
+1. Use the team's existing token-based APNs key, or create one under **Apple
+   Developer → Certificates, Identifiers & Profiles → Keys** with **Apple Push
+   Notifications service (APNs)** enabled. Apple permits the `.p8` download only
+   once.
+2. Put the key outside the repository with owner-only permissions and configure
+   `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_BUNDLE_ID=technology.37.Winnow`, and
    `APNS_PRIVATE_KEY_PATH` in Winnow's private runtime environment.
 
 The backend uses the same token-based key for development and production APNs,

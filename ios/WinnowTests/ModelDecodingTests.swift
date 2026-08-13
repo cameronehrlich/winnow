@@ -436,7 +436,7 @@ final class ModelDecodingTests: XCTestCase {
           "device": {
             "id":"device-1","platform":"ios",
             "installationId":"11111111-1111-1111-1111-111111111111",
-            "environment":"development","bundleId":"com.cameronehrlich.Winnow",
+            "environment":"development","bundleId":"technology.37.Winnow",
             "appVersion":"1.0 (1)","enabled":true
           }
         }

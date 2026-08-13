@@ -541,7 +541,7 @@ describe('local API', () => {
         platform: 'ios',
         installationId: '11111111-1111-1111-1111-111111111111',
         environment: 'development',
-        bundleId: 'com.cameronehrlich.Winnow',
+        bundleId: 'technology.37.Winnow',
         appVersion: '1.0 (1)',
       }),
     });

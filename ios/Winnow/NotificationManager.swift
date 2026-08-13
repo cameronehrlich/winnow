@@ -259,7 +259,7 @@ final class PushNotificationManager {
                 token: token,
                 installationID: installationID,
                 environment: apnsEnvironment,
-                bundleID: Bundle.main.bundleIdentifier ?? "com.cameronehrlich.Winnow",
+                bundleID: Bundle.main.bundleIdentifier ?? "technology.37.Winnow",
                 appVersion: appVersion
             )
             UserDefaults.standard.set(device.id, forKey: registeredDeviceIDKey)
