@@ -27,6 +27,7 @@ final class AppModel: ObservableObject {
 
     private var hasLoaded = false
     private var autoRefreshTask: Task<Void, Never>?
+    private var supplementalRefreshTask: Task<Void, Never>?
     private var refreshInFlight = false
     private var refreshGeneration = 0
     private var pendingOptimisticActions: [String: EmailAction] = [:]
@@ -61,11 +62,39 @@ final class AppModel: ObservableObject {
     func initialLoad() async {
         guard isConfigured, !hasLoaded else { return }
         hasLoaded = true
-        await refresh()
+        await refresh(
+            silent: false,
+            presentsError: false,
+            loadsSupplementalData: true,
+            transientRetryCount: 1
+        )
         await activatePushNotifications()
     }
 
     func refresh(silent: Bool = false) async {
+        await refresh(
+            silent: silent,
+            presentsError: !silent,
+            loadsSupplementalData: true,
+            transientRetryCount: silent ? 1 : 0
+        )
+    }
+
+    func refreshAutomatically() async {
+        await refresh(
+            silent: !emails.isEmpty,
+            presentsError: false,
+            loadsSupplementalData: true,
+            transientRetryCount: 1
+        )
+    }
+
+    private func refresh(
+        silent: Bool,
+        presentsError: Bool,
+        loadsSupplementalData: Bool,
+        transientRetryCount: Int
+    ) async {
         guard isConfigured else { return }
         guard !refreshInFlight else { return }
         refreshInFlight = true
@@ -84,21 +113,11 @@ final class AppModel: ObservableObject {
 
         let client = APIClient(configuration: configuration)
         do {
-            async let fetchedInbox = client.emails(state: "inbox", limit: 200)
-            async let fetchedArchived = client.emails(state: "archived", limit: 200)
-            async let fetchedSummary = client.dailySummary()
-            async let fetchedLifetimeSummary = client.lifetimeSummary()
-            async let fetchedStatus = client.status()
-            async let fetchedAccounts = client.accounts()
-
-            let (inboxPage, archivedPage, dailySummary, lifetime, runtimeStatus, accountList) = try await (
-                fetchedInbox,
-                fetchedArchived,
-                fetchedSummary,
-                fetchedLifetimeSummary,
-                fetchedStatus,
-                fetchedAccounts
-            )
+            let (inboxPage, archivedPage) = try await withTransientRetry(count: transientRetryCount) {
+                async let fetchedInbox = client.emails(state: "inbox", limit: 200)
+                async let fetchedArchived = client.emails(state: "archived", limit: 200)
+                return try await (fetchedInbox, fetchedArchived)
+            }
             guard generation == refreshGeneration else { return }
             var refreshedEmails = inboxPage.items + archivedPage.items
             for (emailID, action) in pendingOptimisticActions {
@@ -107,10 +126,6 @@ final class AppModel: ObservableObject {
             }
             let archivedIDs = Set(refreshedEmails.lazy.filter(\.isArchived).map(\.id))
             emails = refreshedEmails
-            summary = dailySummary
-            lifetimeSummary = lifetime
-            status = runtimeStatus
-            accounts = accountList
             lastRefresh = Date()
             if visibleMailbox == .inbox { markMailboxSeen(.inbox) }
             updateArchivedUnseenCount()
@@ -123,12 +138,64 @@ final class AppModel: ObservableObject {
                     )
                 }
             }
+
+            // The mailbox is the primary product surface. Release its loading
+            // state before fetching optional status and statistics.
+            isLoading = false
+            isRefreshing = false
+
+            if loadsSupplementalData {
+                scheduleSupplementalRefresh(generation: generation)
+            }
         } catch {
             guard generation == refreshGeneration else { return }
-            if !silent || emails.isEmpty {
+            if presentsError {
                 presentedError = PresentedError(title: "Couldn’t refresh", message: error.localizedDescription)
             }
             status = nil
+        }
+    }
+
+    private func withTransientRetry<Value>(
+        count: Int,
+        operation: () async throws -> Value
+    ) async throws -> Value {
+        var retriesRemaining = max(0, count)
+        while true {
+            do {
+                return try await operation()
+            } catch let error as APIClientError where error.isTransient && retriesRemaining > 0 {
+                retriesRemaining -= 1
+                try await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private func scheduleSupplementalRefresh(generation: Int) {
+        supplementalRefreshTask?.cancel()
+        let configuration = configuration
+        supplementalRefreshTask = Task { [weak self] in
+            let client = APIClient(configuration: configuration)
+            async let fetchedSummary: DailySummary? = try? client.dailySummary()
+            async let fetchedLifetimeSummary: LifetimeSummary? = try? client.lifetimeSummary()
+            async let fetchedStatus: RuntimeStatus? = try? client.status()
+            async let fetchedAccounts: [AccountStatus]? = try? client.accounts()
+            let (dailySummary, lifetime, runtimeStatus, accountList) = await (
+                fetchedSummary,
+                fetchedLifetimeSummary,
+                fetchedStatus,
+                fetchedAccounts
+            )
+            guard !Task.isCancelled,
+                  let self,
+                  generation == self.refreshGeneration,
+                  configuration == self.configuration
+            else { return }
+            if let dailySummary { self.summary = dailySummary }
+            if let lifetime { self.lifetimeSummary = lifetime }
+            if let runtimeStatus { self.status = runtimeStatus }
+            if let accountList { self.accounts = accountList }
+            self.supplementalRefreshTask = nil
         }
     }
 
@@ -192,6 +259,8 @@ final class AppModel: ObservableObject {
             status = nil
             accounts = []
             mailRules = []
+            supplementalRefreshTask?.cancel()
+            supplementalRefreshTask = nil
             navigationRequest = nil
             conversationFocusRequest = nil
             askNavigationRequest = nil
@@ -215,13 +284,18 @@ final class AppModel: ObservableObject {
         _ action: EmailAction,
         on item: EmailItem,
         showsConfirmation: Bool = true,
+        presentsFailure: Bool = true,
+        transientRetryCount: Int = 0,
         optimisticDelay: Duration = .zero
     ) async -> Bool {
         guard !performingEmailIDs.contains(item.id) else { return false }
         let originalItem = email(id: item.id) ?? item
         let wasAlreadySeenInArchive = archivedSeenItemIDs.contains(item.id)
         let appliesOptimistically = action.supportsOptimisticUpdate
-        async let actionResponse = APIClient(configuration: configuration).perform(action, emailID: item.id)
+        let client = APIClient(configuration: configuration)
+        async let actionResponse = withTransientRetry(count: transientRetryCount) {
+            try await client.perform(action, emailID: item.id)
+        }
 
         performingEmailIDs.insert(item.id)
         defer { performingEmailIDs.remove(item.id) }
@@ -311,14 +385,22 @@ final class AppModel: ObservableObject {
                 }
                 toast = nil
             }
-            presentedError = PresentedError(title: "Action failed", message: error.localizedDescription)
+            if presentsFailure {
+                presentedError = PresentedError(title: "Action failed", message: error.localizedDescription)
+            }
             return false
         }
     }
 
     func markReadWhenOpened(_ item: EmailItem) async {
         guard item.isUnread else { return }
-        _ = await perform(.markRead, on: item, showsConfirmation: false)
+        _ = await perform(
+            .markRead,
+            on: item,
+            showsConfirmation: false,
+            presentsFailure: false,
+            transientRetryCount: 1
+        )
     }
 
     func startAutoRefresh() {
@@ -331,7 +413,7 @@ final class AppModel: ObservableObject {
                     return
                 }
                 guard !Task.isCancelled else { return }
-                await self?.refresh(silent: true)
+                await self?.refreshAutomatically()
             }
         }
     }
@@ -611,7 +693,12 @@ final class AppModel: ObservableObject {
     @discardableResult
     func refreshFromPush() async -> Bool {
         let previous = emails
-        await refresh(silent: true)
+        await refresh(
+            silent: true,
+            presentsError: false,
+            loadsSupplementalData: false,
+            transientRetryCount: 1
+        )
         return emails != previous
     }
 

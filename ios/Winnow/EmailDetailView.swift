@@ -52,26 +52,8 @@ struct EmailDetailView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
-                    .padding(.bottom, 72)
                 }
                 .scrollDismissesKeyboard(.interactively)
-                .overlay(alignment: .bottomTrailing) {
-                    Button {
-                        showingAssistant = true
-                    } label: {
-                        Label("Ask Winnow", systemImage: "bubble.left.and.bubble.right.fill")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 16)
-                            .frame(height: 48)
-                            .background(WinnowDesign.heroGradient, in: Capsule())
-                            .shadow(color: WinnowDesign.indigo.opacity(0.28), radius: 12, y: 6)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.trailing, 16)
-                    .padding(.bottom, 14)
-                    .accessibilityHint("Opens a conversation about this email")
-                }
                 .sheet(item: $editingRule) { rule in
                     MailRuleEditorView(rule: rule)
                         .environmentObject(model)
@@ -101,6 +83,12 @@ struct EmailDetailView: View {
         }
         .navigationTitle("Email")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+        .toolbar {
+            if let item {
+                detailToolbar(item)
+            }
+        }
         .quickLookPreview($attachmentPreviewURL)
         .alert(
             "Couldn’t Open Attachment",
@@ -112,6 +100,19 @@ struct EmailDetailView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(attachmentError ?? "The attachment couldn’t be opened.")
+        }
+        .confirmationDialog(
+            "Unsubscribe from this sender?",
+            isPresented: $confirmUnsubscribe,
+            titleVisibility: .visible
+        ) {
+            Button("Unsubscribe", role: .destructive) {
+                guard let item else { return }
+                Task { _ = await model.perform(.unsubscribe, on: item) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Winnow will follow the sender’s unsubscribe link.")
         }
         .task(id: emailID) {
             guard let item = model.email(id: emailID) else { return }
@@ -219,80 +220,81 @@ struct EmailDetailView: View {
                     .font(.title3.bold())
                     .fixedSize(horizontal: false, vertical: true)
             }
-
-            Divider()
-            actionsRow(item)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .winnowCard(padding: 14)
     }
 
-    private func actionsRow(_ item: EmailItem) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            CompactDetailActionButton(
-                title: item.isArchived ? "Inbox" : "Archive",
-                symbol: item.isArchived ? "tray.and.arrow.down" : "archivebox",
-                color: item.isArchived ? WinnowDesign.mint : WinnowDesign.amber
-            ) {
+    @ToolbarContentBuilder
+    private func detailToolbar(_ item: EmailItem) -> some ToolbarContent {
+        ToolbarItemGroup(placement: .bottomBar) {
+            Button {
                 performPrimaryMailboxAction(on: item)
+            } label: {
+                Label(
+                    item.isArchived ? "Move to Inbox" : "Archive",
+                    systemImage: item.isArchived ? "tray.and.arrow.down" : "archivebox"
+                )
             }
-            .accessibilityLabel(item.isArchived ? "Move to Inbox" : "Archive")
+            .tint(item.isArchived ? WinnowDesign.mint : WinnowDesign.amber)
+            .disabled(model.performingEmailIDs.contains(item.id))
 
-            CompactDetailActionButton(
-                title: item.isUnread ? "Mark Read" : "Unread",
-                symbol: item.isUnread ? "envelope.open" : "envelope.badge",
-                color: WinnowDesign.accent
-            ) {
+            Button {
                 Task { _ = await model.perform(item.isUnread ? .markRead : .markUnread, on: item) }
+            } label: {
+                Label(
+                    item.isUnread ? "Mark as Read" : "Mark as Unread",
+                    systemImage: item.isUnread ? "envelope.open" : "envelope.badge"
+                )
             }
-            .accessibilityLabel(item.isUnread ? "Mark as read" : "Mark as unread")
+            .tint(WinnowDesign.accent)
+            .disabled(model.performingEmailIDs.contains(item.id))
 
             if item.canUnsubscribe {
-                CompactDetailActionButton(
-                    title: "Unsub",
-                    symbol: "person.crop.circle.badge.minus",
-                    color: WinnowDesign.rose
-                ) {
+                Button {
                     confirmUnsubscribe = true
+                } label: {
+                    Label("Unsubscribe", systemImage: "person.crop.circle.badge.minus")
                 }
-                .accessibilityLabel("Unsubscribe")
-                .confirmationDialog(
-                    "Unsubscribe from this sender?",
-                    isPresented: $confirmUnsubscribe,
-                    titleVisibility: .visible
-                ) {
-                    Button("Unsubscribe", role: .destructive) {
-                        Task { _ = await model.perform(.unsubscribe, on: item) }
+                .tint(WinnowDesign.rose)
+                .disabled(model.performingEmailIDs.contains(item.id))
+            }
+
+            Spacer(minLength: 8)
+
+            Menu {
+                Button {
+                    if let decision = item.handlingDecision {
+                        adjustFutureHandling(item, decision: decision)
+                    } else {
+                        showingCreateRule = true
                     }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("Winnow will follow the sender’s unsubscribe link.")
+                } label: {
+                    Label("Adjust Future Handling", systemImage: "line.3.horizontal.decrease.circle")
                 }
-            }
 
-            if item.handlingDecision != nil {
-                CompactDetailActionButton(
-                    title: "Why",
-                    symbol: "eye",
-                    color: WinnowDesign.accent
-                ) {
-                    showingHandlingExplanation = true
+                if item.handlingDecision != nil {
+                    Button {
+                        showingHandlingExplanation = true
+                    } label: {
+                        Label("Why Winnow Handled This", systemImage: "eye")
+                    }
                 }
+            } label: {
+                Label("More Email Actions", systemImage: "ellipsis.circle")
             }
+            .tint(WinnowDesign.accent)
+            .disabled(model.performingEmailIDs.contains(item.id))
 
-            CompactDetailActionButton(
-                title: "Filter",
-                symbol: "line.3.horizontal.decrease.circle",
-                color: WinnowDesign.mint
-            ) {
-                if let decision = item.handlingDecision {
-                    adjustFutureHandling(item, decision: decision)
-                } else {
-                    showingCreateRule = true
-                }
+            Button {
+                showingAssistant = true
+            } label: {
+                Label("Ask Winnow", systemImage: "bubble.left.and.bubble.right.fill")
             }
+            .tint(WinnowDesign.accent)
+            .accessibilityHint("Opens a conversation about this email")
+            .disabled(model.performingEmailIDs.contains(item.id))
         }
-        .disabled(model.performingEmailIDs.contains(item.id))
     }
 
     private func performPrimaryMailboxAction(on item: EmailItem) {

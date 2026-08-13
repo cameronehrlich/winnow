@@ -191,7 +191,15 @@ final class PushNotificationManager {
         let cleanupContexts = WinnowPushContext.cleanupContexts(from: userInfo)
             + (context.mailboxState == "archived" && !context.emailID.isEmpty ? [context] : [])
         Task {
-            let changed = await refreshHandler?() ?? false
+            let changed: Bool
+            if let refreshHandler {
+                changed = await refreshHandler()
+            } else {
+                // A silent push can launch a previously terminated app before
+                // SwiftUI has installed its model callback. Keep the badge and
+                // widget current even in that cold-start window.
+                changed = await refreshCriticalMailState()
+            }
             await removeDeliveredNotifications(for: cleanupContexts)
             completion(changed ? .newData : .noData)
         }
@@ -228,6 +236,20 @@ final class PushNotificationManager {
         }
         guard !identifiers.isEmpty else { return }
         center.removeDeliveredNotifications(withIdentifiers: identifiers)
+    }
+
+    private func refreshCriticalMailState() async -> Bool {
+        let activeConfiguration = configuration ?? ConfigurationStore.load()
+        guard activeConfiguration.isComplete else { return false }
+        let client = APIClient(configuration: activeConfiguration)
+        do {
+            let inboxPage = try await client.emails(state: "inbox", limit: 200)
+            WidgetSnapshotStore.save(emails: inboxPage.items)
+            setAppIconBadge(inboxPage.items.lazy.filter(\.isUnread).count)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func registerCurrentToken() async {

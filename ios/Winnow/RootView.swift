@@ -34,7 +34,7 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 model.setVisibleMailbox(mailbox(for: selectedTab))
-                Task { await model.refresh(silent: !model.emails.isEmpty) }
+                Task { await model.refreshAutomatically() }
                 model.startAutoRefresh()
             } else {
                 model.setVisibleMailbox(nil)
@@ -46,7 +46,7 @@ struct RootView: View {
         }
         .onChange(of: model.isConfigured) { _, isConfigured in
             if isConfigured, scenePhase == .active {
-                Task { await model.refresh(silent: !model.emails.isEmpty) }
+                Task { await model.refreshAutomatically() }
                 model.startAutoRefresh()
             } else if !isConfigured {
                 model.stopAutoRefresh()

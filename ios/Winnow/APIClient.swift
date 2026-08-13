@@ -50,6 +50,17 @@ enum APIClientError: LocalizedError {
             message
         }
     }
+
+    var isTransient: Bool {
+        switch self {
+        case .transport:
+            true
+        case let .server(status, _):
+            status == 429 || (500...599).contains(status)
+        default:
+            false
+        }
+    }
 }
 
 private struct APIErrorEnvelope: Decodable {
@@ -88,7 +99,19 @@ protocol AssistantService {
 
 struct APIClient: AssistantService {
     let configuration: ServerConfiguration
-    var session: URLSession = .shared
+    var session: URLSession
+
+    init(configuration: ServerConfiguration, session: URLSession? = nil) {
+        self.configuration = configuration
+        self.session = session ?? Self.connectivityAwareSession
+    }
+
+    private static let connectivityAwareSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.waitsForConnectivity = true
+        configuration.timeoutIntervalForResource = 60
+        return URLSession(configuration: configuration)
+    }()
 
     func status() async throws -> RuntimeStatus {
         try await request(path: "/v1/status")

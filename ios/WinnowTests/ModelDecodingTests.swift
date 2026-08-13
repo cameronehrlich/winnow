@@ -3,6 +3,23 @@ import XCTest
 @testable import Winnow
 
 final class ModelDecodingTests: XCTestCase {
+    func testDefaultAPIClientWaitsForConnectivity() {
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret")
+        )
+
+        XCTAssertTrue(client.session.configuration.waitsForConnectivity)
+        XCTAssertEqual(client.session.configuration.timeoutIntervalForResource, 60)
+    }
+
+    func testOnlyRetryableAPIErrorsAreClassifiedAsTransient() {
+        XCTAssertTrue(APIClientError.transport("timed out").isTransient)
+        XCTAssertTrue(APIClientError.server(status: 503, message: "unavailable").isTransient)
+        XCTAssertTrue(APIClientError.server(status: 429, message: "slow down").isTransient)
+        XCTAssertFalse(APIClientError.server(status: 401, message: "unauthorized").isTransient)
+        XCTAssertFalse(APIClientError.decoding("bad data").isTransient)
+    }
+
     func testPushContextPreservesThreadNavigationMetadata() {
         let context = WinnowPushContext(userInfo: [
             "emailId": "email-1",
