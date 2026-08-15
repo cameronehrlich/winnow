@@ -27,33 +27,40 @@ struct EmailDetailView: View {
         ZStack {
             AppBackdrop()
             if let item {
-                ScrollView {
-                    VStack(spacing: 16) {
-                        senderHeader(item)
+                GeometryReader { geometry in
+                    ScrollView {
+                        VStack(spacing: 16) {
+                            senderHeader(item)
+                                .padding(.horizontal, 16)
 
-                        if item.unsubscribeState == "succeeded" {
-                            InsightBlock(title: "Unsubscribed", symbol: "checkmark.circle.fill", text: "Winnow completed the unsubscribe request.", color: WinnowDesign.mint)
-                        } else if item.unsubscribeState == "attempted" {
-                            InsightBlock(title: "Manual step needed", symbol: "envelope.badge", text: "This sender requires an email-based unsubscribe that Winnow can’t complete automatically.", color: WinnowDesign.amber)
+                            if item.unsubscribeState == "succeeded" {
+                                InsightBlock(title: "Unsubscribed", symbol: "checkmark.circle.fill", text: "Winnow completed the unsubscribe request.", color: WinnowDesign.mint)
+                                    .padding(.horizontal, 16)
+                            } else if item.unsubscribeState == "attempted" {
+                                InsightBlock(title: "Manual step needed", symbol: "envelope.badge", text: "This sender requires an email-based unsubscribe that Winnow can’t complete automatically.", color: WinnowDesign.amber)
+                                    .padding(.horizontal, 16)
+                            }
+
+                            InlineEmailReader(
+                                fallbackSubject: item.displaySubject ?? "No subject",
+                                account: item.account,
+                                accountStatus: model.account(email: item.account),
+                                content: emailContent,
+                                isLoading: isLoadingEmail,
+                                errorMessage: emailLoadError,
+                                attachments: fetchedAttachments ?? emailContent?.attachments ?? item.attachments,
+                                downloadingAttachmentID: downloadingAttachmentID,
+                                openAttachment: { openAttachment($0, from: item) },
+                                retry: { Task { await loadEmail(item) } }
+                            )
+                            .frame(maxHeight: .infinity, alignment: .top)
                         }
-
-                        InlineEmailReader(
-                            fallbackSubject: item.displaySubject ?? "No subject",
-                            account: item.account,
-                            accountStatus: model.account(email: item.account),
-                            content: emailContent,
-                            isLoading: isLoadingEmail,
-                            errorMessage: emailLoadError,
-                            attachments: fetchedAttachments ?? emailContent?.attachments ?? item.attachments,
-                            downloadingAttachmentID: downloadingAttachmentID,
-                            openAttachment: { openAttachment($0, from: item) },
-                            retry: { Task { await loadEmail(item) } }
-                        )
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .frame(minHeight: geometry.size.height, alignment: .top)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
+                    .scrollDismissesKeyboard(.interactively)
                 }
-                .scrollDismissesKeyboard(.interactively)
                 .sheet(item: $editingRule) { rule in
                     MailRuleEditorView(rule: rule)
                         .environmentObject(model)
@@ -100,19 +107,6 @@ struct EmailDetailView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(attachmentError ?? "The attachment couldn’t be opened.")
-        }
-        .confirmationDialog(
-            "Unsubscribe from this sender?",
-            isPresented: $confirmUnsubscribe,
-            titleVisibility: .visible
-        ) {
-            Button("Unsubscribe", role: .destructive) {
-                guard let item else { return }
-                Task { _ = await model.perform(.unsubscribe, on: item) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Winnow will follow the sender’s unsubscribe link.")
         }
         .task(id: emailID) {
             guard let item = model.email(id: emailID) else { return }
@@ -258,6 +252,18 @@ struct EmailDetailView: View {
                 }
                 .tint(WinnowDesign.rose)
                 .disabled(model.performingEmailIDs.contains(item.id))
+                .confirmationDialog(
+                    "Unsubscribe from this sender?",
+                    isPresented: $confirmUnsubscribe,
+                    titleVisibility: .visible
+                ) {
+                    Button("Unsubscribe", role: .destructive) {
+                        Task { _ = await model.perform(.unsubscribe, on: item) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Winnow will follow the sender’s unsubscribe link.")
+                }
             }
 
             Spacer(minLength: 8)
@@ -965,6 +971,7 @@ private struct InlineEmailReader: View {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(Color.primary.opacity(0.07), lineWidth: 1)
                 }
+                .padding(.horizontal, 16)
             }
 
             if !attachments.isEmpty, let firstAttachment = attachments.first {
@@ -1002,6 +1009,7 @@ private struct InlineEmailReader: View {
                     }
                     Button("Cancel", role: .cancel) {}
                 }
+                .padding(.horizontal, 16)
             }
 
             Group {
@@ -1015,6 +1023,7 @@ private struct InlineEmailReader: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 120)
                     .winnowCard()
+                    .padding(.horizontal, 16)
                 } else {
                     ContentUnavailableView {
                         Label("Email unavailable", systemImage: "exclamationmark.triangle")
@@ -1025,6 +1034,7 @@ private struct InlineEmailReader: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 220)
                     .winnowCard()
+                    .padding(.horizontal, 16)
                 }
             }
 
@@ -1033,8 +1043,10 @@ private struct InlineEmailReader: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -1043,45 +1055,29 @@ private struct InlineFocusedEmailBody: View {
     @State private var htmlHeight: CGFloat = 320
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Label("Email", systemImage: "envelope.open")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-
-            Divider()
-
+        Group {
             if message.hasHTMLBody {
                 SafeEmailHTMLView(html: message.htmlBody, contentHeight: $htmlHeight)
-                    .frame(height: htmlHeight)
-                    .frame(maxWidth: .infinity)
-                    .padding(14)
+                    .frame(minHeight: htmlHeight, maxHeight: .infinity, alignment: .top)
                     .accessibilityLabel("Email body")
             } else if !message.body.isEmpty {
                 Text(EmailBodyLinks.render(message.body))
                     .font(.body)
                     .tint(WinnowDesign.accent)
                     .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
             } else {
                 Text("This message has no displayable body.")
                     .font(.subheadline)
                     .italic()
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 120)
+                    .frame(maxWidth: .infinity, minHeight: 120, maxHeight: .infinity)
             }
         }
-        .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(message.hasHTMLBody ? Color.white : Color.clear)
     }
 }
 
@@ -1762,7 +1758,7 @@ enum SafeEmailHTML {
     }
 
     private static let presentationHead = """
-        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, viewport-fit=cover">
         <style id="winnow-email-presentation">
           :root { color-scheme: light only; }
           html, body {
@@ -1773,8 +1769,13 @@ enum SafeEmailHTML {
             max-width: 100%;
             overflow-x: hidden;
             background: #ffffff;
+            -webkit-text-size-adjust: 100%;
+            text-size-adjust: 100%;
           }
-          *, *::before, *::after { box-sizing: border-box; }
+          *, *::before, *::after {
+            box-sizing: border-box;
+            min-width: 0 !important;
+          }
           body {
             color: #1c1c1e;
             font: -apple-system-body;
@@ -1787,7 +1788,12 @@ enum SafeEmailHTML {
             max-width: 100% !important;
             overflow-wrap: anywhere;
           }
-          table { table-layout: fixed; }
+          table {
+            width: 100% !important;
+            table-layout: auto !important;
+          }
+          td, th { width: auto !important; }
+          [width] { max-width: 100% !important; }
           img, video, svg, canvas {
             max-width: 100% !important;
             height: auto !important;
@@ -1799,6 +1805,12 @@ enum SafeEmailHTML {
         """
 
     static func document(for source: String) -> String {
+        let source = source.replacingOccurrences(
+            of: "(?is)<meta\\b(?=[^>]*\\bname\\s*=\\s*(?:[\"']viewport[\"']|viewport\\b))[^>]*>",
+            with: "",
+            options: .regularExpression
+        )
+
         if let head = openingTag("head", in: source) {
             var document = source
             document.insert(contentsOf: securityMetadata, at: head.upperBound)
@@ -1854,6 +1866,7 @@ private struct SafeEmailHTMLView: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+        configuration.defaultWebpagePreferences.preferredContentMode = .mobile
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.allowsAirPlayForMediaPlayback = false
         configuration.mediaTypesRequiringUserActionForPlayback = .all
@@ -1864,8 +1877,10 @@ private struct SafeEmailHTMLView: UIViewRepresentable {
         webView.backgroundColor = .white
         webView.scrollView.backgroundColor = .white
         webView.scrollView.isScrollEnabled = false
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.alwaysBounceHorizontal = false
         webView.scrollView.showsHorizontalScrollIndicator = false
+        webView.pageZoom = 1
         webView.overrideUserInterfaceStyle = .light
         context.coordinator.observeContentSize(of: webView)
         return webView

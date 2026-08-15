@@ -278,6 +278,23 @@ final class ModelDecodingTests: XCTestCase {
         )
     }
 
+    func testSafeEmailHTMLReplacesConflictingViewportAndConstrainsWideContent() {
+        let source = """
+        <!doctype html><html><head>
+          <meta content="width=640, initial-scale=2" name=viewport>
+        </head><body><table width="640"><tr><td>Wide email</td></tr></table></body></html>
+        """
+        let document = SafeEmailHTML.document(for: source)
+
+        XCTAssertEqual(document.lowercased().components(separatedBy: "name=\"viewport\"").count - 1, 1)
+        XCTAssertTrue(document.contains("width=device-width, initial-scale=1"))
+        XCTAssertFalse(document.contains("width=640, initial-scale=2"))
+        XCTAssertTrue(document.contains("-webkit-text-size-adjust: 100%"))
+        XCTAssertTrue(document.contains("min-width: 0 !important"))
+        XCTAssertTrue(document.contains("table-layout: auto !important"))
+        XCTAssertTrue(document.contains("<td>Wide email</td>"))
+    }
+
     func testFullEmailContentDecodesThreadAttachments() throws {
         let json = #"{"emailItemId":"abc","messages":[],"attachments":[{"messageId":"m1","attachmentId":"a1","filename":"Invoice.pdf","mimeType":"application/pdf","sizeBytes":143501}]}"#.data(using: .utf8)!
         let content = try JSONDecoder().decode(EmailContent.self, from: json)
