@@ -51,6 +51,7 @@ struct InboxView: View {
     @State private var isSearchAvailable = false
     @State private var isSearchPresented = false
     @State private var navigationPath: [String] = []
+    @State private var scrollPositionID: String?
 
     private var searchQuery: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -101,6 +102,9 @@ struct InboxView: View {
                             isArchivedCell: mailbox == .archived,
                             isUnseenArchived: isUnseenArchived,
                             openAction: {
+                                // Keep a stable fallback even if SwiftUI has not yet
+                                // reported the currently visible scroll target.
+                                scrollPositionID = scrollPositionID ?? item.id
                                 if mailbox == .archived {
                                     model.markArchivedItemSeen(item)
                                 }
@@ -108,6 +112,7 @@ struct InboxView: View {
                             }
                         )
                         .equatable()
+                        .id(item.id)
                         .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
@@ -129,6 +134,7 @@ struct InboxView: View {
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
+                .scrollPosition(id: $scrollPositionID)
                 .refreshable { await model.refresh() }
                 .modifier(SearchRevealModifier(isAvailable: $isSearchAvailable))
                 .modifier(

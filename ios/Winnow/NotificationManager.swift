@@ -35,6 +35,16 @@ struct WinnowPushContext: Equatable {
         )
     }
 
+    func identifiesSameEmailOrThread(as other: WinnowPushContext) -> Bool {
+        if !emailID.isEmpty, emailID == other.emailID { return true }
+        guard !account.isEmpty,
+              !threadID.isEmpty,
+              !other.account.isEmpty,
+              threadID == other.threadID
+        else { return false }
+        return account.caseInsensitiveCompare(other.account) == .orderedSame
+    }
+
     static func cleanupContexts(from userInfo: [AnyHashable: Any]) -> [WinnowPushContext] {
         guard let entries = userInfo["clearNotifications"] as? [Any] else { return [] }
         return entries.compactMap { entry in
@@ -226,13 +236,17 @@ final class PushNotificationManager {
     }
 
     func removeDeliveredNotifications(for contexts: [WinnowPushContext]) async {
-        let emailIDs = Set(contexts.map(\.emailID).filter { !$0.isEmpty })
-        guard !emailIDs.isEmpty else { return }
+        let targets = contexts.filter {
+            !$0.emailID.isEmpty || (!$0.account.isEmpty && !$0.threadID.isEmpty)
+        }
+        guard !targets.isEmpty else { return }
         let center = UNUserNotificationCenter.current()
         let delivered = await center.deliveredNotifications()
         let identifiers = delivered.compactMap { notification -> String? in
             let context = WinnowPushContext(userInfo: notification.request.content.userInfo)
-            return emailIDs.contains(context.emailID) ? notification.request.identifier : nil
+            return targets.contains { $0.identifiesSameEmailOrThread(as: context) }
+                ? notification.request.identifier
+                : nil
         }
         guard !identifiers.isEmpty else { return }
         center.removeDeliveredNotifications(withIdentifiers: identifiers)

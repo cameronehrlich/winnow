@@ -52,6 +52,31 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(contexts[0].mailboxState, "archived")
     }
 
+    func testPushContextMatchesExactEmailOrSameAccountThread() {
+        let target = WinnowPushContext(
+            emailID: "current-message",
+            account: "Me@Example.com",
+            threadID: "gmail-thread"
+        )
+
+        XCTAssertTrue(target.identifiesSameEmailOrThread(as: WinnowPushContext(emailID: "current-message")))
+        XCTAssertTrue(target.identifiesSameEmailOrThread(as: WinnowPushContext(
+            emailID: "older-message",
+            account: "me@example.com",
+            threadID: "gmail-thread"
+        )))
+        XCTAssertFalse(target.identifiesSameEmailOrThread(as: WinnowPushContext(
+            emailID: "other-message",
+            account: "other@example.com",
+            threadID: "gmail-thread"
+        )))
+        XCTAssertFalse(target.identifiesSameEmailOrThread(as: WinnowPushContext(
+            emailID: "other-message",
+            account: "me@example.com",
+            threadID: "other-thread"
+        )))
+    }
+
     func testActionResponseDecodesAuthoritativeBadge() throws {
         let data = #"{"ok":false,"action":"unsubscribe","badge":3,"outcome":"attempted","requiresManualAction":true,"manualActionUrl":"https://example.com/unsubscribe"}"#.data(using: .utf8)!
         let response = try JSONDecoder().decode(ActionResponse.self, from: data)

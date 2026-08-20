@@ -124,17 +124,26 @@ final class AppModel: ObservableObject {
                 guard let index = refreshedEmails.firstIndex(where: { $0.id == emailID }) else { continue }
                 refreshedEmails[index].applyOptimistic(action)
             }
-            let archivedIDs = Set(refreshedEmails.lazy.filter(\.isArchived).map(\.id))
+            let archivedContexts = refreshedEmails
+                .filter(\.isArchived)
+                .map {
+                    WinnowPushContext(
+                        emailID: $0.id,
+                        account: $0.account,
+                        threadID: $0.threadId,
+                        mailboxState: "archived"
+                    )
+                }
             emails = refreshedEmails
             lastRefresh = Date()
             if visibleMailbox == .inbox { markMailboxSeen(.inbox) }
             updateArchivedUnseenCount()
             WidgetSnapshotStore.save(emails: emails)
             PushNotificationManager.shared.setAppIconBadge(inboxBadgeCount)
-            if !archivedIDs.isEmpty {
+            if !archivedContexts.isEmpty {
                 Task {
                     await PushNotificationManager.shared.removeDeliveredNotifications(
-                        for: archivedIDs.map { WinnowPushContext(emailID: $0) }
+                        for: archivedContexts
                     )
                 }
             }
@@ -334,7 +343,14 @@ final class AppModel: ObservableObject {
             publishEmailState()
             if action == .archive {
                 await PushNotificationManager.shared.removeDeliveredNotifications(
-                    for: [WinnowPushContext(emailID: item.id)]
+                    for: [
+                        WinnowPushContext(
+                            emailID: item.id,
+                            account: item.account,
+                            threadID: item.threadId,
+                            mailboxState: "archived"
+                        ),
+                    ]
                 )
             }
 
