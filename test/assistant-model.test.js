@@ -114,6 +114,44 @@ describe('assistant model context', () => {
     assert.equal(parsed.toolResults[0].trust, 'untrusted_tool_data');
   });
 
+  it('compacts attachment-heavy threads without losing the focused message or tool model', () => {
+    const focusedMessageId = 'focused';
+    const input = {
+      conversation: { scope: 'email', account: 'me@example.com' },
+      chatMessages: [{ role: 'user', text: 'Can you write a polite reply about the data?' }],
+      contextualEmail: {
+        reference: { messageId: focusedMessageId, threadId: 'large-thread' },
+        metadata: { subject: 'Attachment-heavy thread' },
+        attachments: Array.from({ length: 27 }, (_, index) => ({
+          messageId: index === 0 ? focusedMessageId : `message-${index % 8}`,
+          attachmentId: `${index}-`.padEnd(426, 'a'),
+          filename: `attachment-${index}.pdf`,
+          mimeType: 'application/pdf',
+          sizeBytes: 1_000,
+        })),
+        messages: Array.from({ length: 8 }, (_, index) => ({
+          messageId: index === 0 ? focusedMessageId : `message-${index}`,
+          subject: `Message ${index}`,
+          body: 'Thread content. '.repeat(1_000),
+        })),
+      },
+      toolResults: [],
+      availableTools: ASSISTANT_TOOL_DEFINITIONS,
+    };
+
+    const serialized = serializeAssistantModelInput(input);
+    const parsed = JSON.parse(serialized);
+    assert.ok(serialized.length <= 24_000);
+    assert.equal(parsed.availableTools.length, ASSISTANT_TOOL_DEFINITIONS.length);
+    assert.equal(parsed.chatMessages.at(-1).text, input.chatMessages[0].text);
+    assert.ok(parsed.contextualEmail.messages.some(message => message.focused));
+    assert.ok(parsed.contextualEmail.attachments.some(
+      attachment => attachment.messageId === focusedMessageId,
+    ));
+    assert.equal(parsed.contextualEmail.attachmentsTruncated, true);
+    assert.ok(parsed.contextualEmail.attachments.length < input.contextualEmail.attachments.length);
+  });
+
   it('uses plain text and preserves useful content later in the focused email', () => {
     const padding = 'Rental market commentary. '.repeat(150);
     const input = {

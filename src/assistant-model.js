@@ -10,6 +10,27 @@ import { emailBodyToText } from './message-content.js';
 const MAX_CONTEXT_CHARS = 24000;
 const MAX_OUTPUT_CHARS = 12000;
 
+const INPUT_PROFILES = Object.freeze([
+  {
+    chatLimit: 16, chatTextLimit: 1200,
+    contextLimit: 8, contextBodyLimit: 1600, focusedBodyLimit: 8000,
+    attachmentLimit: 50, attachmentCharLimit: 12000,
+    toolResultLimit: 2400, toolResultCount: 6,
+  },
+  {
+    chatLimit: 8, chatTextLimit: 500,
+    contextLimit: 4, contextBodyLimit: 700, focusedBodyLimit: 6000,
+    attachmentLimit: 12, attachmentCharLimit: 4000,
+    toolResultLimit: 800, toolResultCount: 6,
+  },
+  {
+    chatLimit: 4, chatTextLimit: 300,
+    contextLimit: 1, contextBodyLimit: 4000, focusedBodyLimit: 4000,
+    attachmentLimit: 4, attachmentCharLimit: 1800,
+    toolResultLimit: 500, toolResultCount: 2,
+  },
+]);
+
 function mergeResponseSchemas(left, right) {
   if (!left) return right;
   if (!right) return left;
@@ -235,13 +256,36 @@ function boundedValue(value, maxChars) {
   return { truncated: true, preview: serialized.slice(0, maxChars) };
 }
 
-function boundedInput(input, compact = false) {
-  const chatLimit = compact ? 8 : 16;
-  const chatTextLimit = compact ? 500 : 1200;
-  const contextLimit = compact ? 4 : 8;
-  const contextBodyLimit = compact ? 700 : 1600;
-  const focusedBodyLimit = compact ? 6000 : 8000;
-  const toolResultLimit = compact ? 800 : 2400;
+function boundedAttachments(attachments, focusedMessageId, profile) {
+  const normalized = (attachments || []).map(attachment => ({
+    messageId: String(attachment?.messageId || '').slice(0, 256),
+    attachmentId: String(attachment?.attachmentId || '').slice(0, 2048),
+    filename: String(attachment?.filename || '').slice(0, 500),
+    mimeType: String(attachment?.mimeType || '').slice(0, 200),
+    sizeBytes: Number(attachment?.sizeBytes) || 0,
+  })).filter(attachment => attachment.messageId && attachment.attachmentId);
+  const focused = normalized.filter(attachment => attachment.messageId === focusedMessageId);
+  const other = normalized.filter(attachment => attachment.messageId !== focusedMessageId).reverse();
+  const selected = [];
+  let usedCharacters = 2;
+  for (const attachment of [...focused, ...other]) {
+    if (selected.length >= profile.attachmentLimit) break;
+    const characters = JSON.stringify(attachment).length + (selected.length ? 1 : 0);
+    if (usedCharacters + characters > profile.attachmentCharLimit) continue;
+    selected.push(attachment);
+    usedCharacters += characters;
+  }
+  return {
+    attachments: selected,
+    attachmentsTruncated: selected.length < normalized.length,
+  };
+}
+
+function boundedInput(input, profile) {
+  const {
+    chatLimit, chatTextLimit, contextLimit, contextBodyLimit, focusedBodyLimit,
+    toolResultLimit, toolResultCount,
+  } = profile;
   const allContextMessages = input.contextualEmail?.messages || [];
   const focusedMessageId = String(input.contextualEmail?.reference?.messageId || '');
   const contextMessages = allContextMessages.slice(-contextLimit);
@@ -251,17 +295,16 @@ function boundedInput(input, compact = false) {
   if (focusedMessage && !contextMessages.includes(focusedMessage)) {
     contextMessages.splice(0, Math.min(1, contextMessages.length), focusedMessage);
   }
+  const boundedAttachmentContext = boundedAttachments(
+    input.contextualEmail?.attachments,
+    focusedMessageId,
+    profile,
+  );
   const contextualEmail = input.contextualEmail ? {
     trust: 'untrusted_email_data',
     reference: input.contextualEmail.reference,
     metadata: boundedValue(input.contextualEmail.metadata, 3000),
-    attachments: (input.contextualEmail.attachments || []).slice(0, 50).map(attachment => ({
-      messageId: String(attachment?.messageId || '').slice(0, 256),
-      attachmentId: String(attachment?.attachmentId || '').slice(0, 2048),
-      filename: String(attachment?.filename || '').slice(0, 500),
-      mimeType: String(attachment?.mimeType || '').slice(0, 200),
-      sizeBytes: Number(attachment?.sizeBytes) || 0,
-    })),
+    ...boundedAttachmentContext,
     messages: contextMessages.map((message, index) => {
       const messageId = String(message?.messageId || message?.id || '').slice(0, 256);
       const isFocused = messageId === focusedMessageId
@@ -289,7 +332,7 @@ function boundedInput(input, compact = false) {
       text: String(message.text || '').slice(0, chatTextLimit),
     })),
     contextualEmail,
-    toolResults: (input.toolResults || []).slice(-6).map(item => ({
+    toolResults: (input.toolResults || []).slice(-toolResultCount).map(item => ({
       tool: item.tool,
       trust: 'untrusted_tool_data',
       result: boundedValue(item.result, toolResultLimit),
@@ -299,14 +342,11 @@ function boundedInput(input, compact = false) {
 }
 
 export function serializeAssistantModelInput(input) {
-  let serialized = JSON.stringify(boundedInput(input));
-  if (serialized.length > MAX_CONTEXT_CHARS) {
-    serialized = JSON.stringify(boundedInput(input, true));
+  for (const profile of INPUT_PROFILES) {
+    const serialized = JSON.stringify(boundedInput(input, profile));
+    if (serialized.length <= MAX_CONTEXT_CHARS) return serialized;
   }
-  if (serialized.length > MAX_CONTEXT_CHARS) {
-    throw codedModelError('assistant_context_too_large');
-  }
-  return serialized;
+  throw codedModelError('assistant_context_too_large');
 }
 
 export function inlineAttachmentParts(input) {
