@@ -77,6 +77,30 @@ final class ModelDecodingTests: XCTestCase {
         )))
     }
 
+    func testNotificationCleanupIncludesReadAndArchivedMessagesOnly() throws {
+        func item(mailboxState: String, readState: String?) throws -> EmailItem {
+            var fields: [String: Any] = [
+                "id": "email-1",
+                "account": "me@example.com",
+                "threadId": "thread-1",
+                "mailboxState": mailboxState,
+            ]
+            if let readState { fields["readState"] = readState }
+            let data = try JSONSerialization.data(withJSONObject: fields)
+            return try JSONDecoder().decode(EmailItem.self, from: data)
+        }
+
+        let readInbox = try item(mailboxState: "inbox", readState: "read")
+        XCTAssertTrue(readInbox.shouldClearDeliveredNotification)
+        XCTAssertEqual(readInbox.notificationContext.emailID, "email-1")
+        XCTAssertEqual(readInbox.notificationContext.account, "me@example.com")
+        XCTAssertEqual(readInbox.notificationContext.threadID, "thread-1")
+
+        XCTAssertTrue(try item(mailboxState: "archived", readState: "unread").shouldClearDeliveredNotification)
+        XCTAssertFalse(try item(mailboxState: "inbox", readState: "unread").shouldClearDeliveredNotification)
+        XCTAssertFalse(try item(mailboxState: "inbox", readState: nil).shouldClearDeliveredNotification)
+    }
+
     func testActionResponseDecodesAuthoritativeBadge() throws {
         let data = #"{"ok":false,"action":"unsubscribe","badge":3,"outcome":"attempted","requiresManualAction":true,"manualActionUrl":"https://example.com/unsubscribe"}"#.data(using: .utf8)!
         let response = try JSONDecoder().decode(ActionResponse.self, from: data)
@@ -487,6 +511,37 @@ final class ModelDecodingTests: XCTestCase {
         let response = try JSONDecoder().decode(PushDeviceResponse.self, from: json)
         XCTAssertEqual(response.device.environment, "development")
         XCTAssertTrue(response.device.enabled)
+    }
+
+    func testNotificationReconciliationAPIUsesDeliveredIdentities() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            session: URLSession(configuration: configuration)
+        )
+        MailRuleURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/v1/push/notifications/reconcile")
+            let body = try XCTUnwrap(MailRuleURLProtocol.bodyData(from: request))
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            let notifications = try XCTUnwrap(payload["notifications"] as? [[String: Any]])
+            XCTAssertEqual(notifications.count, 1)
+            XCTAssertEqual(notifications[0]["emailId"] as? String, "email-1")
+            XCTAssertEqual(notifications[0]["account"] as? String, "me@example.com")
+            XCTAssertEqual(notifications[0]["threadId"] as? String, "thread-1")
+            return (200, #"{"checked":1,"badge":2,"clearNotifications":[{"emailId":"email-1","account":"me@example.com","threadId":"thread-1"}]}"#)
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+
+        let response = try await client.reconcileDeliveredNotifications([
+            DeliveredNotificationReference(
+                emailId: "email-1", account: "me@example.com", threadId: "thread-1"
+            ),
+        ])
+        XCTAssertEqual(response.checked, 1)
+        XCTAssertEqual(response.badge, 2)
+        XCTAssertEqual(response.clearNotifications.first?.emailId, "email-1")
     }
 
     func testWidgetSnapshotRoundTripsInboxState() throws {

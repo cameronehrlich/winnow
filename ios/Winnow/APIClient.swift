@@ -73,6 +73,10 @@ private struct MailRulePreviewRequest: Encodable {
     let limit: Int
 }
 
+private struct NotificationReconciliationRequest: Encodable {
+    let notifications: [DeliveredNotificationReference]
+}
+
 protocol AssistantService {
     func createAssistantConversation(
         scope: AssistantScope,
@@ -460,6 +464,16 @@ struct APIClient: AssistantService {
         let _: PushDeviceDeleteResponse = try await request(
             path: "/v1/push/devices/\(encodedID)",
             method: "DELETE"
+        )
+    }
+
+    func reconcileDeliveredNotifications(
+        _ notifications: [DeliveredNotificationReference]
+    ) async throws -> NotificationReconciliationResponse {
+        try await request(
+            path: "/v1/push/notifications/reconcile",
+            method: "POST",
+            body: try JSONEncoder().encode(NotificationReconciliationRequest(notifications: notifications))
         )
     }
 

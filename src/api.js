@@ -9,6 +9,7 @@ import { executeEmailUnsubscribe } from './unsubscribe.js';
 import { handleMcpMessage } from './mcp.js';
 import { getRuntimeStatus, listAccountStatus } from './status.js';
 import { getPushCapabilities } from './push.js';
+import { reconcileDeliveredNotifications } from './notification-reconciliation.js';
 import { fetchEmailAttachment, fetchEmailAttachments, fetchEmailContent } from './email-content.js';
 import { SemanticPreviewError } from './semantic-rule-preview.js';
 import {
@@ -892,6 +893,34 @@ async function handleAuthed(req, res, url, dependencies = {}) {
         appVersion: body.appVersion || '',
       }),
     });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/push/notifications/reconcile') {
+    const body = await readJsonObject(req);
+    if (!Array.isArray(body.notifications) || body.notifications.length > 100) {
+      throw new HttpError(400, 'invalid_notifications');
+    }
+    const notifications = body.notifications.map((value, index) => {
+      if (!value || Array.isArray(value) || typeof value !== 'object') {
+        throw new HttpError(400, 'invalid_notification', `notifications[${index}] must be an object`);
+      }
+      const emailId = typeof value.emailId === 'string' ? value.emailId.trim() : '';
+      const account = typeof value.account === 'string' ? value.account.trim() : '';
+      const threadId = typeof value.threadId === 'string' ? value.threadId.trim() : '';
+      if (emailId.length > 1024 || account.length > 320 || threadId.length > 512) {
+        throw new HttpError(400, 'invalid_notification');
+      }
+      if (!emailId && (!account || !threadId)) {
+        throw new HttpError(400, 'invalid_notification');
+      }
+      return { emailId, account, threadId };
+    });
+    const unique = Array.from(new Map(notifications.map(notification => [
+      `${notification.emailId}\0${notification.account.toLowerCase()}\0${notification.threadId}`,
+      notification,
+    ])).values());
+    sendJson(res, 200, reconcileDeliveredNotifications(unique));
     return;
   }
 

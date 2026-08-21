@@ -124,29 +124,21 @@ final class AppModel: ObservableObject {
                 guard let index = refreshedEmails.firstIndex(where: { $0.id == emailID }) else { continue }
                 refreshedEmails[index].applyOptimistic(action)
             }
-            let archivedContexts = refreshedEmails
-                .filter(\.isArchived)
-                .map {
-                    WinnowPushContext(
-                        emailID: $0.id,
-                        account: $0.account,
-                        threadID: $0.threadId,
-                        mailboxState: "archived"
-                    )
-                }
+            let resolvedNotificationContexts = refreshedEmails
+                .filter(\.shouldClearDeliveredNotification)
+                .map(\.notificationContext)
             emails = refreshedEmails
             lastRefresh = Date()
             if visibleMailbox == .inbox { markMailboxSeen(.inbox) }
             updateArchivedUnseenCount()
             WidgetSnapshotStore.save(emails: emails)
             PushNotificationManager.shared.setAppIconBadge(inboxBadgeCount)
-            if !archivedContexts.isEmpty {
-                Task {
-                    await PushNotificationManager.shared.removeDeliveredNotifications(
-                        for: archivedContexts
-                    )
-                }
+            if !resolvedNotificationContexts.isEmpty {
+                await PushNotificationManager.shared.removeDeliveredNotifications(
+                    for: resolvedNotificationContexts
+                )
             }
+            _ = await PushNotificationManager.shared.reconcileDeliveredNotifications()
 
             // The mailbox is the primary product surface. Release its loading
             // state before fetching optional status and statistics.
@@ -341,16 +333,9 @@ final class AppModel: ObservableObject {
                 applyOptimistic(action, to: item.id)
             }
             publishEmailState()
-            if action == .archive {
+            if action == .archive || action == .markRead {
                 await PushNotificationManager.shared.removeDeliveredNotifications(
-                    for: [
-                        WinnowPushContext(
-                            emailID: item.id,
-                            account: item.account,
-                            threadID: item.threadId,
-                            mailboxState: "archived"
-                        ),
-                    ]
+                    for: [item.notificationContext]
                 )
             }
 

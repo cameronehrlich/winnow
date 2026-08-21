@@ -598,6 +598,18 @@ struct PushDeviceDeleteResponse: Decodable {
     let ok: Bool
 }
 
+struct DeliveredNotificationReference: Codable, Equatable, Hashable {
+    let emailId: String
+    let account: String
+    let threadId: String
+}
+
+struct NotificationReconciliationResponse: Decodable, Equatable {
+    let checked: Int
+    let badge: Int
+    let clearNotifications: [DeliveredNotificationReference]
+}
+
 enum EmailAction: String, CaseIterable, Codable {
     case archive = "archive"
     case moveToInbox = "move-to-inbox"

@@ -552,6 +552,60 @@ describe('local API', () => {
     assert.equal(device.deviceToken, undefined);
   });
 
+  it('reconciles delivered notifications against current thread state', async () => {
+    const read = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-read', threadId: 't-read',
+      subject: 'Read elsewhere', archive: false, readState: 'read',
+    });
+    const archived = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-archived', threadId: 't-archived',
+      subject: 'Archived elsewhere', archive: true, readState: 'unread',
+    });
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-thread-old', threadId: 't-thread',
+      subject: 'Older thread notification', archive: false, readState: 'unread',
+    }, { timestamp: '2026-06-28T16:00:00.000Z' });
+    upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-thread-new', threadId: 't-thread',
+      subject: 'Newer resolved thread state', archive: true, readState: 'read',
+    }, { timestamp: '2026-06-30T16:00:00.000Z' });
+
+    const response = await fetch(`${baseUrl}/v1/push/notifications/reconcile`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notifications: [
+        { emailId: 'existing-unread', account: 'me@example.com', threadId: 't1' },
+        { emailId: read.id, account: read.account, threadId: read.threadId },
+        { emailId: archived.id, account: archived.account, threadId: archived.threadId },
+        { emailId: 'migrated-id', account: 'me@example.com', threadId: 't-thread' },
+        { emailId: 'missing', account: 'me@example.com', threadId: 'missing-thread' },
+        { emailId: 'missing', account: 'me@example.com', threadId: 'missing-thread' },
+      ] }),
+    });
+
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.checked, 5);
+    assert.equal(result.badge, 1);
+    assert.deepEqual(result.clearNotifications.map(value => value.emailId), [
+      read.id, archived.id, 'migrated-id', 'missing',
+    ]);
+  });
+
+  it('rejects malformed notification reconciliation requests', async () => {
+    const request = body => fetch(`${baseUrl}/v1/push/notifications/reconcile`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal((await request({ notifications: 'all' })).status, 400);
+    assert.equal((await request({ notifications: [{}] })).status, 400);
+    assert.equal((await request({ notifications: Array.from({ length: 101 }, () => ({
+      emailId: 'email',
+    })) })).status, 400);
+  });
+
   it('rejects invalid feed filters and non-boolean scan controls', async () => {
     const headers = { Authorization: 'Bearer test-token' };
 

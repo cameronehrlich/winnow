@@ -45,6 +45,18 @@ struct WinnowPushContext: Equatable {
         return account.caseInsensitiveCompare(other.account) == .orderedSame
     }
 
+    var deliveredReference: DeliveredNotificationReference {
+        DeliveredNotificationReference(emailId: emailID, account: account, threadId: threadID)
+    }
+
+    init(reference: DeliveredNotificationReference) {
+        self.init(
+            emailID: reference.emailId,
+            account: reference.account,
+            threadID: reference.threadId
+        )
+    }
+
     static func cleanupContexts(from userInfo: [AnyHashable: Any]) -> [WinnowPushContext] {
         guard let entries = userInfo["clearNotifications"] as? [Any] else { return [] }
         return entries.compactMap { entry in
@@ -66,6 +78,21 @@ struct WinnowPushContext: Equatable {
                 mailboxState: "archived"
             )
         }
+    }
+}
+
+extension EmailItem {
+    var notificationContext: WinnowPushContext {
+        WinnowPushContext(
+            emailID: id,
+            account: account,
+            threadID: threadId,
+            mailboxState: mailboxState
+        )
+    }
+
+    var shouldClearDeliveredNotification: Bool {
+        isArchived || readState == "read"
     }
 }
 
@@ -201,6 +228,7 @@ final class PushNotificationManager {
         let cleanupContexts = WinnowPushContext.cleanupContexts(from: userInfo)
             + (context.mailboxState == "archived" && !context.emailID.isEmpty ? [context] : [])
         Task {
+            await removeDeliveredNotifications(for: cleanupContexts)
             let changed: Bool
             if let refreshHandler {
                 changed = await refreshHandler()
@@ -210,8 +238,7 @@ final class PushNotificationManager {
                 // widget current even in that cold-start window.
                 changed = await refreshCriticalMailState()
             }
-            await removeDeliveredNotifications(for: cleanupContexts)
-            completion(changed ? .newData : .noData)
+            completion(changed || !cleanupContexts.isEmpty ? .newData : .noData)
         }
     }
 
@@ -252,6 +279,36 @@ final class PushNotificationManager {
         center.removeDeliveredNotifications(withIdentifiers: identifiers)
     }
 
+    @discardableResult
+    func reconcileDeliveredNotifications() async -> Bool {
+        let center = UNUserNotificationCenter.current()
+        let delivered = await center.deliveredNotifications()
+        let references = Array(Set(delivered.compactMap { notification -> DeliveredNotificationReference? in
+            let context = WinnowPushContext(userInfo: notification.request.content.userInfo)
+            guard !context.emailID.isEmpty || (!context.account.isEmpty && !context.threadID.isEmpty) else {
+                return nil
+            }
+            return context.deliveredReference
+        })).prefix(100)
+        guard !references.isEmpty else { return false }
+
+        let activeConfiguration = configuration ?? ConfigurationStore.load()
+        guard activeConfiguration.isComplete else { return false }
+        do {
+            let response = try await APIClient(configuration: activeConfiguration)
+                .reconcileDeliveredNotifications(Array(references))
+            setAppIconBadge(response.badge)
+            await removeDeliveredNotifications(
+                for: response.clearNotifications.map(WinnowPushContext.init(reference:))
+            )
+            return !response.clearNotifications.isEmpty
+        } catch {
+            // Reconciliation is self-healing and runs again on the next push,
+            // foreground refresh, or local mailbox action.
+            return false
+        }
+    }
+
     private func refreshCriticalMailState() async -> Bool {
         let activeConfiguration = configuration ?? ConfigurationStore.load()
         guard activeConfiguration.isComplete else { return false }
@@ -260,6 +317,12 @@ final class PushNotificationManager {
             let inboxPage = try await client.emails(state: "inbox", limit: 200)
             WidgetSnapshotStore.save(emails: inboxPage.items)
             setAppIconBadge(inboxPage.items.lazy.filter(\.isUnread).count)
+            await removeDeliveredNotifications(
+                for: inboxPage.items
+                    .filter(\.shouldClearDeliveredNotification)
+                    .map(\.notificationContext)
+            )
+            _ = await reconcileDeliveredNotifications()
             return true
         } catch {
             return false
