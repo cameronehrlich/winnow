@@ -31,7 +31,7 @@ const device = {
 
 describe('push notification policy', () => {
   it('advertises registration without claiming delivery when credentials are absent', () => {
-    const capabilities = getPushCapabilities();
+    const capabilities = getPushCapabilities({});
     assert.equal(capabilities.deviceRegistration, true);
     assert.equal(capabilities.delivery, false);
   });
@@ -58,6 +58,7 @@ describe('push notification policy', () => {
       config: testConfiguration(),
       devices: [device],
       mailboxCounts: { inbox: 3, archived: 10 },
+      accounts: [{ email: 'me@example.com', avatar_url: 'https://example.com/me.png' }],
       send: async value => {
         request = value;
         return { ok: true, status: 200, reason: '', apnsId: 'push-1' };
@@ -67,10 +68,36 @@ describe('push notification policy', () => {
     assert.equal(request.payload.aps.badge, 3);
     assert.equal(request.payload.aps.alert.title, 'Riley');
     assert.equal(request.payload.aps.category, WINNOW_EMAIL_NOTIFICATION_CATEGORY);
+    assert.equal(request.payload.aps['mutable-content'], 1);
     assert.match(request.payload.aps['thread-id'], /^gmail-[a-f0-9]{40}$/);
     assert.equal(request.payload.emailId, 'email-1');
     assert.equal(request.payload.threadId, 'thread-1');
     assert.equal(request.payload.account, 'me@example.com');
+    assert.equal(request.payload.accountAvatarUrl, 'https://example.com/me.png');
+    assert.equal(request.payload.senderIdentifier, 'Riley');
+  });
+
+  it('omits an unsafe account avatar URL while retaining communication presentation', async () => {
+    let payload;
+    await maybeSendPushForEmail({
+      id: 'email-unsafe-avatar',
+      fromEmail: 'sender@example.com',
+      account: 'me@example.com',
+      mailboxState: 'inbox',
+    }, {
+      config: testConfiguration(),
+      devices: [device],
+      mailboxCounts: { inbox: 1 },
+      accounts: [{ email: 'me@example.com', avatar_url: 'http://example.com/me.png' }],
+      send: async request => {
+        payload = request.payload;
+        return { ok: true, status: 200, reason: '', apnsId: 'push-unsafe-avatar' };
+      },
+    });
+
+    assert.equal(payload.aps['mutable-content'], 1);
+    assert.equal(payload.accountAvatarUrl, undefined);
+    assert.equal(payload.senderIdentifier, 'sender@example.com');
   });
 
   it('uses a stable account-specific group for the same Gmail thread', async () => {

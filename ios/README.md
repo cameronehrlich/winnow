@@ -14,7 +14,7 @@ A personal, native SwiftUI client for Winnow. V1 keeps the useful, dynamic parts
 - Lifetime and Today stats plus recent activity
 - Server health merged with per-account scan state in Settings
 - Pull to refresh, refresh whenever the app becomes active, and 30-second foreground refresh
-- APNs alerts for Inbox mail, silent refreshes for automatically archived mail, and push deep links
+- APNs alerts for Inbox mail with the receiving account's avatar, silent refreshes for automatically archived mail, and push deep links
 - Inbox app-icon/tab badges plus a "new since viewed" Archived tab badge
 - Small and medium Inbox widgets with current attention count and email deep links
 - A global Ask tab for mailbox questions and search, with an explicit account scope
@@ -104,9 +104,16 @@ To configure backend push delivery:
 2. Put the key outside the repository with owner-only permissions and configure
    `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_BUNDLE_ID=technology.37.Winnow`, and
    `APNS_PRIVATE_KEY_PATH` in Winnow's private runtime environment.
+3. Enable **Communication Notifications** for `technology.37.Winnow` in the
+   Apple Developer portal and register the embedded extension identifier
+   `technology.37.Winnow.NotificationService`.
 
 The backend uses the same token-based key for development and production APNs,
 while keeping each registered device token's environment explicit.
+
+Visible alerts use the account's HTTPS `avatar_url` from `config/config.yaml` as
+the prominent communication-notification image. The notification service
+extension generates a stable account monogram if that image is unavailable.
 
 ## V1 boundaries
 

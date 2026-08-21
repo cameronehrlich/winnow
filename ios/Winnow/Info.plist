@@ -28,6 +28,10 @@
 	<string>Winnow adds calendar events that you review from your emails.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Winnow adds reminders that you review from your emails.</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INSendMessageIntent</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { connect } from 'node:http2';
 import { createHash, createPrivateKey, randomUUID, sign } from 'node:crypto';
+import { getAccounts } from './config.js';
 import {
   disablePushDevice,
   getMailboxCounts,
@@ -54,8 +55,8 @@ export function getApnsConfiguration(env = process.env) {
   };
 }
 
-export function getPushCapabilities() {
-  const config = getApnsConfiguration();
+export function getPushCapabilities(env = process.env) {
+  const config = getApnsConfiguration(env);
   return {
     deviceRegistration: true,
     delivery: config.configured,
@@ -89,7 +90,20 @@ function providerToken(config, now = Math.floor(Date.now() / 1000)) {
   return cachedProviderToken.value;
 }
 
-function notificationPayload(item, badge, { silent = false } = {}) {
+function accountAvatarUrl(account, accounts) {
+  const configured = accounts.find(candidate => (
+    String(candidate?.email || '').toLowerCase() === account.toLowerCase()
+  ));
+  const value = configured?.avatar_url;
+  if (typeof value !== 'string' || value.length > 2_048) return '';
+  try {
+    return new URL(value).protocol === 'https:' ? value : '';
+  } catch {
+    return '';
+  }
+}
+
+function notificationPayload(item, badge, { silent = false, accounts = [] } = {}) {
   const emailId = item?.id || item?.emailItemId || '';
   const account = String(item?.account || '');
   const threadId = String(item?.threadId || '');
@@ -104,13 +118,15 @@ function notificationPayload(item, badge, { silent = false } = {}) {
   const truncate = (value, length) => String(value || '').slice(0, length);
   const sender = truncate(item?.fromName || item?.fromEmail || item?.from || 'New email', 120);
   const summary = truncate(item?.summary || item?.subject || 'Open Winnow to review.', 700);
+  const avatarUrl = accountAvatarUrl(account, accounts);
+  const senderIdentifier = truncate(item?.fromEmail || item?.from || sender, 320);
   const aps = {
     alert: { title: sender, subtitle: truncate(item?.subject, 200), body: summary },
     sound: 'default',
     badge,
     category: WINNOW_EMAIL_NOTIFICATION_CATEGORY,
     'content-available': 1,
-    'mutable-content': 0,
+    'mutable-content': 1,
   };
   if (threadId) {
     aps['thread-id'] = `gmail-${createHash('sha256')
@@ -121,6 +137,8 @@ function notificationPayload(item, badge, { silent = false } = {}) {
   return {
     aps,
     ...common,
+    senderIdentifier,
+    ...(avatarUrl ? { accountAvatarUrl: avatarUrl } : {}),
   };
 }
 
@@ -216,7 +234,10 @@ export async function maybeSendPushForEmail(item, opts = {}) {
 
   const archived = Boolean(item.archive || item.mailboxState === 'archived');
   const badge = (opts.mailboxCounts || getMailboxCounts()).inbox;
-  const payload = notificationPayload(item, badge, { silent: archived });
+  const payload = notificationPayload(item, badge, {
+    silent: archived,
+    accounts: archived ? [] : (opts.accounts || getAccounts()),
+  });
   const send = opts.send || sendApnsRequest;
   const delivered = await deliverPayload(payload, { config, devices, send });
   return {
