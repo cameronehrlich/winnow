@@ -67,6 +67,7 @@ export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {
         from: bounded(message?.from, 2_000),
         to: bounded(message?.to, 4_000),
         cc: bounded(message?.cc, 4_000),
+        bcc: bounded(message?.bcc, 4_000),
         subject: bounded(message?.subject || item.subject, 2_000),
         date: bounded(message?.date, 200),
         body,

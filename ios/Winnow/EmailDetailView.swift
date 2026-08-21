@@ -937,8 +937,21 @@ private struct InlineEmailReader: View {
         return content.messagesForDisplay.filter { $0.id != focusedMessage?.id }
     }
 
+    private var resolvedAccount: String {
+        guard let contentAccount = content?.account, !contentAccount.isEmpty else { return account }
+        return contentAccount
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let focusedMessage, !focusedMessage.participants.isEmpty {
+                MessageParticipantsDisclosure(
+                    message: focusedMessage,
+                    account: resolvedAccount
+                )
+                .padding(.horizontal, 16)
+            }
+
             if !previousMessages.isEmpty {
                 NavigationLink {
                     ConversationHistoryView(
@@ -1047,6 +1060,79 @@ private struct InlineEmailReader: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct MessageParticipantsDisclosure: View {
+    let message: FullEmailMessage
+    let account: String
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "person.2")
+                        .foregroundStyle(WinnowDesign.accent)
+                    Text("Included")
+                        .fontWeight(.semibold)
+                    Text(message.participantSummary(account: account))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .font(.subheadline)
+                .frame(minHeight: 42)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Included on this message")
+            .accessibilityValue(message.participantSummary(account: account))
+            .accessibilityHint(isExpanded ? "Collapses recipient details" : "Shows exact sender and recipients")
+
+            if isExpanded {
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    participantLine("From", message.from)
+                    participantLine("To", message.to)
+                    participantLine("Cc", message.cc)
+                    participantLine("Bcc", message.bcc)
+                }
+                .padding(.vertical, 10)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.horizontal, 14)
+        .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private func participantLine(_ label: String, _ value: String) -> some View {
+        if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            HStack(alignment: .top, spacing: 6) {
+                Text(label)
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 36, alignment: .trailing)
+                Text(EmailBodyLinks.render(value))
+                    .foregroundStyle(.secondary)
+                    .tint(WinnowDesign.accent)
+                    .textSelection(.enabled)
+            }
+            .font(.caption)
+        }
     }
 }
 
@@ -1709,6 +1795,7 @@ private struct FullEmailMessageCard: View {
             VStack(alignment: .leading, spacing: 3) {
                 if !message.to.isEmpty { metadataLine("To", message.to) }
                 if !message.cc.isEmpty { metadataLine("Cc", message.cc) }
+                if !message.bcc.isEmpty { metadataLine("Bcc", message.bcc) }
             }
             Divider()
             if displayMode == .html, message.hasHTMLBody {

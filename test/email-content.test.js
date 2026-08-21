@@ -13,6 +13,8 @@ describe('on-demand email content', () => {
             id: 'm1',
             from: 'Billing <billing@example.com>',
             to: 'Me <me@example.com>',
+            cc: 'Bookkeeper <books@example.com>',
+            bcc: 'Private archive <archive@example.com>',
             subject: 'Payment failed',
             date: 'Sun, 13 Jul 2026 15:42:00 -0700',
             body: '<html><body><h1>Payment failed</h1><p>Update card ending in 2171.</p></body></html>',
@@ -30,6 +32,8 @@ describe('on-demand email content', () => {
     assert.equal(content.focusedMessageId, 'm1');
     assert.equal(content.messages[0].body, 'Payment failed\nUpdate card ending in 2171.');
     assert.equal(content.messages[0].htmlBody, '<html><body><h1>Payment failed</h1><p>Update card ending in 2171.</p></body></html>');
+    assert.equal(content.messages[0].cc, 'Bookkeeper <books@example.com>');
+    assert.equal(content.messages[0].bcc, 'Private archive <archive@example.com>');
     assert.equal(content.truncated, false);
   });
 

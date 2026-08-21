@@ -60,6 +60,7 @@ struct FullEmailMessage: Decodable, Equatable, Identifiable {
     let from: String
     let to: String
     let cc: String
+    let bcc: String
     let subject: String
     let date: String
     let body: String
@@ -68,7 +69,7 @@ struct FullEmailMessage: Decodable, Equatable, Identifiable {
     var hasHTMLBody: Bool { !htmlBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     private enum CodingKeys: String, CodingKey {
-        case id, from, to, cc, subject, date, body, htmlBody
+        case id, from, to, cc, bcc, subject, date, body, htmlBody
     }
 
     init(from decoder: Decoder) throws {
@@ -77,10 +78,114 @@ struct FullEmailMessage: Decodable, Equatable, Identifiable {
         from = try values.decodeIfPresent(String.self, forKey: .from) ?? ""
         to = try values.decodeIfPresent(String.self, forKey: .to) ?? ""
         cc = try values.decodeIfPresent(String.self, forKey: .cc) ?? ""
+        bcc = try values.decodeIfPresent(String.self, forKey: .bcc) ?? ""
         subject = try values.decodeIfPresent(String.self, forKey: .subject) ?? ""
         date = try values.decodeIfPresent(String.self, forKey: .date) ?? ""
         body = try values.decodeIfPresent(String.self, forKey: .body) ?? ""
         htmlBody = try values.decodeIfPresent(String.self, forKey: .htmlBody) ?? ""
+    }
+
+    var participants: [EmailParticipant] {
+        var seen = Set<String>()
+        return [from, to, cc, bcc]
+            .flatMap(EmailParticipant.parseHeader)
+            .filter { seen.insert($0.identityKey).inserted }
+    }
+
+    func participantSummary(account: String) -> String {
+        let normalizedAccount = account.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let labeled = participants.map { participant in
+            let isCurrentAccount = !normalizedAccount.isEmpty
+                && participant.emailAddress.lowercased() == normalizedAccount
+            return (isCurrentAccount ? "You" : participant.displayName, isCurrentAccount)
+        }
+        let names = labeled.filter(\.1).map(\.0) + labeled.filter { !$0.1 }.map(\.0)
+
+        switch names.count {
+        case 0: return ""
+        case 1: return names[0]
+        case 2: return "\(names[0]) and \(names[1])"
+        default: return "\(names[0]), \(names[1]) +\(names.count - 2)"
+        }
+    }
+}
+
+struct EmailParticipant: Equatable {
+    let displayName: String
+    let emailAddress: String
+    let rawValue: String
+
+    fileprivate var identityKey: String {
+        let address = emailAddress.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return address.isEmpty ? rawValue.lowercased() : address
+    }
+
+    static func parseHeader(_ header: String) -> [EmailParticipant] {
+        splitHeader(header).compactMap { component in
+            let value = component.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { return nil }
+
+            if let opening = value.lastIndex(of: "<"),
+               let closing = value[opening...].firstIndex(of: ">") {
+                let address = value[value.index(after: opening)..<closing]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let name = value[..<opening]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                return EmailParticipant(
+                    displayName: name.isEmpty ? address : name,
+                    emailAddress: address,
+                    rawValue: value
+                )
+            }
+
+            let address = value.contains("@") && !value.contains(where: \.isWhitespace)
+                ? value
+                : ""
+            return EmailParticipant(
+                displayName: address.isEmpty ? value : address,
+                emailAddress: address,
+                rawValue: value
+            )
+        }
+    }
+
+    private static func splitHeader(_ header: String) -> [String] {
+        var values: [String] = []
+        var current = ""
+        var isQuoted = false
+        var isEscaped = false
+        var angleBracketDepth = 0
+
+        for character in header {
+            if isEscaped {
+                current.append(character)
+                isEscaped = false
+                continue
+            }
+            if character == "\\", isQuoted {
+                current.append(character)
+                isEscaped = true
+                continue
+            }
+            if character == "\"" {
+                isQuoted.toggle()
+                current.append(character)
+                continue
+            }
+            if !isQuoted {
+                if character == "<" { angleBracketDepth += 1 }
+                if character == ">" { angleBracketDepth = max(0, angleBracketDepth - 1) }
+                if (character == "," || character == ";"), angleBracketDepth == 0 {
+                    values.append(current)
+                    current = ""
+                    continue
+                }
+            }
+            current.append(character)
+        }
+        values.append(current)
+        return values
     }
 }
 

@@ -45,6 +45,7 @@ describe('GogAdapter assistant primitives', () => {
       from: 'Store <orders@example.com>',
       to: 'me@example.com',
       cc: '',
+      bcc: '',
       date: '',
       labelIds: ['INBOX'],
       historyId: '',
@@ -94,7 +95,12 @@ describe('GogAdapter assistant primitives', () => {
         id: 'message1',
         threadId: 'thread1',
         payload: {
-          headers: [{ name: 'From', value: 'sender@example.com' }],
+          headers: [
+            { name: 'From', value: 'sender@example.com' },
+            { name: 'To', value: 'me@example.com' },
+            { name: 'Cc', value: 'reviewer@example.com' },
+            { name: 'Bcc', value: 'audit@example.com' },
+          ],
           parts: [{ mimeType: 'text/plain', body: { data: encoded } }],
         },
       }],
@@ -105,6 +111,9 @@ describe('GogAdapter assistant primitives', () => {
     assert.equal(thread.historyId, 'history1');
     assert.equal(thread.messages[0].body, 'Latest reply body');
     assert.equal(thread.messages[0].from, 'sender@example.com');
+    assert.equal(thread.messages[0].to, 'me@example.com');
+    assert.equal(thread.messages[0].cc, 'reviewer@example.com');
+    assert.equal(thread.messages[0].bcc, 'audit@example.com');
   });
 
   it('preserves a separately bounded HTML alternative for on-demand rendering', async () => {

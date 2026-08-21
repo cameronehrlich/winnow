@@ -293,6 +293,17 @@ final class ModelDecodingTests: XCTestCase {
 
         XCTAssertEqual(content.messages.first?.htmlBody, "")
         XCTAssertEqual(content.messages.first?.hasHTMLBody, false)
+        XCTAssertEqual(content.messages.first?.bcc, "")
+    }
+
+    func testFullEmailMessageSummarizesExactParticipantsCompactly() throws {
+        let json = #"{"emailItemId":"abc","account":"me@example.com","messages":[{"id":"m1","from":"\"Nguyen, Avery\" <avery@example.com>","to":"Cameron <me@example.com>, Jordan <jordan@example.com>","cc":"Avery <avery@example.com>, Casey <casey@example.com>","bcc":"Private <private@example.com>"}]}"#.data(using: .utf8)!
+        let content = try JSONDecoder().decode(EmailContent.self, from: json)
+        let message = try XCTUnwrap(content.messages.first)
+
+        XCTAssertEqual(message.participants.map(\.displayName), ["Nguyen, Avery", "Cameron", "Jordan", "Casey", "Private"])
+        XCTAssertEqual(message.participantSummary(account: content.account), "You, Nguyen, Avery +3")
+        XCTAssertEqual(message.bcc, "Private <private@example.com>")
     }
 
     func testSafeEmailHTMLDocumentLocksDownActiveAndRemoteContent() {

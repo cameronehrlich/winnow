@@ -196,6 +196,7 @@ export function normalizeGogMessage(message, {
     from: normalizeEmailHeaderText(headers.from || value?.from || value?.From).slice(0, 2_000),
     to: normalizeEmailHeaderText(headers.to || value?.to || value?.To).slice(0, 4_000),
     cc: normalizeEmailHeaderText(headers.cc || value?.cc || value?.Cc).slice(0, 4_000),
+    bcc: normalizeEmailHeaderText(headers.bcc || value?.bcc || value?.Bcc).slice(0, 4_000),
     date: normalizeEmailHeaderText(headers.date || value?.date || value?.Date).slice(0, 200),
     labelIds: Array.isArray(labels)
       ? [...labels].slice(0, 100).map(String)
