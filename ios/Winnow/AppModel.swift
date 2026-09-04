@@ -24,6 +24,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var inboxNewItemsCutoff: Date?
     @Published private(set) var archivedNewItemsCutoff: Date?
     @Published private(set) var unseenArchivedItemCount = 0
+    @Published private(set) var archivedNextCursor: String?
+    @Published private(set) var isLoadingMoreArchived = false
+    @Published private(set) var archivedPageLoadFailed = false
+    private var archivedPageCount = 1
 
     private var hasLoaded = false
     private var autoRefreshTask: Task<Void, Never>?
@@ -99,7 +103,7 @@ final class AppModel: ObservableObject {
         transientRetryCount: Int
     ) async {
         guard isConfigured else { return }
-        guard !refreshInFlight else { return }
+        guard !refreshInFlight, !isLoadingMoreArchived else { return }
         refreshInFlight = true
         let generation = refreshGeneration
 
@@ -115,10 +119,11 @@ final class AppModel: ObservableObject {
         }
 
         let client = APIClient(configuration: configuration)
+        let pageCount = archivedPageCount
         do {
             let (inboxPage, archivedPage) = try await withTransientRetry(count: transientRetryCount) {
                 async let fetchedInbox = client.emails(state: "inbox", limit: 200)
-                async let fetchedArchived = client.emails(state: "archived", limit: 200)
+                async let fetchedArchived = client.archivedEmails(pageCount: pageCount)
                 return try await (fetchedInbox, fetchedArchived)
             }
             guard generation == refreshGeneration else { return }
@@ -131,6 +136,8 @@ final class AppModel: ObservableObject {
                 .filter(\.shouldClearDeliveredNotification)
                 .map(\.notificationContext)
             emails = refreshedEmails
+            archivedNextCursor = archivedPage.nextCursor
+            archivedPageLoadFailed = false
             if let archivedUnseenCount = archivedPage.archivedUnseenCount {
                 archivedSeenStateIsAuthoritative = true
                 authoritativeArchivedUnseenCount = max(0, archivedUnseenCount)
@@ -177,6 +184,42 @@ final class AppModel: ObservableObject {
                 retriesRemaining -= 1
                 try await Task.sleep(for: .seconds(1))
             }
+        }
+    }
+
+    func loadMoreArchived() async {
+        while refreshInFlight {
+            do { try await Task.sleep(for: .milliseconds(100)) }
+            catch { return }
+        }
+        guard !Task.isCancelled, isConfigured, !isLoadingMoreArchived,
+              let cursor = archivedNextCursor else { return }
+        isLoadingMoreArchived = true
+        archivedPageLoadFailed = false
+        let generation = refreshGeneration
+        defer { isLoadingMoreArchived = false }
+        do {
+            let page = try await APIClient(configuration: configuration)
+                .emails(state: "archived", limit: 200, cursor: cursor)
+            guard generation == refreshGeneration else { return }
+            let existingIDs = Set(emails.map(\.id))
+            var additional = page.items.filter { !existingIDs.contains($0.id) }
+            for index in additional.indices {
+                if let action = pendingOptimisticActions[additional[index].id] {
+                    additional[index].applyOptimistic(action)
+                }
+            }
+            emails.append(contentsOf: additional)
+            archivedNextCursor = page.nextCursor
+            archivedPageCount += 1
+            if let count = page.archivedUnseenCount {
+                archivedSeenStateIsAuthoritative = true
+                authoritativeArchivedUnseenCount = max(0, count)
+            }
+            updateArchivedUnseenCount()
+        } catch {
+            guard generation == refreshGeneration else { return }
+            archivedPageLoadFailed = true
         }
     }
 
@@ -263,6 +306,9 @@ final class AppModel: ObservableObject {
             refreshGeneration &+= 1
             configuration = ServerConfiguration(serverURL: "", token: "")
             emails = []
+            archivedNextCursor = nil
+            archivedPageCount = 1
+            archivedPageLoadFailed = false
             summary = .empty
             lifetimeSummary = .empty
             status = nil
@@ -828,6 +874,10 @@ final class AppModel: ObservableObject {
             let response = try await APIClient(configuration: configuration).markArchivedSeen(emailIDs: ids)
             archivedSeenStateIsAuthoritative = true
             authoritativeArchivedUnseenCount = max(0, response.archivedUnseenCount)
+            let acknowledged = Set(ids)
+            for index in emails.indices where acknowledged.contains(emails[index].id) && emails[index].isArchived {
+                emails[index].archivedSeenAt = "acknowledged"
+            }
             archivedSeenItemIDs.subtract(ids)
             persistArchivedSeenReceipts()
             updateArchivedUnseenCount()

@@ -413,6 +413,24 @@ struct MailboxListView: View {
                         .tint(mailbox == .inbox ? WinnowDesign.amber : WinnowDesign.accent)
                     }
                 }
+                if mailbox == .archived, model.archivedNextCursor != nil {
+                    HStack {
+                        Spacer()
+                        if model.archivedPageLoadFailed {
+                            Button("Retry loading older emails") {
+                                Task { await model.loadMoreArchived() }
+                            }
+                        } else {
+                            ProgressView("Loading older emails…")
+                                .task(id: model.archivedNextCursor) {
+                                    await model.loadMoreArchived()
+                                }
+                        }
+                        Spacer()
+                    }
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)

@@ -642,6 +642,33 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(response.items.first?.archivedSeenAt)
     }
 
+    func testArchivedPaginationPreservesLoadedDepthAndPassesOpaqueCursor() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            session: URLSession(configuration: configuration)
+        )
+        var requests = 0
+        MailRuleURLProtocol.handler = { request in
+            requests += 1
+            let query = try XCTUnwrap(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems)
+            XCTAssertEqual(query.first(where: { $0.name == "state" })?.value, "archived")
+            if requests == 1 {
+                XCTAssertNil(query.first(where: { $0.name == "cursor" }))
+                return (200, #"{"items":[{"id":"first"}],"nextCursor":"opaque+/=cursor","archivedUnseenCount":3}"#)
+            }
+            XCTAssertEqual(query.first(where: { $0.name == "cursor" })?.value, "opaque+/=cursor")
+            return (200, #"{"items":[{"id":"older"}],"nextCursor":null,"archivedUnseenCount":3}"#)
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+        let result = try await client.archivedEmails(pageCount: 5)
+        XCTAssertEqual(requests, 2)
+        XCTAssertEqual(result.items.map(\.id), ["first", "older"])
+        XCTAssertNil(result.nextCursor)
+        XCTAssertEqual(result.archivedUnseenCount, 3)
+    }
+
     func testArchivedSeenAPIUsesOneBoundedBatch() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MailRuleURLProtocol.self]

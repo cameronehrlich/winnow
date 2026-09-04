@@ -126,10 +126,23 @@ struct APIClient: AssistantService {
         return response.accounts
     }
 
-    func emails(state: String = "all", account: String = "", limit: Int = 100) async throws -> EmailListResponse {
+    func emails(state: String = "all", account: String = "", limit: Int = 100, cursor: String? = nil) async throws -> EmailListResponse {
         var query = [URLQueryItem(name: "state", value: state), URLQueryItem(name: "limit", value: String(limit))]
         if !account.isEmpty { query.append(URLQueryItem(name: "account", value: account)) }
+        if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
         return try await request(path: "/v1/emails", queryItems: query)
+    }
+
+    func archivedEmails(pageCount: Int) async throws -> EmailListResponse {
+        var result = try await emails(state: "archived", limit: 200)
+        for _ in 1..<max(1, pageCount) {
+            guard let cursor = result.nextCursor else { break }
+            let page = try await emails(state: "archived", limit: 200, cursor: cursor)
+            result.items.append(contentsOf: page.items)
+            result.nextCursor = page.nextCursor
+            result.archivedUnseenCount = page.archivedUnseenCount
+        }
+        return result
     }
 
     func markArchivedSeen(emailIDs: [String]) async throws -> ArchivedSeenResponse {
