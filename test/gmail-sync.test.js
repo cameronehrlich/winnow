@@ -8,10 +8,13 @@ import {
   closeStoreForTests,
   configureDatabaseForTests,
   findEmailItemByGmail,
+  getGmailMessageMetadata,
   getGmailFullSyncAt,
   getGmailHistoryCursor,
   setGmailFullSyncAt,
   setGmailHistoryCursor,
+  listSentThreadRepresentatives,
+  upsertGmailMessageMetadata,
   upsertEmailItemFromResult,
 } from '../src/store.js';
 
@@ -94,6 +97,64 @@ describe('durable Gmail synchronization', () => {
     assert.equal(result.imported, 1);
     assert.equal(findEmailItemByGmail({ account: 'me@example.com', messageId: 'm-new' }).mailboxState, 'inbox');
     assert.equal(getGmailHistoryCursor('me@example.com'), '12');
+  });
+
+  it('indexes external Sent history idempotently without creating triage records', async () => {
+    setGmailHistoryCursor('me@example.com', '10');
+    setGmailFullSyncAt('me@example.com');
+    const adapter = {
+      getHistory: async () => ({ historyId: '12', messages: ['m-sent'] }),
+      getMessage: async () => fullMessage({ id: 'm-sent', labels: ['SENT'], historyId: '12' }),
+    };
+
+    const first = await syncGmailMailbox('me@example.com', {
+      adapter, scanFn: async () => [], syncSlackFn: async () => ({ updated: 0 }),
+    });
+    const second = await syncGmailMailbox('me@example.com', {
+      adapter, scanFn: async () => [], syncSlackFn: async () => ({ updated: 0 }),
+    });
+
+    assert.equal(first.imported, 0);
+    assert.equal(first.classified, 0);
+    assert.equal(second.imported, 0);
+    assert.equal(findEmailItemByGmail({ account: 'me@example.com', messageId: 'm-sent' }), null);
+    assert.equal(getGmailMessageMetadata('me@example.com', 'm-sent').direction, 'sent');
+    assert.deepEqual(listSentThreadRepresentatives({ accounts: ['me@example.com'] })
+      .map(item => item.messageId), ['m-sent']);
+    assert.equal(getGmailHistoryCursor('me@example.com'), '12');
+  });
+
+  it('keeps the existing Inbox flow for a self-sent SENT plus INBOX message', async () => {
+    setGmailHistoryCursor('me@example.com', '10');
+    setGmailFullSyncAt('me@example.com');
+    const adapter = {
+      getHistory: async () => ({ historyId: '12', messages: ['m-self'] }),
+      getMessage: async () => fullMessage({ id: 'm-self', labels: ['SENT', 'INBOX'], historyId: '12' }),
+    };
+    const result = await syncGmailMailbox('me@example.com', {
+      adapter, scanFn: async () => [], syncSlackFn: async () => ({ updated: 0 }),
+    });
+
+    assert.equal(result.imported, 1);
+    assert.equal(findEmailItemByGmail({ account: 'me@example.com', messageId: 'm-self' }).mailboxState, 'inbox');
+    assert.equal(getGmailMessageMetadata('me@example.com', 'm-self').direction, 'sent');
+  });
+
+  it('hides a cached Sent row when history reports that SENT was removed', async () => {
+    upsertGmailMessageMetadata('me@example.com', {
+      id: 'm-unsent', threadId: 't-m-unsent', labelIds: ['SENT'], internalDate: '1720000000000',
+    });
+    setGmailHistoryCursor('me@example.com', '10');
+    setGmailFullSyncAt('me@example.com');
+    const adapter = {
+      getHistory: async () => ({ historyId: '12', messages: ['m-unsent'] }),
+      getMessage: async () => fullMessage({ id: 'm-unsent', labels: [], historyId: '12' }),
+    };
+    await syncGmailMailbox('me@example.com', {
+      adapter, scanFn: async () => [], syncSlackFn: async () => ({ updated: 0 }),
+    });
+    assert.equal(getGmailMessageMetadata('me@example.com', 'm-unsent').direction, 'received');
+    assert.deepEqual(listSentThreadRepresentatives({ accounts: ['me@example.com'] }), []);
   });
 
   it('processes the compact message ID array returned by gog history', async () => {
@@ -274,7 +335,67 @@ describe('durable Gmail synchronization', () => {
     assert.equal(getGmailHistoryCursor('me@example.com'), '20');
   });
 
+  it('performs a bounded recent-Sent catch-up during an expired-history fallback', async () => {
+    setGmailHistoryCursor('me@example.com', '10');
+    setGmailFullSyncAt('me@example.com');
+    const searches = [];
+    const adapter = {
+      getHistory: async () => { throw new Error('HTTP 404: startHistoryId is too old'); },
+      searchMailbox: async (_account, query, limit) => {
+        searches.push({ query, limit });
+        return query === 'in:anywhere'
+          ? { messages: [{ id: 'latest', threadId: 't-latest' }] }
+          : { messages: [{ id: 'recent-sent', threadId: 't-recent-sent', labelIds: ['SENT'] }] };
+      },
+      searchAllMailbox: async () => ({ complete: true, messages: [] }),
+      getMessage: async (_account, id) => id === 'latest'
+        ? fullMessage({ id, labels: [], historyId: '20' })
+        : {
+            ...fullMessage({ id, labels: ['SENT'], historyId: '20' }),
+            headers: {
+              from: 'Me <me@example.com>', to: 'Recipient <recipient@example.com>', subject: 'Recent sent',
+            },
+          },
+    };
+
+    const result = await syncGmailMailbox('me@example.com', {
+      adapter, scanFn: async () => [], syncSlackFn: async () => ({ updated: 0 }),
+    });
+    assert.equal(result.mode, 'full');
+    assert.deepEqual(searches, [
+      { query: 'in:anywhere', limit: 1 },
+      { query: 'in:sent', limit: 50 },
+    ]);
+    assert.equal(getGmailMessageMetadata('me@example.com', 'recent-sent').direction, 'sent');
+    assert.equal(findEmailItemByGmail({ account: 'me@example.com', messageId: 'recent-sent' }), null);
+    assert.equal(getGmailHistoryCursor('me@example.com'), '20');
+  });
+
+  it('keeps the cursor unchanged when strict Sent catch-up fails during full fallback', async () => {
+    setGmailHistoryCursor('me@example.com', '10');
+    setGmailFullSyncAt('me@example.com');
+    const adapter = {
+      getHistory: async () => { throw new Error('HTTP 404: startHistoryId is too old'); },
+      searchMailbox: async (_account, query) => query === 'in:anywhere'
+        ? { messages: [{ id: 'latest', threadId: 't-latest' }] }
+        : { messages: [{ id: 'sent-fails', threadId: 't-sent-fails', labelIds: ['SENT'] }] },
+      searchAllMailbox: async () => ({ complete: true, messages: [] }),
+      getMessage: async (_account, id) => {
+        if (id === 'sent-fails') throw new Error('Gmail temporarily unavailable');
+        return fullMessage({ id: 'latest', labels: [], historyId: '20' });
+      },
+    };
+
+    await assert.rejects(syncGmailMailbox('me@example.com', {
+      adapter, scanFn: async () => [], syncSlackFn: async () => ({ updated: 0 }),
+    }), /temporarily unavailable/);
+    assert.equal(getGmailHistoryCursor('me@example.com'), '10');
+  });
+
   it('advances past an untracked deleted history message', async () => {
+    upsertGmailMessageMetadata('me@example.com', {
+      id: 'gone', threadId: 't-gone', labelIds: ['SENT'], internalDate: '1720000000000',
+    });
     setGmailHistoryCursor('me@example.com', '10');
     setGmailFullSyncAt('me@example.com');
     const adapter = {
@@ -292,6 +413,7 @@ describe('durable Gmail synchronization', () => {
     });
 
     assert.equal(result.checked, 1);
+    assert.equal(getGmailMessageMetadata('me@example.com', 'gone'), null);
     assert.equal(getGmailHistoryCursor('me@example.com'), '12');
   });
 

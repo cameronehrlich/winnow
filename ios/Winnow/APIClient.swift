@@ -132,6 +132,34 @@ struct APIClient: AssistantService {
         return try await request(path: "/v1/emails", queryItems: query)
     }
 
+    func sent(account: String = "", limit: Int = 50) async throws -> SentListResponse {
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if !account.isEmpty { query.append(URLQueryItem(name: "account", value: account)) }
+        return try await request(path: "/v1/sent", queryItems: query, timeoutInterval: 20)
+    }
+
+    func threadContent(
+        threadID: String,
+        account: String,
+        focusMessageID: String = ""
+    ) async throws -> EmailContent {
+        guard !threadID.isEmpty else {
+            throw APIClientError.invalidRequest("This message is missing its Gmail thread identifier.")
+        }
+        var query: [URLQueryItem] = []
+        if !account.isEmpty { query.append(URLQueryItem(name: "account", value: account)) }
+        if !focusMessageID.isEmpty {
+            query.append(URLQueryItem(name: "focusMessageId", value: focusMessageID))
+        }
+        let response: ThreadContentResponse = try await request(
+            path: "/v1/threads/\(Self.encodedPathSegment(threadID))",
+            queryItems: query,
+            timeoutInterval: 30,
+            pathIsPercentEncoded: true
+        )
+        return response.content
+    }
+
     func emailContent(emailID: String) async throws -> EmailContent {
         try await emailContentEnvelope(emailID: emailID).content
     }

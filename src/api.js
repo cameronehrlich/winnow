@@ -10,7 +10,13 @@ import { handleMcpMessage } from './mcp.js';
 import { getRuntimeStatus, listAccountStatus } from './status.js';
 import { getPushCapabilities } from './push.js';
 import { reconcileDeliveredNotifications } from './notification-reconciliation.js';
-import { fetchEmailAttachment, fetchEmailAttachments, fetchEmailContent } from './email-content.js';
+import {
+  fetchEmailAttachment,
+  fetchEmailAttachments,
+  fetchEmailContent,
+  fetchThreadContent,
+} from './email-content.js';
+import { indexThreadContentMetadata, listSentMailbox } from './gmail-metadata.js';
 import { SemanticPreviewError } from './semantic-rule-preview.js';
 import {
   disableUserRule,
@@ -239,6 +245,31 @@ function queryInteger(url, name, { fallback, min, max }) {
   return value;
 }
 
+function configuredAccountsForQuery(url, { required = false } = {}) {
+  const configured = getAccounts().map(account => account.email);
+  const requested = String(url.searchParams.get('account') || '').trim();
+  if (!requested) {
+    if (required) throw new HttpError(400, 'invalid_account', 'A configured account is required');
+    return configured;
+  }
+  const account = configured.find(value => value.toLowerCase() === requested.toLowerCase());
+  if (!account) throw new HttpError(400, 'invalid_account', 'Account is not configured');
+  return [account];
+}
+
+function validatedGmailId(value, name) {
+  const normalized = String(value || '').trim();
+  if (!normalized || normalized.length > 256 || !/^[A-Za-z0-9_-]+$/.test(normalized)) {
+    throw new HttpError(400, `invalid_${name}`);
+  }
+  return normalized;
+}
+
+function isMissingGmailResource(error) {
+  return /(?:\b404\b|notFound|not found|does not exist|requested entity was not found)/i
+    .test(String(error?.stderr || error?.message || error || ''));
+}
+
 function bodyBoolean(body, name, fallback) {
   if (body[name] === undefined) return fallback;
   if (typeof body[name] !== 'boolean') throw new HttpError(400, `invalid_${name}`);
@@ -359,6 +390,8 @@ async function handleAuthed(req, res, url, dependencies = {}) {
         dailySummary: true,
         lifetimeSummary: true,
         manualScan: true,
+        sentMailbox: true,
+        fullThreads: true,
         push: getPushCapabilities(),
         assistant: {
           conversations: true,
@@ -545,6 +578,41 @@ async function handleAuthed(req, res, url, dependencies = {}) {
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/v1/sent') {
+    const accounts = configuredAccountsForQuery(url);
+    const limit = queryInteger(url, 'limit', { fallback: 50, min: 1, max: 200 });
+    try {
+      const getSentMailbox = dependencies.listSentMailbox || listSentMailbox;
+      sendJson(res, 200, await getSentMailbox({ accounts, limit }));
+    } catch (err) {
+      console.error(`[winnow/api] Sent mailbox fetch failed: ${err.message}`);
+      sendJson(res, 502, { error: 'sent_mailbox_unavailable' });
+    }
+    return;
+  }
+
+  const threadMatch = route(url.pathname, '/v1/threads/:threadId');
+  if (req.method === 'GET' && threadMatch) {
+    const [account] = configuredAccountsForQuery(url, { required: true });
+    const threadId = validatedGmailId(threadMatch.threadId, 'thread_id');
+    const rawFocusMessageId = String(url.searchParams.get('focusMessageId') || '').trim();
+    const focusMessageId = rawFocusMessageId
+      ? validatedGmailId(rawFocusMessageId, 'focus_message_id')
+      : '';
+    try {
+      const getThreadContent = dependencies.fetchThreadContent || fetchThreadContent;
+      const content = await getThreadContent({ account, threadId, focusMessageId });
+      indexThreadContentMetadata(content);
+      sendJson(res, 200, { content });
+    } catch (err) {
+      console.error(`[winnow/api] Thread content fetch failed for ${account}/${threadId}: ${err.message}`);
+      sendJson(res, isMissingGmailResource(err) ? 404 : 502, {
+        error: isMissingGmailResource(err) ? 'thread_not_found' : 'thread_content_unavailable',
+      });
+    }
+    return;
+  }
+
   const emailMatch = route(url.pathname, '/v1/emails/:id');
   if (req.method === 'GET' && emailMatch) {
     const item = getEmailItem(emailMatch.id);
@@ -563,6 +631,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
     try {
       const getContent = dependencies.fetchEmailContent || fetchEmailContent;
       const content = await getContent(item);
+      indexThreadContentMetadata(content);
       if (Array.isArray(content?.attachments)) updateEmailItemAttachments(item.id, content.attachments);
       if (content?.unsubscribeLink) {
         setEmailItemUnsubscribeLinkIfMissing(item.id, content.unsubscribeLink);

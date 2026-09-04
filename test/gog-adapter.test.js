@@ -117,6 +117,22 @@ describe('GogAdapter assistant primitives', () => {
     assert.equal(thread.messages[0].bcc, 'audit@example.com');
   });
 
+  it('keeps the newest bounded window for unusually long Gmail threads', async () => {
+    const messages = Array.from({ length: 105 }, (_, index) => ({
+      id: `message-${String(index).padStart(3, '0')}`,
+      threadId: 'long-thread',
+      internalDate: String(index + 1),
+      body: `Body ${index}`,
+    }));
+    const { adapter } = fakeAdapter([{ thread: { id: 'long-thread', messages } }]);
+
+    const thread = await adapter.getThread('me@example.com', 'long-thread');
+
+    assert.equal(thread.messages.length, 100);
+    assert.equal(thread.messages[0].id, 'message-005');
+    assert.equal(thread.messages.at(-1).id, 'message-104');
+  });
+
   it('preserves a separately bounded HTML alternative for on-demand rendering', async () => {
     const plain = Buffer.from('Readable fallback').toString('base64url');
     const html = Buffer.from('<html><body><strong>Formatted body</strong></body></html>').toString('base64url');

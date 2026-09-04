@@ -1,16 +1,17 @@
-# Winnow for iPhone
+# Winnow for Apple Platforms
 
 A personal, native SwiftUI client for Winnow. V1 keeps the useful, dynamic parts of the Slack cards while making inbox triage faster and less rigid.
 
 ## What V1 includes
 
 - Separate Inbox and Archived tabs, each with account filtering and its own search
+- An account-filtered Sent destination on iPhone, iPad, and Mac Catalyst
 - Compact cards with bold unread typography, quieter read messages, and Gmail account-photo badges
 - Swipe right from Inbox to archive; swipe left from Archived to restore
 - One Winnow summary in detail, followed by a compact next-step, deadline, impact, handling, and confidence card
 - Opening an in-app detail marks the message read; manual read/unread remains available in detail
 - A safe confirmation step and truthful manual-action state for unsubscribe flows
-- An on-demand full-message reader that loads the exact Gmail thread without leaving Winnow
+- A chronological, expandable Gmail thread reader that includes received mail and sent replies without leaving Winnow
 - Lifetime and Today stats plus recent activity
 - Server health merged with per-account scan state in Settings
 - Pull to refresh, refresh whenever the app becomes active, and 30-second foreground refresh

@@ -7,18 +7,20 @@ struct RootView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selectedTab: RootTab = .inbox
     @State private var selectedRegularEmailID: String?
+    @State private var selectedRegularSentRoute: SentThreadRoute?
     @State private var settingsPresented = false
     @State private var statsPresented = false
     @State private var askPresented = false
     @State private var askStatsPresented = false
 
     private enum RootTab: Hashable, CaseIterable {
-        case inbox, archived, ask
+        case inbox, archived, sent, ask
 
         var title: String {
             switch self {
             case .inbox: "Inbox"
             case .archived: "Archived"
+            case .sent: "Sent"
             case .ask: "Ask Winnow"
             }
         }
@@ -27,6 +29,7 @@ struct RootView: View {
             switch self {
             case .inbox: "tray.full"
             case .archived: "archivebox"
+            case .sent: "paperplane"
             case .ask: "bubble.left.and.bubble.right.fill"
             }
         }
@@ -61,6 +64,13 @@ struct RootView: View {
         }
         .onChange(of: selectedTab) { oldTab, newTab in
             model.setVisibleMailbox(mailbox(for: newTab))
+            if oldTab != newTab {
+                if newTab == .sent {
+                    selectedRegularEmailID = nil
+                } else {
+                    selectedRegularSentRoute = nil
+                }
+            }
             if usesRegularLayout,
                oldTab != newTab,
                selectedRegularEmailID.flatMap(model.email(id:)).map({ mailbox(for: newTab)?.includes($0) }) != true {
@@ -83,6 +93,7 @@ struct RootView: View {
         .onChange(of: model.navigationRequest) { _, request in
             guard usesRegularLayout, let request else { return }
             selectedTab = request.mailboxState == MailboxTab.archived.apiState ? .archived : .inbox
+            selectedRegularSentRoute = nil
             selectedRegularEmailID = request.emailID
             model.consumeNavigation(request)
         }
@@ -187,27 +198,52 @@ struct RootView: View {
                 regularSidebar
             } content: {
                 NavigationStack {
-                    MailboxListView(
-                        mailbox: selectedTab == .archived ? .archived : .inbox,
-                        showsSettingsButton: false,
-                        openSettings: openSettings,
-                        openStats: openStats
-                    ) { item in
-                        selectedRegularEmailID = item.id
+                    Group {
+                        if selectedTab == .sent {
+                            SentMailboxListView(
+                                showsSettingsButton: false,
+                                openSettings: openSettings,
+                                openStats: openStats
+                            ) { message in
+                                selectedRegularSentRoute = SentThreadRoute(message: message)
+                            }
+                        } else {
+                            MailboxListView(
+                                mailbox: selectedTab == .archived ? .archived : .inbox,
+                                showsSettingsButton: false,
+                                openSettings: openSettings,
+                                openStats: openStats
+                            ) { item in
+                                selectedRegularEmailID = item.id
+                            }
+                        }
                     }
                     .id(selectedTab)
                 }
                 .navigationSplitViewColumnWidth(min: 330, ideal: 390, max: 480)
             } detail: {
                 NavigationStack {
-                    if let selectedRegularEmailID {
+                    if selectedTab == .sent, let route = selectedRegularSentRoute {
+                        ThreadView(
+                            threadID: route.threadID,
+                            account: route.account,
+                            focusMessageID: route.messageID,
+                            fallbackSubject: route.subject
+                        )
+                        .id(route)
+                    } else if selectedTab != .sent, let selectedRegularEmailID {
                         EmailDetailView(emailID: selectedRegularEmailID)
                             .id(selectedRegularEmailID)
                     } else {
                         ContentUnavailableView {
-                            Label("Select an Email", systemImage: "envelope.open")
+                            Label(
+                                selectedTab == .sent ? "Select a Sent Thread" : "Select an Email",
+                                systemImage: selectedTab == .sent ? "paperplane" : "envelope.open"
+                            )
                         } description: {
-                            Text("Choose a message to read it without losing your place.")
+                            Text(selectedTab == .sent
+                                ? "Choose a sent message to read its complete thread."
+                                : "Choose a message to read it without losing your place.")
                         }
                     }
                 }
@@ -265,7 +301,7 @@ struct RootView: View {
         switch tab {
         case .inbox: model.inboxBadgeCount
         case .archived: model.unseenArchivedItemCount
-        case .ask: nil
+        case .sent, .ask: nil
         }
     }
 
@@ -289,6 +325,13 @@ struct RootView: View {
                 )
             }
             .badge(model.unseenArchivedItemCount)
+
+            Tab("Sent", systemImage: "paperplane", value: RootTab.sent) {
+                SentMailboxView(
+                    openSettings: openSettings,
+                    openStats: openStats
+                )
+            }
 
             Tab("Ask", systemImage: "bubble.left.and.bubble.right.fill", value: RootTab.ask, role: .search) {
                 Color.clear
@@ -315,6 +358,13 @@ struct RootView: View {
                 .tabItem { Label("Archived", systemImage: "archivebox") }
                 .badge(model.unseenArchivedItemCount)
                 .tag(RootTab.archived)
+
+            SentMailboxView(
+                openSettings: openSettings,
+                openStats: openStats
+            )
+                .tabItem { Label("Sent", systemImage: "paperplane") }
+                .tag(RootTab.sent)
 
             Color.clear
                 .tabItem { Label("Ask", systemImage: "bubble.left.and.bubble.right.fill") }
@@ -359,7 +409,7 @@ struct RootView: View {
         switch tab {
         case .inbox: .inbox
         case .archived: .archived
-        case .ask: nil
+        case .sent, .ask: nil
         }
     }
 

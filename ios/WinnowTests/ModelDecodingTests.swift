@@ -277,12 +277,18 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testFullEmailContentDecodes() throws {
-        let json = #"{"emailItemId":"abc","account":"me@example.com","threadId":"t1","focusedMessageId":"m1","subject":"Hello","messages":[{"id":"m1","from":"Sender","to":"Me","cc":"","subject":"Hello","date":"Today","body":"Complete body","htmlBody":"<p>Complete <strong>body</strong></p>"}],"truncated":false,"fetchedAt":"2026-07-13T12:00:00.000Z"}"#.data(using: .utf8)!
+        let json = #"{"emailItemId":"abc","account":"me@example.com","threadId":"t1","focusedMessageId":"m1","subject":"Hello","messages":[{"id":"m1","from":"Sender","to":"Me","cc":"","subject":"Hello","date":"Today","internalDate":"1783969200000","snippet":"Complete body preview","labelIds":["INBOX"],"direction":"received","body":"Complete body","htmlBody":"<p>Complete <strong>body</strong></p>","attachments":[{"attachmentId":"a1","messageId":"m1","filename":"Quote.pdf","mimeType":"application/pdf"}]}],"truncated":false,"fetchedAt":"2026-07-13T12:00:00.000Z"}"#.data(using: .utf8)!
         let content = try JSONDecoder().decode(EmailContent.self, from: json)
         XCTAssertEqual(content.focusedMessageId, "m1")
         XCTAssertEqual(content.messages.first?.body, "Complete body")
         XCTAssertEqual(content.messages.first?.htmlBody, "<p>Complete <strong>body</strong></p>")
         XCTAssertEqual(content.messages.first?.hasHTMLBody, true)
+        XCTAssertEqual(content.messages.first?.snippet, "Complete body preview")
+        XCTAssertEqual(content.messages.first?.internalDate, "1783969200000")
+        XCTAssertEqual(content.messages.first?.labelIds, ["INBOX"])
+        XCTAssertEqual(content.messages.first?.direction, .received)
+        XCTAssertEqual(content.messages.first?.attachments.first?.filename, "Quote.pdf")
+        XCTAssertNotNil(content.messages.first?.displayDate)
         XCTAssertTrue(content.attachments.isEmpty)
         XCTAssertFalse(content.truncated)
     }
@@ -370,10 +376,104 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(content.attachments.map(\.attachmentId), ["a1"])
     }
 
-    func testFullEmailContentPutsSelectedMessageFirstThenNewest() throws {
+    func testFullEmailContentPreservesChronologicalServerOrderWithoutMovingFocus() throws {
         let json = #"{"emailItemId":"abc","account":"me@example.com","threadId":"t1","focusedMessageId":"m1","subject":"Hello","messages":[{"id":"m1","from":"One","to":"","cc":"","subject":"","date":"","body":"First"},{"id":"m2","from":"Two","to":"","cc":"","subject":"","date":"","body":"Second"},{"id":"m3","from":"Three","to":"","cc":"","subject":"","date":"","body":"Third"}],"truncated":false,"fetchedAt":"2026-07-13T12:00:00.000Z"}"#.data(using: .utf8)!
         let content = try JSONDecoder().decode(EmailContent.self, from: json)
-        XCTAssertEqual(content.messagesForDisplay.map(\.id), ["m1", "m3", "m2"])
+        XCTAssertEqual(content.messagesForDisplay.map(\.id), ["m1", "m2", "m3"])
+    }
+
+    func testFullEmailDirectionUsesProviderMetadataRatherThanAddressGuessing() throws {
+        let json = #"{"emailItemId":"abc","account":"me@example.com","messages":[{"id":"m1","from":"me@example.com","direction":"received"},{"id":"m2","from":"someone@example.com","labelIds":["SENT"]},{"id":"m3","direction":"sent"},{"id":"m4","labelIds":["SENT","DRAFT"]}]}"#.data(using: .utf8)!
+        let content = try JSONDecoder().decode(EmailContent.self, from: json)
+
+        XCTAssertFalse(content.messages[0].isOutgoing)
+        XCTAssertTrue(content.messages[1].isOutgoing)
+        XCTAssertTrue(content.messages[2].isOutgoing)
+        XCTAssertFalse(content.messages[3].isOutgoing)
+    }
+
+    func testThreadContentResponseAcceptsDirectAndEnvelopedShapes() throws {
+        let direct = #"{"threadId":"thread-1","messages":[{"id":"m1"}]}"#.data(using: .utf8)!
+        let enveloped = #"{"content":{"threadId":"thread-2","messages":[{"id":"m2"}]}}"#.data(using: .utf8)!
+
+        XCTAssertEqual(try JSONDecoder().decode(ThreadContentResponse.self, from: direct).content.threadId, "thread-1")
+        XCTAssertEqual(try JSONDecoder().decode(ThreadContentResponse.self, from: enveloped).content.threadId, "thread-2")
+    }
+
+    func testSentMailboxDecodesGroupedThreadsAndFlexibleProviderFields() throws {
+        let json = #"{"items":[{"account":"me@example.com","messageId":"m2","threadId":"t1","from":"Me <me@example.com>","to":["Miguel <miguel@example.com>","Riley <riley@example.com>"],"subject":"Roof quote","snippet":"Can you send the prices?","internalDate":1783969200000,"indexedSentMessageCount":2,"indexedThreadMessageCount":8,"messageCountsComplete":false}],"fetchedAt":"2026-09-03T21:43:00Z"}"#.data(using: .utf8)!
+        let response = try JSONDecoder().decode(SentListResponse.self, from: json)
+        let message = try XCTUnwrap(response.items.first)
+
+        XCTAssertEqual(message.id, "me@example.com|t1|m2")
+        XCTAssertEqual(message.to, "Miguel <miguel@example.com>, Riley <riley@example.com>")
+        XCTAssertEqual(message.recipientSummary, "Miguel +1")
+        XCTAssertEqual(message.indexedSentMessageCount, 2)
+        XCTAssertEqual(message.indexedThreadMessageCount, 8)
+        XCTAssertNil(message.displayedMessageCount)
+        XCTAssertNotNil(message.displayDate)
+        XCTAssertNil(response.nextCursor)
+    }
+
+    func testSentAndThreadAPIRequestsUseAccountAndFocusContracts() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test/base", token: "secret"),
+            session: session
+        )
+
+        MailRuleURLProtocol.handler = { request in
+            let components = try XCTUnwrap(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false))
+            switch components.path {
+            case "/base/v1/sent":
+                XCTAssertEqual(request.timeoutInterval, 20)
+                XCTAssertEqual(components.queryItems?.first(where: { $0.name == "account" })?.value, "me@example.com")
+                XCTAssertEqual(components.queryItems?.first(where: { $0.name == "limit" })?.value, "50")
+                return (200, #"{"items":[]}"#)
+            case "/base/v1/threads/thread_1":
+                XCTAssertEqual(components.queryItems?.first(where: { $0.name == "account" })?.value, "me@example.com")
+                XCTAssertEqual(components.queryItems?.first(where: { $0.name == "focusMessageId" })?.value, "message-2")
+                return (200, #"{"content":{"threadId":"thread_1","messages":[]}}"#)
+            default:
+                XCTFail("Unexpected path: \(components.path)")
+                return (404, #"{"error":"not_found"}"#)
+            }
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+
+        let sent = try await client.sent(account: "me@example.com", limit: 50)
+        let thread = try await client.threadContent(
+            threadID: "thread_1",
+            account: "me@example.com",
+            focusMessageID: "message-2"
+        )
+        XCTAssertTrue(sent.items.isEmpty)
+        XCTAssertEqual(thread.threadId, "thread_1")
+    }
+
+    func testSentAPIPropagatesServerFailureForRetryUI() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            session: URLSession(configuration: configuration)
+        )
+        MailRuleURLProtocol.handler = { _ in
+            (502, #"{"error":"sent_mailbox_unavailable"}"#)
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+
+        do {
+            _ = try await client.sent()
+            XCTFail("Expected Sent request to propagate its server failure")
+        } catch let APIClientError.server(status, message) {
+            XCTAssertEqual(status, 502)
+            XCTAssertEqual(message, "sent_mailbox_unavailable")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
     }
 
     func testFullEmailBodyDetectsSafeLinksAndPhoneNumbers() {

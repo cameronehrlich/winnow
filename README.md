@@ -508,12 +508,17 @@ curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
   "http://127.0.0.1:3777/v1/summaries/lifetime?recentLimit=25"
 curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
   "http://127.0.0.1:3777/v1/emails?state=all&limit=50"
+curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
+  "http://127.0.0.1:3777/v1/sent?limit=50"
 ```
 
 The mobile feed supports `state=all|inbox|archived`, optional `account`, cursor pagination, and limits from 1–200. Email items include stable `readState` (`read`, `unread`, or `unknown`) plus nullable `isRead`. Detail and action routes are:
 
 ```text
 GET  /v1/emails/:id
+GET  /v1/emails/:id/content
+GET  /v1/threads/:threadId?account=<email>&focusMessageId=<messageId>
+GET  /v1/sent[?account=<email>&limit=50]
 POST /v1/emails/:id/archive
 POST /v1/emails/:id/move-to-inbox
 POST /v1/emails/:id/mark-read
@@ -521,6 +526,8 @@ POST /v1/emails/:id/mark-unread
 POST /v1/emails/:id/unsubscribe
 POST /v1/emails/:id/undo-handling
 ```
+
+`GET /v1/sent` groups recent provider-labeled `SENT` messages by Gmail account and thread. Winnow stores only bounded list metadata in a separate index; message bodies and attachment bytes remain in Gmail and are fetched on demand by the account-scoped thread route. Sent indexing never creates triage items or changes inbox/archive badges, rules, stats, notifications, widgets, or Slack behavior.
 
 Successful actions return `{ ok, action, item }`, with the refreshed item included so clients do not need to guess local state. Newly processed items can include a typed `handlingDecision` and a server-computed `undoAction`; undo returns `409 handling_not_undoable` after the original scan state has changed. Items also expose `unsubscribeState` (`available`, `succeeded`, `attempted`, `failed`, or `unavailable`). Unsubscribe responses add `outcome` and `requiresManualAction`; mailto links are reported as attempted/manual rather than falsely reported as complete, and repeated completed attempts are deduplicated across the API and Slack. `GET /v1/summaries/lifetime` returns all-time action counters plus bounded recent activity for the Stats tab. `GET /v1/bootstrap` returns the configured accounts, defaults, and server capabilities. APNs device registration is scaffolded, but push delivery remains disabled until credentials and dispatch are deliberately enabled; the V1 app should refresh or poll.
 

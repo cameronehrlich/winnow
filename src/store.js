@@ -165,6 +165,30 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_email_items_mailbox
       ON email_items(mailbox_state, processed_at DESC);
 
+    CREATE TABLE IF NOT EXISTS gmail_message_index (
+      account TEXT NOT NULL,
+      gmail_message_id TEXT NOT NULL,
+      gmail_thread_id TEXT NOT NULL,
+      label_ids_json TEXT NOT NULL DEFAULT '[]',
+      direction TEXT NOT NULL CHECK(direction IN ('sent', 'received')),
+      from_header TEXT,
+      to_header TEXT,
+      cc_header TEXT,
+      bcc_header TEXT,
+      subject TEXT,
+      snippet TEXT,
+      internal_date TEXT,
+      date_header TEXT,
+      timestamp TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(account, gmail_message_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_gmail_message_index_thread
+      ON gmail_message_index(account, gmail_thread_id, timestamp, gmail_message_id);
+    CREATE INDEX IF NOT EXISTS idx_gmail_message_index_sent
+      ON gmail_message_index(account, direction, timestamp DESC, gmail_message_id DESC);
+
     CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       event_type TEXT NOT NULL,
@@ -663,6 +687,163 @@ export function upsertEmailItemFromResult(result, opts = {}) {
 
 export function getEmailItem(id) {
   return rowToEmailItem(getDb().prepare('SELECT * FROM email_items WHERE id = ?').get(id));
+}
+
+function gmailMessageTimestamp(internalDate, date) {
+  const milliseconds = Number(internalDate);
+  const internal = new Date(milliseconds);
+  if (Number.isFinite(milliseconds) && milliseconds > 0 && Number.isFinite(internal.getTime())) {
+    return internal.toISOString();
+  }
+  const parsed = Date.parse(String(date || ''));
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date(0).toISOString();
+}
+
+function boundedMetadata(value, maxLength) {
+  return String(value || '').replace(/\0/g, '').slice(0, maxLength);
+}
+
+function rowToGmailMessageMetadata(row) {
+  if (!row) return null;
+  return {
+    account: row.account,
+    messageId: row.gmail_message_id,
+    threadId: row.gmail_thread_id,
+    labelIds: parseJson(row.label_ids_json, []),
+    direction: row.direction,
+    from: row.from_header || '',
+    to: row.to_header || '',
+    cc: row.cc_header || '',
+    bcc: row.bcc_header || '',
+    subject: row.subject || '',
+    snippet: row.snippet || '',
+    internalDate: row.internal_date || '',
+    date: row.date_header || '',
+    timestamp: row.timestamp,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * Persist only mailbox-list metadata. Complete Gmail bodies and attachment
+ * bytes deliberately remain provider-owned and are fetched on demand.
+ */
+export function upsertGmailMessageMetadata(account, message) {
+  const normalizedAccount = boundedMetadata(account, 320).trim().toLowerCase();
+  const messageId = boundedMetadata(message?.messageId || message?.id, 256).trim();
+  const threadId = boundedMetadata(message?.threadId || messageId, 256).trim();
+  if (!normalizedAccount || !messageId || !threadId) {
+    throw new TypeError('Gmail metadata requires account, messageId, and threadId');
+  }
+  const labelIds = Array.from(new Set(
+    (Array.isArray(message?.labelIds) ? message.labelIds : [])
+      .slice(0, 100)
+      .map(label => boundedMetadata(label, 200).trim())
+      .filter(Boolean),
+  ));
+  const direction = labelIds.includes('SENT') && !labelIds.includes('DRAFT')
+    ? 'sent'
+    : 'received';
+  const internalDate = boundedMetadata(message?.internalDate, 64).trim();
+  const date = boundedMetadata(message?.date, 200).trim();
+  const record = {
+    account: normalizedAccount,
+    messageId,
+    threadId,
+    labelIdsJson: JSON.stringify(labelIds),
+    direction,
+    from: boundedMetadata(message?.from, 2_000),
+    to: boundedMetadata(message?.to, 4_000),
+    cc: boundedMetadata(message?.cc, 4_000),
+    bcc: boundedMetadata(message?.bcc, 4_000),
+    subject: boundedMetadata(message?.subject, 2_000),
+    snippet: boundedMetadata(message?.snippet, 10_000),
+    internalDate,
+    date,
+    timestamp: gmailMessageTimestamp(internalDate, date),
+    updatedAt: nowIso(),
+  };
+  getDb().prepare(`
+    INSERT INTO gmail_message_index (
+      account, gmail_message_id, gmail_thread_id, label_ids_json, direction,
+      from_header, to_header, cc_header, bcc_header, subject, snippet,
+      internal_date, date_header, timestamp, updated_at
+    ) VALUES (
+      @account, @messageId, @threadId, @labelIdsJson, @direction,
+      @from, @to, @cc, @bcc, @subject, @snippet,
+      @internalDate, @date, @timestamp, @updatedAt
+    )
+    ON CONFLICT(account, gmail_message_id) DO UPDATE SET
+      gmail_thread_id = excluded.gmail_thread_id,
+      label_ids_json = excluded.label_ids_json,
+      direction = excluded.direction,
+      from_header = CASE WHEN excluded.from_header = '' THEN gmail_message_index.from_header ELSE excluded.from_header END,
+      to_header = CASE WHEN excluded.to_header = '' THEN gmail_message_index.to_header ELSE excluded.to_header END,
+      cc_header = CASE WHEN excluded.cc_header = '' THEN gmail_message_index.cc_header ELSE excluded.cc_header END,
+      bcc_header = CASE WHEN excluded.bcc_header = '' THEN gmail_message_index.bcc_header ELSE excluded.bcc_header END,
+      subject = CASE WHEN excluded.subject = '' THEN gmail_message_index.subject ELSE excluded.subject END,
+      snippet = CASE WHEN excluded.snippet = '' THEN gmail_message_index.snippet ELSE excluded.snippet END,
+      internal_date = CASE WHEN excluded.internal_date = '' THEN gmail_message_index.internal_date ELSE excluded.internal_date END,
+      date_header = CASE WHEN excluded.date_header = '' THEN gmail_message_index.date_header ELSE excluded.date_header END,
+      timestamp = CASE
+        WHEN excluded.internal_date = '' AND excluded.date_header = '' THEN gmail_message_index.timestamp
+        ELSE excluded.timestamp
+      END,
+      updated_at = excluded.updated_at
+  `).run(record);
+  return getGmailMessageMetadata(normalizedAccount, messageId);
+}
+
+export function getGmailMessageMetadata(account, messageId) {
+  return rowToGmailMessageMetadata(getDb().prepare(`
+    SELECT * FROM gmail_message_index
+    WHERE account = ? AND gmail_message_id = ?
+  `).get(String(account || '').trim().toLowerCase(), String(messageId || '')));
+}
+
+export function deleteGmailMessageMetadata(account, messageId) {
+  return getDb().prepare(`
+    DELETE FROM gmail_message_index
+    WHERE account = ? AND gmail_message_id = ?
+  `).run(String(account || '').trim().toLowerCase(), String(messageId || '')).changes === 1;
+}
+
+export function listSentThreadRepresentatives({ accounts = [], limit = 50 } = {}) {
+  const normalizedAccounts = Array.from(new Set(accounts
+    .map(account => String(account || '').trim().toLowerCase())
+    .filter(Boolean)));
+  if (!normalizedAccounts.length) return [];
+  const safeLimit = Math.max(1, Math.min(200, Number(limit) || 50));
+  const placeholders = normalizedAccounts.map(() => '?').join(', ');
+  const rows = getDb().prepare(`
+    WITH sent_rows AS (
+      SELECT *,
+        ROW_NUMBER() OVER (
+          PARTITION BY account, gmail_thread_id
+          ORDER BY timestamp DESC, gmail_message_id DESC
+        ) AS representative_rank,
+        COUNT(*) OVER (PARTITION BY account, gmail_thread_id) AS sent_message_count
+      FROM gmail_message_index
+      WHERE direction = 'sent' AND account IN (${placeholders})
+    )
+    SELECT sent_rows.*,
+      (
+        SELECT COUNT(*) FROM gmail_message_index AS indexed_row
+        WHERE indexed_row.account = sent_rows.account
+          AND indexed_row.gmail_thread_id = sent_rows.gmail_thread_id
+      ) AS indexed_thread_message_count
+    FROM sent_rows
+    WHERE sent_rows.representative_rank = 1
+    ORDER BY sent_rows.timestamp DESC, sent_rows.account ASC,
+      sent_rows.gmail_thread_id ASC, sent_rows.gmail_message_id DESC
+    LIMIT ?
+  `).all(...normalizedAccounts, safeLimit);
+  return rows.map(row => ({
+    ...rowToGmailMessageMetadata(row),
+    indexedSentMessageCount: Number(row.sent_message_count) || 1,
+    indexedThreadMessageCount: Number(row.indexed_thread_message_count) || 1,
+    messageCountsComplete: false,
+  }));
 }
 
 export function updateEmailItemAttachments(id, attachments) {

@@ -86,6 +86,42 @@ api:
       truncated: false,
       fetchedAt: '2026-06-29T16:01:00.000Z',
     }),
+    fetchThreadContent: async ({ account, threadId, focusMessageId }) => ({
+      emailItemId: '',
+      account,
+      threadId,
+      focusedMessageId: focusMessageId,
+      subject: 'Thread subject',
+      messages: [{
+        id: focusMessageId || 'thread-message',
+        from: 'Me <me@example.com>',
+        to: 'Recipient <recipient@example.com>',
+        cc: '',
+        bcc: '',
+        subject: 'Thread subject',
+        date: 'Sun, 29 Jun 2026 09:00:00 -0700',
+        internalDate: '1782748800000',
+        labelIds: ['SENT'],
+        direction: 'sent',
+        snippet: 'A sent reply',
+        attachments: [],
+        body: 'Sent body',
+        htmlBody: '',
+      }],
+      attachments: [],
+      unsubscribeLink: '',
+      truncated: false,
+      fetchedAt: '2026-06-29T16:01:00.000Z',
+    }),
+    listSentMailbox: async ({ accounts, limit }) => ({
+      accounts,
+      items: [{
+        account: accounts[0], messageId: 'sent-1', threadId: 'sent-thread',
+        to: 'Recipient <recipient@example.com>', subject: 'Sent subject', snippet: 'Sent snippet',
+        timestamp: '2026-06-29T16:00:00.000Z', sentMessageCount: 1, threadMessageCount: 1,
+      }].slice(0, limit),
+      fetchedAt: '2026-06-29T16:01:00.000Z',
+    }),
     fetchEmailAttachments: async item => [{
       messageId: 'm0', attachmentId: 'pdf-1', filename: 'invoice.pdf',
       mimeType: 'application/pdf', sizeBytes: 9,
@@ -238,6 +274,62 @@ describe('local API', () => {
 
     const missing = await fetch(`${baseUrl}/v1/emails/missing/content`, { headers });
     assert.equal(missing.status, 404);
+  });
+
+  it('opens a provider-backed thread without requiring an email_items record', async () => {
+    const headers = { Authorization: 'Bearer test-token' };
+    const response = await fetch(
+      `${baseUrl}/v1/threads/sent-thread?account=me%40example.com&focusMessageId=sent-1`,
+      { headers },
+    );
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.item, undefined);
+    assert.equal(body.content.account, 'me@example.com');
+    assert.equal(body.content.threadId, 'sent-thread');
+    assert.equal(body.content.focusedMessageId, 'sent-1');
+    assert.equal(body.content.messages[0].direction, 'sent');
+
+    assert.equal((await fetch(`${baseUrl}/v1/threads/sent-thread`, { headers })).status, 400);
+    assert.equal((await fetch(
+      `${baseUrl}/v1/threads/sent-thread?account=unknown%40example.com`, { headers },
+    )).status, 400);
+    assert.equal((await fetch(
+      `${baseUrl}/v1/threads/not%20safe?account=me%40example.com`, { headers },
+    )).status, 400);
+    assert.equal((await fetch(
+      `${baseUrl}/v1/threads/sent-thread?account=me%40example.com&focusMessageId=not%2Fsafe`, { headers },
+    )).status, 400);
+  });
+
+  it('maps a missing provider thread to a scoped 404', async () => {
+    apiDependencies.fetchThreadContent = async () => { throw new Error('HTTP 404: thread not found'); };
+    const response = await fetch(
+      `${baseUrl}/v1/threads/missing?account=me%40example.com`,
+      { headers: { Authorization: 'Bearer test-token' } },
+    );
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: 'thread_not_found' });
+  });
+
+  it('lists Sent for all or one configured account and accepts the client page-size boundary', async () => {
+    const calls = [];
+    apiDependencies.listSentMailbox = async options => {
+      calls.push(options);
+      return { accounts: options.accounts, items: [], fetchedAt: '2026-06-29T16:01:00.000Z' };
+    };
+    const headers = { Authorization: 'Bearer test-token' };
+
+    const all = await fetch(`${baseUrl}/v1/sent?limit=200`, { headers });
+    assert.equal(all.status, 200);
+    assert.deepEqual(calls[0], { accounts: ['me@example.com'], limit: 200 });
+    const filtered = await fetch(`${baseUrl}/v1/sent?account=ME%40EXAMPLE.COM&limit=1`, { headers });
+    assert.equal(filtered.status, 200);
+    assert.deepEqual(calls[1], { accounts: ['me@example.com'], limit: 1 });
+
+    assert.equal((await fetch(`${baseUrl}/v1/sent?limit=201`, { headers })).status, 400);
+    assert.equal((await fetch(`${baseUrl}/v1/sent?account=unknown%40example.com`, { headers })).status, 400);
+    assert.equal((await fetch(`${baseUrl}/v1/sent`)).status, 401);
   });
 
   it('self-heals a missing unsubscribe capability while loading full content', async () => {

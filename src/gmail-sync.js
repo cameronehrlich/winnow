@@ -1,8 +1,10 @@
 import { GogAdapter, normalizeGogMessage } from './adapters/gog.js';
 import { scan } from './scan.js';
 import { syncSlackDeliveryForItem } from './reconcile.js';
+import { backfillRecentSentMetadata, indexGmailMessageMetadata } from './gmail-metadata.js';
 import {
   appendEmailEvent,
+  deleteGmailMessageMetadata,
   findEmailItemByGmail,
   getGmailFullSyncAt,
   getGmailHistoryCursor,
@@ -187,6 +189,7 @@ export async function fullSyncGmailInbox(account, {
   }
 
   for (const summary of snapshot.messages) {
+    indexGmailMessageMetadata(account, summary);
     const existing = findEmailItemByGmail({ account, messageId: summary.id, threadId: summary.threadId });
     if (existing) {
       const updated = await applyExistingState(existing, summary, {
@@ -197,6 +200,7 @@ export async function fullSyncGmailInbox(account, {
     }
 
     const full = normalizeFetchedMessage(await adapter.getMessage(account, summary.id), summary.id);
+    indexGmailMessageMetadata(account, full);
     if (readStateFor(full) === 'unread') unreadToClassify.push(full);
     else {
       importInboxMessage(account, full);
@@ -212,6 +216,13 @@ export async function fullSyncGmailInbox(account, {
     });
   }
 
+  const sent = await backfillRecentSentMetadata({
+    account,
+    limit: 50,
+    adapter,
+    strict: true,
+  });
+
   if (historyId) setGmailHistoryCursor(account, historyId);
   setGmailFullSyncAt(account);
   return {
@@ -221,6 +232,7 @@ export async function fullSyncGmailInbox(account, {
     classified: unreadToClassify.length,
     changed: changed.length,
     changes: changed,
+    sentIndexed: sent.searched,
     historyId,
   };
 }
@@ -259,11 +271,24 @@ export async function syncGmailMailbox(account, {
   const historyChanges = collectHistoryChanges(history);
   for (const change of historyChanges) {
     const existing = findEmailItemByGmail({ account, messageId: change.id });
+    if (change.deleted) {
+      deleteGmailMessageMetadata(account, change.id);
+      if (existing) {
+        const updated = await applyExistingState(existing, {
+          labelIds: existing.readState === 'unread' ? ['UNREAD'] : [],
+        }, {
+          source: 'gmail_history', syncSlackFn,
+        });
+        if (updated) changed.push(updated);
+      }
+      continue;
+    }
     let full;
     try {
       full = normalizeFetchedMessage(await adapter.getMessage(account, change.id), change.id);
     } catch (error) {
       if (isMissingMessageError(error)) {
+        deleteGmailMessageMetadata(account, change.id);
         if (existing) {
           const updated = await applyExistingState(existing, {
             labelIds: existing.readState === 'unread' ? ['UNREAD'] : [],
@@ -276,6 +301,8 @@ export async function syncGmailMailbox(account, {
       }
       throw error;
     }
+
+    indexGmailMessageMetadata(account, full);
 
     if (mailboxStateFor(full) === 'inbox') {
       if (existing) {

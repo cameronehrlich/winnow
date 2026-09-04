@@ -70,6 +70,245 @@ struct InboxView: View {
     }
 }
 
+struct SentThreadRoute: Hashable {
+    let account: String
+    let messageID: String
+    let threadID: String
+    let subject: String
+
+    init(message: SentMessage) {
+        account = message.account
+        messageID = message.messageId
+        threadID = message.threadId
+        subject = message.subject
+    }
+}
+
+struct SentMailboxView: View {
+    let openSettings: () -> Void
+    let openStats: () -> Void
+    @State private var navigationPath: [SentThreadRoute] = []
+
+    var body: some View {
+        NavigationStack(path: $navigationPath) {
+            SentMailboxListView(
+                openSettings: openSettings,
+                openStats: openStats
+            ) { message in
+                navigationPath.append(SentThreadRoute(message: message))
+            }
+            .navigationDestination(for: SentThreadRoute.self) { route in
+                ThreadView(
+                    threadID: route.threadID,
+                    account: route.account,
+                    focusMessageID: route.messageID,
+                    fallbackSubject: route.subject
+                )
+            }
+        }
+    }
+}
+
+struct SentMailboxListView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
+    let showsSettingsButton: Bool
+    let openSettings: () -> Void
+    let openStats: () -> Void
+    let openMessage: (SentMessage) -> Void
+
+    @State private var account = ""
+    @State private var messages: [SentMessage] = []
+    @State private var loadedAccount: String?
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var scrollPositionID: String?
+    @State private var loadGeneration = 0
+
+    init(
+        showsSettingsButton: Bool = true,
+        openSettings: @escaping () -> Void,
+        openStats: @escaping () -> Void,
+        openMessage: @escaping (SentMessage) -> Void
+    ) {
+        self.showsSettingsButton = showsSettingsButton
+        self.openSettings = openSettings
+        self.openStats = openStats
+        self.openMessage = openMessage
+    }
+
+    var body: some View {
+        ZStack {
+            AppBackdrop()
+            List(messages) { message in
+                SentMessageCard(
+                    message: message,
+                    account: model.account(email: message.account)
+                ) {
+                    scrollPositionID = scrollPositionID ?? message.id
+                    openMessage(message)
+                }
+                .id(message.id)
+                .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .scrollPosition(id: $scrollPositionID)
+            .refreshable { await load(showsSpinner: false) }
+
+            if isLoading && messages.isEmpty {
+                ProgressView("Loading sent mail…")
+                    .padding(22)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            } else if messages.isEmpty {
+                ContentUnavailableView {
+                    Label(errorMessage == nil ? "Nothing Sent Yet" : "Sent Mail Unavailable", systemImage: errorMessage == nil ? "paperplane" : "exclamationmark.triangle")
+                } description: {
+                    Text(errorMessage ?? "Messages you send from your managed accounts will appear here.")
+                } actions: {
+                    Button("Refresh") { Task { await load() } }
+                }
+            }
+        }
+        .navigationTitle("Sent")
+        .toolbar {
+            if showsSettingsButton {
+                WinnowSettingsToolbarItem(action: openSettings)
+            }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if model.accounts.count > 1 {
+                    AccountFilterMenu(selection: $account, accounts: model.accounts)
+                }
+                WinnowStatusButton(
+                    isOnline: model.isOnline,
+                    isRefreshing: isLoading,
+                    action: openStats
+                )
+            }
+        }
+        .task(id: "\(model.configuration.serverURL)|\(account)") { await load() }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+            Task { await load(showsSpinner: false) }
+        }
+    }
+
+    @MainActor
+    private func load(showsSpinner: Bool = true) async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        if loadedAccount != account {
+            messages = []
+            scrollPositionID = nil
+        }
+        if showsSpinner || messages.isEmpty { isLoading = true }
+        errorMessage = nil
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
+        do {
+            let response = try await APIClient(configuration: model.configuration).sent(account: account, limit: 50)
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            messages = response.items
+            loadedAccount = account
+        } catch {
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            if messages.isEmpty { errorMessage = error.localizedDescription }
+        }
+    }
+}
+
+private struct SentMessageCard: View {
+    let message: SentMessage
+    let account: AccountStatus?
+    let openAction: () -> Void
+
+    var body: some View {
+        Button(action: openAction) {
+            ZStack(alignment: .trailing) {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .top, spacing: 8) {
+                        ZStack(alignment: .bottomTrailing) {
+                            SenderAvatar(
+                                initials: message.recipientInitials,
+                                seed: message.to.isEmpty ? message.recipientSummary : message.to,
+                                size: 32
+                            )
+                            AccountAvatarBadge(account: account, size: 15)
+                                .offset(x: 3, y: 3)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("To: \(message.recipientSummary)")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Text(message.account)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 6)
+                        if let date = message.displayDate {
+                            Text(date.relativeWinnowTime)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                        }
+                    }
+
+                    Text(message.subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No subject" : message.subject)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .frame(height: 36, alignment: .topLeading)
+
+                    Text(message.snippet.isEmpty ? "No message preview available." : message.snippet)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .frame(height: 36, alignment: .topLeading)
+                }
+                .frame(maxWidth: .infinity, minHeight: 118, maxHeight: 118, alignment: .leading)
+                .padding(.trailing, 34)
+
+                VStack(spacing: 6) {
+                    Spacer(minLength: 0)
+                    if let messageCount = message.displayedMessageCount, messageCount > 1 {
+                        Text("\(messageCount)")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(WinnowDesign.accent)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(WinnowDesign.accent.opacity(0.12), in: Capsule())
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color(.tertiaryLabel))
+                    Spacer(minLength: 0)
+                }
+                .accessibilityHidden(true)
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, 15)
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Sent to \(message.recipientSummary), \(message.subject)")
+        .accessibilityValue(message.displayedMessageCount.map { "Thread with \($0) messages" } ?? "Sent message")
+        .accessibilityHint("Opens this email thread")
+    }
+}
+
 struct MailboxListView: View {
     @EnvironmentObject private var model: AppModel
     let mailbox: MailboxTab

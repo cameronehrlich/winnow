@@ -76,7 +76,7 @@ struct EmailDetailView: View {
                         account: item.account,
                         contextTitle: item.displaySubject ?? "No subject",
                         summary: item.summary,
-                        onMailboxChanged: { await model.refresh(silent: true) }
+                        onMailboxChanged: { await refreshEmailAfterAssistant(item) }
                     )
                 }
                 .sheet(isPresented: $showingHandlingExplanation) {
@@ -372,6 +372,12 @@ struct EmailDetailView: View {
         else { return }
         showingAssistant = true
         model.consumeConversationFocus(request)
+    }
+
+    @MainActor
+    private func refreshEmailAfterAssistant(_ originalItem: EmailItem) async {
+        await model.refresh(silent: true)
+        await loadEmail(model.email(id: emailID) ?? originalItem)
     }
 
 }
@@ -932,12 +938,12 @@ private struct InlineEmailReader: View {
     @State private var showingAttachmentChoices = false
 
     private var focusedMessage: FullEmailMessage? {
-        content?.messagesForDisplay.first
-    }
-
-    private var previousMessages: [FullEmailMessage] {
-        guard let content else { return [] }
-        return content.messagesForDisplay.filter { $0.id != focusedMessage?.id }
+        guard let content else { return nil }
+        if let focusedMessageId = content.focusedMessageId,
+           let focused = content.messages.first(where: { $0.id == focusedMessageId }) {
+            return focused
+        }
+        return content.messages.last
     }
 
     private var resolvedAccount: String {
@@ -955,22 +961,23 @@ private struct InlineEmailReader: View {
                 .padding(.horizontal, 16)
             }
 
-            if !previousMessages.isEmpty {
+            if let content, content.messages.count > 1, !content.threadId.isEmpty {
                 NavigationLink {
-                    ConversationHistoryView(
-                        messages: previousMessages,
+                    ThreadView(
+                        threadID: content.threadId,
+                        account: resolvedAccount,
+                        focusMessageID: content.focusedMessageId ?? focusedMessage?.id ?? "",
                         fallbackSubject: fallbackSubject,
-                        account: account,
-                        accountStatus: accountStatus
+                        initialContent: content
                     )
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "bubble.left.and.bubble.right")
                             .foregroundStyle(WinnowDesign.accent)
-                        Text("See previous emails")
+                        Text("View Thread")
                             .font(.subheadline.weight(.semibold))
                         Spacer()
-                        Text("\(previousMessages.count)")
+                        Text("\(content.messages.count) messages")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         Image(systemName: "chevron.right")
@@ -1170,35 +1177,140 @@ private struct InlineFocusedEmailBody: View {
     }
 }
 
-private struct ConversationHistoryView: View {
-    let messages: [FullEmailMessage]
-    let fallbackSubject: String
+struct ThreadView: View {
+    @EnvironmentObject private var model: AppModel
+    let threadID: String
     let account: String
-    let accountStatus: AccountStatus?
+    let focusMessageID: String
+    let fallbackSubject: String
+    let initialContent: EmailContent?
+
+    @State private var content: EmailContent?
+    @State private var isLoading: Bool
+    @State private var errorMessage: String?
+    @State private var hasAutoScrolled = false
+    @AppStorage(WinnowPreferences.preferHTMLEmailKey) private var preferHTMLEmail = false
+
+    init(
+        threadID: String,
+        account: String,
+        focusMessageID: String = "",
+        fallbackSubject: String = "",
+        initialContent: EmailContent? = nil
+    ) {
+        self.threadID = threadID
+        self.account = account
+        self.focusMessageID = focusMessageID
+        self.fallbackSubject = fallbackSubject
+        self.initialContent = initialContent
+        _content = State(initialValue: initialContent)
+        _isLoading = State(initialValue: initialContent == nil)
+    }
 
     var body: some View {
         ZStack {
             AppBackdrop()
-            List(messages) { message in
-                NavigationLink {
-                    ConversationMessageDetailView(
-                        message: message,
-                        fallbackSubject: fallbackSubject,
-                        account: account,
-                        accountStatus: accountStatus
-                    )
-                } label: {
-                    ConversationMessageRow(message: message, account: account)
+            ScrollViewReader { proxy in
+                Group {
+                    if let content {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 14) {
+                                if !displaySubject(content).isEmpty {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(displaySubject(content))
+                                            .font(.title3.bold())
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        Text("\(content.messages.count) \(content.messages.count == 1 ? "message" : "messages")")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .winnowCard(padding: 14)
+                                }
+
+                                ForEach(Array(content.messagesForDisplay.enumerated()), id: \.element.id) { index, message in
+                                    FullEmailMessageCard(
+                                        message: message,
+                                        position: index,
+                                        count: content.messages.count,
+                                        isSelectedMessage: message.id == resolvedFocusMessageID(content),
+                                        initiallyExpanded: index == content.messages.count - 1,
+                                        displayMode: preferHTMLEmail ? .html : .plain,
+                                        fallbackSubject: displaySubject(content),
+                                        account: model.account(email: content.account.isEmpty ? account : content.account)
+                                    )
+                                    .id(message.id)
+                                }
+
+                                if content.truncated {
+                                    Label("This unusually long thread was shortened for display.", systemImage: "scissors")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .winnowCard(padding: 14)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                        }
+                        .refreshable { await load(showsSpinner: false) }
+                        .task(id: content.messages.last?.id) {
+                            guard !hasAutoScrolled, let newestID = content.messages.last?.id else { return }
+                            hasAutoScrolled = true
+                            await Task.yield()
+                            proxy.scrollTo(newestID, anchor: .top)
+                        }
+                    } else if isLoading {
+                        VStack(spacing: 12) {
+                            ProgressView()
+                            Text("Loading thread from Gmail…")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ContentUnavailableView {
+                            Label("Thread unavailable", systemImage: "exclamationmark.bubble")
+                        } description: {
+                            Text(errorMessage ?? "Winnow couldn’t load this thread from Gmail.")
+                        } actions: {
+                            Button("Try Again") { Task { await load() } }
+                                .buttonStyle(.borderedProminent)
+                                .tint(WinnowDesign.accent)
+                        }
+                    }
                 }
-                .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
         }
-        .navigationTitle("Previous Emails")
+        .navigationTitle("Thread")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+        .task(id: "\(account)|\(threadID)|\(focusMessageID)") { await load() }
+    }
+
+    private func displaySubject(_ content: EmailContent) -> String {
+        let value = content.subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? fallbackSubject : value
+    }
+
+    private func resolvedFocusMessageID(_ content: EmailContent) -> String {
+        if !focusMessageID.isEmpty { return focusMessageID }
+        return content.focusedMessageId ?? ""
+    }
+
+    @MainActor
+    private func load(showsSpinner: Bool = true) async {
+        if showsSpinner, content == nil { isLoading = true }
+        errorMessage = nil
+        do {
+            content = try await APIClient(configuration: model.configuration).threadContent(
+                threadID: threadID,
+                account: account,
+                focusMessageID: focusMessageID
+            )
+        } catch {
+            if content == nil { errorMessage = error.localizedDescription }
+        }
+        isLoading = false
     }
 }
 
@@ -1588,7 +1700,7 @@ private struct FullEmailView: View {
                                         position: index,
                                         count: messages.count,
                                         isSelectedMessage: message.id == content.focusedMessageId,
-                                        initiallyExpanded: index == 0,
+                                        initiallyExpanded: index == messages.count - 1,
                                         displayMode: displayMode,
                                         fallbackSubject: content.subject.isEmpty ? fallbackSubject : content.subject,
                                         account: model.account(email: content.account.isEmpty ? account : content.account)
@@ -1687,23 +1799,43 @@ private struct FullEmailMessageCard: View {
     }
 
     var body: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 0) {
             if count == 1 {
-                VStack(alignment: .leading, spacing: 12) {
-                    header
-                    messageDetails
-                }
+                header
+                messageDetails
+                    .padding(.top, 12)
             } else {
-                DisclosureGroup(isExpanded: $isExpanded) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        header
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                            .padding(.top, 4)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+
+                if isExpanded {
                     messageDetails
                         .padding(.top, 12)
-                } label: {
-                    header
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                .tint(WinnowDesign.accent)
             }
         }
         .winnowCard()
+        .overlay {
+            if isSelectedMessage {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(WinnowDesign.accent.opacity(0.7), lineWidth: 1.5)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     private var header: some View {
@@ -1743,6 +1875,12 @@ private struct FullEmailMessageCard: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
+                    if !message.recipientSummary.isEmpty {
+                        Text("To: \(message.recipientSummary)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
 
@@ -1752,13 +1890,29 @@ private struct FullEmailMessageCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if !message.date.isEmpty {
+            if let date = message.displayDate {
+                Text(date.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            } else if !message.date.isEmpty {
                 Text(message.date)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
+
+            if !isExpanded {
+                let preview = message.snippet.isEmpty ? message.body : message.snippet
+                if !preview.isEmpty {
+                    Text(preview.split(whereSeparator: \.isWhitespace).joined(separator: " "))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var senderEmail: String {
@@ -1772,6 +1926,7 @@ private struct FullEmailMessageCard: View {
     }
 
     private var senderName: String {
+        if message.isOutgoing { return "You" }
         let value = message.from.trimmingCharacters(in: .whitespacesAndNewlines)
         if let opening = value.lastIndex(of: "<") {
             let name = value[..<opening]
@@ -1799,6 +1954,22 @@ private struct FullEmailMessageCard: View {
                 if !message.to.isEmpty { metadataLine("To", message.to) }
                 if !message.cc.isEmpty { metadataLine("Cc", message.cc) }
                 if !message.bcc.isEmpty { metadataLine("Bcc", message.bcc) }
+            }
+            if !message.attachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        ForEach(message.attachments) { attachment in
+                            Label(attachment.displayName, systemImage: "paperclip")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .background(Color.primary.opacity(0.06), in: Capsule())
+                                .accessibilityLabel(attachment.accessibilityDescription)
+                        }
+                    }
+                }
             }
             Divider()
             if displayMode == .html, message.hasHTMLBody {

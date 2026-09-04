@@ -76,13 +76,128 @@ describe('on-demand email content', () => {
   it('adds the selected message when a bounded thread response omits it', async () => {
     const adapter = {
       async getThread() { return { messages: [{ id: 'newer', body: 'Newer message' }] }; },
-      async getMessage() { return { id: 'selected', body: 'Selected message' }; },
+      async getMessage() { return { id: 'selected', threadId: 't3', body: 'Selected message' }; },
     };
     const content = await fetchEmailContent({
       id: 'email-3', account: 'me@example.com', threadId: 't3', messageId: 'selected', subject: 'Thread',
     }, { adapter });
 
     assert.equal(content.messages.some(message => message.id === 'selected'), true);
+  });
+
+  it('returns a deduplicated mixed-direction thread oldest first with message-scoped metadata', async () => {
+    const adapter = {
+      async getThread() {
+        return { messages: [
+          {
+            id: 'sent-2', internalDate: '3000', date: 'Mon, 1 Jan 1990 00:00:00 +0000',
+            labelIds: ['SENT'], from: 'Me <me@example.com>', to: 'Manager <manager@example.com>',
+            subject: 'Re: Roof', snippet: 'Latest follow-up', body: 'Latest follow-up',
+            attachments: [{
+              messageId: 'sent-2', attachmentId: 'a-2', filename: 'quote.pdf',
+              mimeType: 'application/pdf', sizeBytes: 42,
+            }],
+          },
+          {
+            id: 'received-1', internalDate: '1000', date: 'Mon, 1 Jan 2090 00:00:00 +0000',
+            labelIds: ['INBOX'], from: 'Manager <manager@example.com>', to: 'Me <me@example.com>',
+            subject: 'Roof', snippet: 'Original note', body: 'Original note',
+          },
+          {
+            id: 'sent-1', internalDate: '2000', labelIds: ['SENT'],
+            from: 'Me <me@example.com>', to: 'Manager <manager@example.com>',
+            subject: 'Re: Roof', snippet: 'First reply', body: 'First reply',
+          },
+          // Duplicate provider records must not produce duplicate cards.
+          { id: 'sent-1', internalDate: '2000', labelIds: ['SENT'], body: 'Duplicate' },
+        ] };
+      },
+    };
+
+    const content = await fetchEmailContent({
+      id: 'email-roof', account: 'me@example.com', threadId: 'thread-roof',
+      messageId: 'received-1', subject: 'Roof',
+    }, { adapter });
+
+    assert.deepEqual(content.messages.map(message => message.id), ['received-1', 'sent-1', 'sent-2']);
+    assert.deepEqual(content.messages.map(message => message.direction), ['received', 'sent', 'sent']);
+    assert.equal(content.messages[0].internalDate, '1000');
+    assert.deepEqual(content.messages[2].labelIds, ['SENT']);
+    assert.equal(content.messages[2].snippet, 'Latest follow-up');
+    assert.deepEqual(content.messages[2].attachments, [{
+      messageId: 'sent-2', attachmentId: 'a-2', filename: 'quote.pdf',
+      mimeType: 'application/pdf', sizeBytes: 42,
+    }]);
+  });
+
+  it('uses Date only when internalDate is invalid and resolves equal timestamps by message ID', async () => {
+    const adapter = {
+      async getThread() {
+        return { messages: [
+          { id: 'same-b', internalDate: '2000', date: 'Mon, 1 Jan 1900 00:00:00 +0000', body: 'B' },
+          { id: 'undated-z', internalDate: 'invalid', date: 'also invalid', body: 'Z' },
+          { id: 'date-fallback', internalDate: '', date: 'Thu, 01 Jan 1970 00:00:01 GMT', body: 'Fallback' },
+          { id: 'same-a', internalDate: '2000', date: 'Mon, 1 Jan 2200 00:00:00 +0000', body: 'A' },
+          { id: 'undated-a', body: 'Unknown' },
+        ] };
+      },
+    };
+    const content = await fetchEmailContent({
+      id: 'email-order', account: 'me@example.com', threadId: 'thread-order', subject: 'Ordering',
+    }, { adapter });
+
+    assert.deepEqual(content.messages.map(message => message.id), [
+      'date-fallback', 'same-a', 'same-b', 'undated-a', 'undated-z',
+    ]);
+  });
+
+  it('does not expose a draft in the sent and received timeline', async () => {
+    const adapter = {
+      async getThread() {
+        return { messages: [
+          { id: 'received-1', internalDate: '1000', labelIds: ['INBOX'], body: 'Delivered' },
+          { id: 'draft-1', internalDate: '2000', labelIds: ['SENT', 'DRAFT'], body: 'Not sent yet' },
+        ] };
+      },
+    };
+    const content = await fetchEmailContent({
+      id: 'draft', account: 'me@example.com', threadId: 'thread-draft', subject: 'Draft',
+    }, { adapter });
+    assert.deepEqual(content.messages.map(message => message.id), ['received-1']);
+  });
+
+  it('rejects a missing focus message that belongs to a different Gmail thread', async () => {
+    const adapter = {
+      async getThread() { return { messages: [{ id: 'thread-message', threadId: 'expected', body: 'Expected' }] }; },
+      async getMessage() { return { id: 'foreign', threadId: 'other', body: 'Private other thread' }; },
+    };
+
+    await assert.rejects(fetchEmailContent({
+      id: 'email', account: 'me@example.com', threadId: 'expected', messageId: 'foreign', subject: 'Expected',
+    }, { adapter }), /does not belong to the requested thread/);
+  });
+
+  it('retains the focused message and newest context when a thread exceeds its display limit', async () => {
+    const messages = Array.from({ length: 101 }, (_, index) => ({
+      id: `message-${String(index).padStart(3, '0')}`,
+      threadId: 'long-thread',
+      internalDate: String((index + 1) * 1000),
+      body: `Message ${index}`,
+    }));
+    const adapter = {
+      async getThread() { return { messages }; },
+      async getMessage() { return messages[0]; },
+    };
+
+    const content = await fetchEmailContent({
+      id: 'email', account: 'me@example.com', threadId: 'long-thread',
+      messageId: 'message-000', subject: 'Long thread',
+    }, { adapter });
+
+    assert.equal(content.messages.length, 100);
+    assert.equal(content.messages[0].id, 'message-000');
+    assert.equal(content.messages.at(-1).id, 'message-100');
+    assert.equal(content.truncated, true);
   });
 
   it('discovers unsubscribe only from the focused message in a conversation', async () => {

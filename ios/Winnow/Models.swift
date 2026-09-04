@@ -9,9 +9,119 @@ struct EmailListResponse: Decodable {
     var nextCursor: String?
 }
 
+struct SentListResponse: Decodable {
+    let items: [SentMessage]
+    let nextCursor: String?
+}
+
+struct SentMessage: Decodable, Equatable, Hashable, Identifiable {
+    let id: String
+    let account: String
+    let messageId: String
+    let threadId: String
+    let from: String
+    let to: String
+    let cc: String
+    let bcc: String
+    let subject: String
+    let snippet: String
+    let date: String
+    let internalDate: String
+    let sentMessageCount: Int?
+    let threadMessageCount: Int?
+    let indexedSentMessageCount: Int?
+    let indexedThreadMessageCount: Int?
+    let messageCountsComplete: Bool
+
+    var displayDate: Date? { EmailTimestamp.parse(internalDate) ?? EmailTimestamp.parse(date) }
+    var displayedMessageCount: Int? {
+        guard messageCountsComplete else { return nil }
+        return max(1, threadMessageCount ?? indexedThreadMessageCount ?? sentMessageCount ?? indexedSentMessageCount ?? 1)
+    }
+
+    var recipientSummary: String {
+        let recipients = EmailParticipant.parseHeader([to, cc, bcc].joined(separator: ", "))
+        guard let first = recipients.first else { return "Unknown recipient" }
+        if recipients.count == 1 { return first.displayName }
+        return "\(first.displayName) +\(recipients.count - 1)"
+    }
+
+    var recipientInitials: String {
+        let parts = recipientSummary.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let initials = parts.prefix(2).compactMap(\.first).map(String.init).joined()
+        return initials.isEmpty ? "?" : initials.uppercased()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, account, messageId, threadId, from, to, cc, bcc, subject, snippet
+        case date, internalDate, sentMessageCount, threadMessageCount
+        case indexedSentMessageCount, indexedThreadMessageCount, messageCountsComplete
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        account = try values.decodeIfPresent(String.self, forKey: .account) ?? ""
+        messageId = try values.decodeIfPresent(String.self, forKey: .messageId) ?? ""
+        threadId = try values.decodeIfPresent(String.self, forKey: .threadId) ?? ""
+        from = Self.decodeAddressHeader(from: values, key: .from)
+        to = Self.decodeAddressHeader(from: values, key: .to)
+        cc = Self.decodeAddressHeader(from: values, key: .cc)
+        bcc = Self.decodeAddressHeader(from: values, key: .bcc)
+        subject = try values.decodeIfPresent(String.self, forKey: .subject) ?? ""
+        snippet = try values.decodeIfPresent(String.self, forKey: .snippet) ?? ""
+        date = Self.decodeFlexibleString(from: values, key: .date)
+        internalDate = Self.decodeFlexibleString(from: values, key: .internalDate)
+        sentMessageCount = try values.decodeIfPresent(Int.self, forKey: .sentMessageCount)
+        threadMessageCount = try values.decodeIfPresent(Int.self, forKey: .threadMessageCount)
+        indexedSentMessageCount = try values.decodeIfPresent(Int.self, forKey: .indexedSentMessageCount)
+        indexedThreadMessageCount = try values.decodeIfPresent(Int.self, forKey: .indexedThreadMessageCount)
+        messageCountsComplete = try values.decodeIfPresent(Bool.self, forKey: .messageCountsComplete) ?? false
+        id = try values.decodeIfPresent(String.self, forKey: .id)
+            ?? [account, threadId, messageId].joined(separator: "|")
+    }
+
+    private static func decodeAddressHeader(
+        from values: KeyedDecodingContainer<CodingKeys>,
+        key: CodingKeys
+    ) -> String {
+        if let value = try? values.decode(String.self, forKey: key) { return value }
+        if let value = try? values.decode([String].self, forKey: key) { return value.joined(separator: ", ") }
+        return ""
+    }
+
+    private static func decodeFlexibleString(
+        from values: KeyedDecodingContainer<CodingKeys>,
+        key: CodingKeys
+    ) -> String {
+        if let value = try? values.decode(String.self, forKey: key) { return value }
+        if let value = try? values.decode(Int64.self, forKey: key) { return String(value) }
+        if let value = try? values.decode(Double.self, forKey: key) { return String(value) }
+        return ""
+    }
+}
+
 struct EmailContentEnvelope: Decodable {
     let content: EmailContent
     let item: EmailItem?
+}
+
+struct ThreadContentResponse: Decodable {
+    let content: EmailContent
+
+    private enum CodingKeys: String, CodingKey { case content, thread }
+
+    init(from decoder: Decoder) throws {
+        if let direct = try? EmailContent(from: decoder), !direct.threadId.isEmpty || !direct.messages.isEmpty {
+            content = direct
+            return
+        }
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        if let wrapped = try values.decodeIfPresent(EmailContent.self, forKey: .content) {
+            content = wrapped
+        } else {
+            content = try values.decode(EmailContent.self, forKey: .thread)
+        }
+    }
 }
 
 struct EmailAttachmentListEnvelope: Decodable {
@@ -29,13 +139,9 @@ struct EmailContent: Decodable, Equatable {
     let truncated: Bool
     let fetchedAt: String
 
-    var messagesForDisplay: [FullEmailMessage] {
-        let newestFirst = Array(messages.reversed())
-        guard let focusedMessageId, !focusedMessageId.isEmpty,
-              let focused = newestFirst.first(where: { $0.id == focusedMessageId })
-        else { return newestFirst }
-        return [focused] + newestFirst.filter { $0.id != focused.id }
-    }
+    /// Gmail thread messages are returned oldest to newest and should remain in
+    /// that order. Selection is presentation metadata, not a sorting rule.
+    var messagesForDisplay: [FullEmailMessage] { messages }
 
     private enum CodingKeys: String, CodingKey {
         case emailItemId, account, threadId, focusedMessageId, subject, messages
@@ -64,13 +170,31 @@ struct FullEmailMessage: Decodable, Equatable, Identifiable {
     let bcc: String
     let subject: String
     let date: String
+    let snippet: String
+    let internalDate: String
+    let labelIds: [String]
+    let direction: EmailMessageDirection?
     let body: String
     let htmlBody: String
+    let attachments: [EmailAttachment]
 
     var hasHTMLBody: Bool { !htmlBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var isOutgoing: Bool {
+        if let direction { return direction == .sent }
+        let labels = Set(labelIds.map { $0.uppercased() })
+        return labels.contains("SENT") && !labels.contains("DRAFT")
+    }
+    var displayDate: Date? { EmailTimestamp.parse(internalDate) ?? EmailTimestamp.parse(date) }
+    var recipientSummary: String {
+        let recipients = EmailParticipant.parseHeader([to, cc, bcc].joined(separator: ", "))
+        guard let first = recipients.first else { return "" }
+        if recipients.count == 1 { return first.displayName }
+        return "\(first.displayName) +\(recipients.count - 1)"
+    }
 
     private enum CodingKeys: String, CodingKey {
-        case id, from, to, cc, bcc, subject, date, body, htmlBody
+        case id, from, to, cc, bcc, subject, date, snippet, internalDate
+        case labelIds, direction, body, htmlBody, attachments
     }
 
     init(from decoder: Decoder) throws {
@@ -82,8 +206,23 @@ struct FullEmailMessage: Decodable, Equatable, Identifiable {
         bcc = try values.decodeIfPresent(String.self, forKey: .bcc) ?? ""
         subject = try values.decodeIfPresent(String.self, forKey: .subject) ?? ""
         date = try values.decodeIfPresent(String.self, forKey: .date) ?? ""
+        snippet = try values.decodeIfPresent(String.self, forKey: .snippet) ?? ""
+        internalDate = Self.decodeFlexibleString(from: values, key: .internalDate)
+        labelIds = try values.decodeIfPresent([String].self, forKey: .labelIds) ?? []
+        direction = try values.decodeIfPresent(EmailMessageDirection.self, forKey: .direction)
         body = try values.decodeIfPresent(String.self, forKey: .body) ?? ""
         htmlBody = try values.decodeIfPresent(String.self, forKey: .htmlBody) ?? ""
+        attachments = (try? values.decodeIfPresent([EmailAttachment].self, forKey: .attachments)) ?? []
+    }
+
+    private static func decodeFlexibleString(
+        from values: KeyedDecodingContainer<CodingKeys>,
+        key: CodingKeys
+    ) -> String {
+        if let value = try? values.decode(String.self, forKey: key) { return value }
+        if let value = try? values.decode(Int64.self, forKey: key) { return String(value) }
+        if let value = try? values.decode(Double.self, forKey: key) { return String(value) }
+        return ""
     }
 
     var participants: [EmailParticipant] {
@@ -108,6 +247,46 @@ struct FullEmailMessage: Decodable, Equatable, Identifiable {
         case 2: return "\(names[0]) and \(names[1])"
         default: return "\(names[0]), \(names[1]) +\(names.count - 2)"
         }
+    }
+}
+
+enum EmailMessageDirection: String, Decodable, Equatable {
+    case sent
+    case received
+}
+
+enum EmailTimestamp {
+    static func parse(_ value: String) -> Date? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let milliseconds = Double(trimmed), milliseconds.isFinite {
+            let seconds = milliseconds > 10_000_000_000 ? milliseconds / 1_000 : milliseconds
+            return Date(timeIntervalSince1970: seconds)
+        }
+        if let date = preciseISO8601.date(from: trimmed) ?? basicISO8601.date(from: trimmed) {
+            return date
+        }
+        return rfc2822Formatters.lazy.compactMap { $0.date(from: trimmed) }.first
+    }
+
+    private static let preciseISO8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let basicISO8601 = ISO8601DateFormatter()
+
+    private static let rfc2822Formatters: [DateFormatter] = [
+        "EEE, d MMM yyyy HH:mm:ss Z",
+        "EEE, d MMM yyyy HH:mm:ss zzz",
+        "d MMM yyyy HH:mm:ss Z",
+    ].map { format in
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = format
+        return formatter
     }
 }
 

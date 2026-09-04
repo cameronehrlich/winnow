@@ -326,8 +326,11 @@ export class GogAdapter extends GmailAdapter {
     const rawMessages = Array.isArray(thread) ? thread : (thread.messages || thread.Messages || []);
     let bodyBudget = MAX_THREAD_BODY_LENGTH;
     let htmlBodyBudget = MAX_THREAD_HTML_BODY_LENGTH;
+    // Gmail returns thread messages chronologically. Keep the newest bounded
+    // window; callers can fetch an older focused message explicitly when it
+    // falls outside that window.
     const messages = (Array.isArray(rawMessages) ? rawMessages : [])
-      .slice(0, MAX_THREAD_MESSAGES)
+      .slice(-MAX_THREAD_MESSAGES)
       .map(message => {
         const normalized = normalizeGogMessage(message, {
           includeHtml,
