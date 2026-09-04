@@ -1,0 +1,122 @@
+name: Distribute Xcode Cloud Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: winnow-testflight-distribution
+  cancel-in-progress: false
+
+jobs:
+  distribute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ASC_BYPASS_KEYCHAIN: "1"
+      ASC_NO_UPDATE: "1"
+      ASC_APP_ID: "6801307746"
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_PRIVATE_KEY_B64: ${{ secrets.ASC_PRIVATE_KEY_B64 }}
+      XCODE_CLOUD_WORKFLOW_ID: "DA674450-EF13-4A9B-8701-F1805CFD8B21"
+      TESTFLIGHT_GROUP_ID: "3b7c4672-a411-4c86-8169-973c21d03069"
+
+    steps:
+      - name: Install App Store Connect CLI
+        uses: rudrankriyam/setup-asc@5358c70a27a3f0d1517604b0f1fdc43e70c1cc4d
+        with:
+          version: "4.11.0"
+
+      - name: Wait for matching Xcode Cloud run
+        id: cloud
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          run_id=""
+          for attempt in $(seq 1 60); do
+            runs_json=$(asc xcode-cloud build-runs \
+              --workflow-id "$XCODE_CLOUD_WORKFLOW_ID" \
+              --sort=-number \
+              --limit 25 \
+              --output json)
+            run_id=$(jq -r --arg sha "$GITHUB_SHA" '
+              [.data[] | select(.attributes.sourceCommit.commitSha == $sha)][0].id // empty
+            ' <<<"$runs_json")
+
+            if [[ -n "$run_id" ]]; then
+              break
+            fi
+
+            echo "Waiting for Xcode Cloud to create a run for $GITHUB_SHA (attempt $attempt/60)"
+            sleep 30
+          done
+
+          if [[ -z "$run_id" ]]; then
+            echo "::error::No Xcode Cloud run appeared for commit $GITHUB_SHA"
+            exit 1
+          fi
+
+          status_json=$(asc xcode-cloud status \
+            --run-id "$run_id" \
+            --wait \
+            --poll-interval 30s \
+            --timeout 35m \
+            --output json)
+          completion=$(jq -r '.completionStatus // empty' <<<"$status_json")
+          if [[ "$completion" != "SUCCEEDED" ]]; then
+            echo "::error::Xcode Cloud run $run_id completed with status ${completion:-unknown}"
+            exit 1
+          fi
+
+          builds_json=$(asc xcode-cloud build-runs builds \
+            --run-id "$run_id" \
+            --output json)
+          build_id=$(jq -r '.data[0].id // empty' <<<"$builds_json")
+          build_number=$(jq -r '.data[0].attributes.version // empty' <<<"$builds_json")
+          if [[ -z "$build_id" ]]; then
+            echo "::error::Xcode Cloud run $run_id has no uploaded build"
+            exit 1
+          fi
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+
+      - name: Add build to internal TestFlight group
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          groups_json=$(asc builds groups list \
+            --build-id "${{ steps.cloud.outputs.build_id }}" \
+            --output json)
+          if jq -e --arg group "$TESTFLIGHT_GROUP_ID" '
+            any(.groups[]?; .id == $group and (.membership == "explicit" or .membership == "explicit-and-all-builds"))
+          ' <<<"$groups_json" >/dev/null; then
+            echo "Build ${{ steps.cloud.outputs.build_number }} is already explicitly assigned to the internal group."
+            exit 0
+          fi
+
+          asc publish testflight \
+            --app "$ASC_APP_ID" \
+            --build "${{ steps.cloud.outputs.build_id }}" \
+            --group "$TESTFLIGHT_GROUP_ID" \
+            --wait \
+            --notify \
+            --output json
+
+          state=$(asc builds build-beta-detail view \
+            --build-id "${{ steps.cloud.outputs.build_id }}" \
+            --output json \
+            | jq -r '.data.attributes.internalBuildState')
+          if [[ "$state" != "IN_BETA_TESTING" ]]; then
+            echo "::error::Build ${{ steps.cloud.outputs.build_number }} is not in beta testing (state: $state)"
+            exit 1
+          fi
