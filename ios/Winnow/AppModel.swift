@@ -436,6 +436,18 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func applyUnsubscribeCapability(from item: EmailItem) {
+        guard !item.unsubscribeLink.isEmpty,
+              let index = emails.firstIndex(where: { $0.id == item.id }),
+              emails[index].unsubscribeLink.isEmpty
+        else { return }
+        emails[index].unsubscribeLink = item.unsubscribeLink
+        if emails[index].unsubscribeState == "unavailable" {
+            emails[index].unsubscribeState = item.unsubscribeState
+        }
+        publishEmailState()
+    }
+
     func account(email: String) -> AccountStatus? {
         accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame })
     }

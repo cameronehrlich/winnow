@@ -44,8 +44,12 @@ async function runReconcileCycle(accounts) {
           + `${syncResult.imported} imported, ${syncResult.classified} classified, ${syncResult.changed} updated`,
         );
       }
-      badgeMayHaveChanged ||= syncResult.changed > 0;
-      clearNotifications.push(...(syncResult.changes || []).filter(item => item.mailboxState === 'archived'));
+      badgeMayHaveChanged ||= syncResult.imported > 0
+        || syncResult.classified > 0
+        || syncResult.changed > 0;
+      clearNotifications.push(...(syncResult.changes || []).filter(item => (
+        item.mailboxState === 'archived' || item.readState === 'read'
+      )));
     } catch (err) {
       console.error(`[winnow/daemon] Gmail sync error (${account}): ${err.message}`);
     }
@@ -61,7 +65,9 @@ async function runReconcileCycle(accounts) {
         console.log(`[winnow/daemon] Reconciled ${result.changed}/${result.checked} mailbox state changes for ${account}`);
         badgeMayHaveChanged = true;
       }
-      clearNotifications.push(...result.changes.filter(item => item.mailboxState === 'archived'));
+      clearNotifications.push(...result.changes.filter(item => (
+        item.mailboxState === 'archived' || item.readState === 'read'
+      )));
     } catch (err) {
       console.error(`[winnow/daemon] Reconcile error (${account}): ${err.message}`);
     }

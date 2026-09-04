@@ -4,20 +4,38 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selectedTab: RootTab = .inbox
+    @State private var selectedRegularEmailID: String?
     @State private var settingsPresented = false
     @State private var statsPresented = false
     @State private var askPresented = false
     @State private var askStatsPresented = false
 
-    private enum RootTab: Hashable {
+    private enum RootTab: Hashable, CaseIterable {
         case inbox, archived, ask
+
+        var title: String {
+            switch self {
+            case .inbox: "Inbox"
+            case .archived: "Archived"
+            case .ask: "Ask Winnow"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .inbox: "tray.full"
+            case .archived: "archivebox"
+            case .ask: "bubble.left.and.bubble.right.fill"
+            }
+        }
     }
 
     var body: some View {
         Group {
             if model.isConfigured {
-                configuredTabs.transition(.opacity)
+                configuredContent.transition(.opacity)
             } else {
                 OnboardingView()
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
@@ -41,8 +59,13 @@ struct RootView: View {
                 model.stopAutoRefresh()
             }
         }
-        .onChange(of: selectedTab) { _, newTab in
+        .onChange(of: selectedTab) { oldTab, newTab in
             model.setVisibleMailbox(mailbox(for: newTab))
+            if usesRegularLayout,
+               oldTab != newTab,
+               selectedRegularEmailID.flatMap(model.email(id:)).map({ mailbox(for: newTab)?.includes($0) }) != true {
+                selectedRegularEmailID = nil
+            }
         }
         .onChange(of: model.isConfigured) { _, isConfigured in
             if isConfigured, scenePhase == .active {
@@ -56,6 +79,12 @@ struct RootView: View {
             guard let request else { return }
             presentAsk()
             model.consumeAskNavigation(request)
+        }
+        .onChange(of: model.navigationRequest) { _, request in
+            guard usesRegularLayout, let request else { return }
+            selectedTab = request.mailboxState == MailboxTab.archived.apiState ? .archived : .inbox
+            selectedRegularEmailID = request.emailID
+            model.consumeNavigation(request)
         }
         .onOpenURL(perform: handleDeepLink)
         .onReceive(NotificationCenter.default.publisher(for: .winnowPushOpened)) { notification in
@@ -125,6 +154,15 @@ struct RootView: View {
     }
 
     @ViewBuilder
+    private var configuredContent: some View {
+        if usesRegularLayout {
+            regularNavigation
+        } else {
+            configuredTabs
+        }
+    }
+
+    @ViewBuilder
     private var configuredTabs: some View {
         if #available(iOS 26.0, *) {
             modernTabs
@@ -132,6 +170,102 @@ struct RootView: View {
             modernTabs
         } else {
             legacyTabs
+        }
+    }
+
+    @ViewBuilder
+    private var regularNavigation: some View {
+        if selectedTab == .ask {
+            NavigationSplitView {
+                regularSidebar
+            } detail: {
+                AssistantMailboxView(openStats: openStats)
+            }
+            .navigationSplitViewStyle(.balanced)
+        } else {
+            NavigationSplitView {
+                regularSidebar
+            } content: {
+                NavigationStack {
+                    MailboxListView(
+                        mailbox: selectedTab == .archived ? .archived : .inbox,
+                        showsSettingsButton: false,
+                        openSettings: openSettings,
+                        openStats: openStats
+                    ) { item in
+                        selectedRegularEmailID = item.id
+                    }
+                    .id(selectedTab)
+                }
+                .navigationSplitViewColumnWidth(min: 330, ideal: 390, max: 480)
+            } detail: {
+                NavigationStack {
+                    if let selectedRegularEmailID {
+                        EmailDetailView(emailID: selectedRegularEmailID)
+                            .id(selectedRegularEmailID)
+                    } else {
+                        ContentUnavailableView {
+                            Label("Select an Email", systemImage: "envelope.open")
+                        } description: {
+                            Text("Choose a message to read it without losing your place.")
+                        }
+                    }
+                }
+            }
+            .navigationSplitViewStyle(.balanced)
+        }
+    }
+
+    private var regularSidebar: some View {
+        List(selection: sidebarSelection) {
+            Section {
+                ForEach(RootTab.allCases, id: \.self) { tab in
+                    HStack(spacing: 10) {
+                        Label(tab.title, systemImage: tab.systemImage)
+                        Spacer(minLength: 8)
+                        if let badge = sidebarBadge(for: tab), badge > 0 {
+                            Text(badge, format: .number)
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(WinnowDesign.accent, in: Capsule())
+                        }
+                    }
+                    .tag(tab)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .navigationTitle("Winnow")
+        .toolbar {
+            WinnowSettingsToolbarItem(action: openSettings)
+        }
+    }
+
+    private var sidebarSelection: Binding<RootTab?> {
+        Binding(
+            get: { selectedTab },
+            set: { newTab in
+                guard let newTab else { return }
+                selectedTab = newTab
+            }
+        )
+    }
+
+    private var usesRegularLayout: Bool {
+#if targetEnvironment(macCatalyst)
+        true
+#else
+        horizontalSizeClass == .regular
+#endif
+    }
+
+    private func sidebarBadge(for tab: RootTab) -> Int? {
+        switch tab {
+        case .inbox: model.inboxBadgeCount
+        case .archived: model.unseenArchivedItemCount
+        case .ask: nil
         }
     }
 
@@ -214,7 +348,11 @@ struct RootView: View {
     private func presentAsk() {
         settingsPresented = false
         statsPresented = false
-        askPresented = true
+        if usesRegularLayout {
+            selectedTab = .ask
+        } else {
+            askPresented = true
+        }
     }
 
     private func mailbox(for tab: RootTab) -> MailboxTab? {
@@ -334,7 +472,7 @@ private struct OnboardingView: View {
                         }
                         .disabled(model.isLoading || serverURL.isEmpty || token.isEmpty)
 
-                        Label("The token stays in your iPhone Keychain.", systemImage: "lock.fill")
+                        Label("The token stays in this device’s Keychain.", systemImage: "lock.fill")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }

@@ -11,6 +11,7 @@ struct EmailListResponse: Decodable {
 
 struct EmailContentEnvelope: Decodable {
     let content: EmailContent
+    let item: EmailItem?
 }
 
 struct EmailAttachmentListEnvelope: Decodable {
@@ -270,7 +271,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
     var triageState: String
     var mailboxState: String
     let archive: Bool
-    let unsubscribeLink: String
+    var unsubscribeLink: String
     var unsubscribeState: String
     let createdAt: String
     let processedAt: String

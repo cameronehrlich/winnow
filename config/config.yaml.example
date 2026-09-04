@@ -19,6 +19,8 @@ adapter: gog
 
 # Slack notifications
 slack:
+  # Master switch for Slack feed delivery and Socket Mode action listeners.
+  enabled: true
   # Set SLACK_BOT_TOKEN and SLACK_APP_TOKEN in .env (preferred) or put tokens here.
   # Account-level slack.bot_token_env/app_token_env overrides these for separate workspaces.
   bot_token: ""

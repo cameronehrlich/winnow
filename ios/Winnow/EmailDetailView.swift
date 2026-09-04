@@ -135,9 +135,12 @@ struct EmailDetailView: View {
         isLoadingEmail = true
         emailLoadError = nil
         do {
-            let content = try await APIClient(configuration: model.configuration).emailContent(emailID: item.id)
-            emailContent = content
-            fetchedAttachments = content.attachments
+            let response = try await APIClient(configuration: model.configuration).emailContentEnvelope(emailID: item.id)
+            emailContent = response.content
+            fetchedAttachments = response.content.attachments
+            if let updatedItem = response.item {
+                model.applyUnsubscribeCapability(from: updatedItem)
+            }
         } catch {
             emailContent = nil
             emailLoadError = error.localizedDescription

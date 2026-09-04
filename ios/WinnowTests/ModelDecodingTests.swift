@@ -287,6 +287,14 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertFalse(content.truncated)
     }
 
+    func testEmailContentEnvelopeDecodesARefreshedUnsubscribeCapability() throws {
+        let json = #"{"content":{"emailItemId":"abc","messages":[]},"item":{"id":"abc","unsubscribeLink":"https://example.com/leave","unsubscribeState":"available"}}"#.data(using: .utf8)!
+        let envelope = try JSONDecoder().decode(EmailContentEnvelope.self, from: json)
+
+        XCTAssertEqual(envelope.item?.id, "abc")
+        XCTAssertTrue(envelope.item?.canUnsubscribe == true)
+    }
+
     func testFullEmailContentDefaultsMissingHTMLBodyToEmpty() throws {
         let json = #"{"emailItemId":"abc","messages":[{"id":"m1","body":"Plain only"}]}"#.data(using: .utf8)!
         let content = try JSONDecoder().decode(EmailContent.self, from: json)

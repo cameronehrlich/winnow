@@ -3,6 +3,26 @@ import assert from 'node:assert/strict';
 import { executeEmailUnsubscribe } from '../src/unsubscribe.js';
 
 describe('email unsubscribe execution', () => {
+  it('discovers and executes a body link when no method was stored during scanning', async () => {
+    const attempts = [];
+    const result = await executeEmailUnsubscribe({
+      account: 'person@example.com',
+      messageId: 'message-1',
+      unsubscribeLink: '',
+    }, {
+      async getMessage() {
+        return { body: '<a href="https://sender.example/footer-leave">Unsubscribe</a>' };
+      },
+      async follow(url) {
+        attempts.push(url);
+        return { status: 'succeeded', method: 'link', note: 'Submitted', urlHost: 'sender.example' };
+      },
+    });
+
+    assert.equal(result.status, 'succeeded');
+    assert.deepEqual(attempts, ['https://sender.example/footer-leave']);
+  });
+
   it('falls back to a semantically labelled body link when the stored header link fails', async () => {
     const attempts = [];
     const result = await executeEmailUnsubscribe({

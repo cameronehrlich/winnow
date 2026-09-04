@@ -87,6 +87,31 @@ afterEach(() => {
 });
 
 describe('Slack routing config', () => {
+  it('disables every feed and action route with the global kill switch', () => {
+    writeFileSync(process.env.WINNOW_CONFIG_PATH, `
+accounts:
+  - email: me@example.com
+    channel: CDEFAULT
+  - email: work@example.com
+    slack:
+      channel_id: CWORK
+      bot_token_env: WORK_SLACK_BOT_TOKEN
+      app_token_env: WORK_SLACK_APP_TOKEN
+slack:
+  enabled: false
+  channel_id: CFALLBACK
+`, 'utf8');
+    reloadConfig();
+
+    assert.deepEqual(getSlackRoutingForAccount('work@example.com'), {
+      account: 'work@example.com',
+      channelId: null,
+      botToken: null,
+      appToken: null,
+    });
+    assert.deepEqual(getSlackActionRoutings(), []);
+  });
+
   it('uses account-specific Slack credentials when configured', () => {
     assert.deepEqual(getSlackRoutingForAccount('work@example.com'), {
       account: 'work@example.com',

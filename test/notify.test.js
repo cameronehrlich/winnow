@@ -180,6 +180,34 @@ describe('formatEmailFeedMessage', () => {
     assert.ok(!unsubscribe.value.includes(longUnsubscribeLink));
   });
 
+  it('does not contact Slack when the global integration switch is disabled', async () => {
+    writeFileSync(process.env.WINNOW_CONFIG_PATH, `
+slack:
+  enabled: false
+  channel_id: C123
+feed: true
+`);
+    process.env.SLACK_BOT_TOKEN = 'xoxb-test';
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      throw new Error('Slack should not be called');
+    };
+
+    const posted = await postEmailFeed({
+      ...base,
+      messageId: 'm-disabled',
+      archive: false,
+    });
+
+    assert.equal(posted, false);
+    assert.equal(fetchCalls, 0);
+    assert.equal(listDeliveryRecords(
+      makeEmailItemId(base.account, 'm-disabled', base.threadId),
+      'slack',
+    ).length, 0);
+  });
+
   it('does not post a second Slack card when a sent delivery record already exists', async () => {
     const item = upsertEmailItemFromResult({
       ...base,

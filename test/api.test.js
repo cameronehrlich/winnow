@@ -240,6 +240,81 @@ describe('local API', () => {
     assert.equal(missing.status, 404);
   });
 
+  it('self-heals a missing unsubscribe capability while loading full content', async () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com',
+      messageId: 'm-footer-only',
+      threadId: 't-footer-only',
+      from: 'Newsletter <newsletter@example.com>',
+      subject: 'Footer-only unsubscribe',
+      summary: 'Newsletter',
+      archive: true,
+      unsubscribeLink: '',
+      confidence: 99,
+    }, {
+      account: 'me@example.com',
+      messageId: 'm-footer-only',
+      threadId: 't-footer-only',
+    });
+    apiDependencies.fetchEmailContent = async () => ({
+      emailItemId: item.id,
+      account: item.account,
+      threadId: item.threadId,
+      focusedMessageId: item.messageId,
+      messages: [{ id: item.messageId, body: 'Newsletter body' }],
+      attachments: [],
+      unsubscribeLink: 'https://newsletter.example.com/leave',
+      truncated: false,
+      fetchedAt: '2026-08-23T12:00:00.000Z',
+    });
+
+    const response = await fetch(
+      `${baseUrl}/v1/emails/${encodeURIComponent(item.id)}/content`,
+      { headers: { Authorization: 'Bearer test-token' } },
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.item.unsubscribeLink, 'https://newsletter.example.com/leave');
+    assert.equal(body.item.unsubscribeState, 'available');
+    assert.equal(getEmailItem(item.id).unsubscribeLink, 'https://newsletter.example.com/leave');
+  });
+
+  it('attempts live unsubscribe discovery when the stored capability is missing', async () => {
+    const item = upsertEmailItemFromResult({
+      account: 'me@example.com',
+      messageId: 'm-live-unsubscribe',
+      threadId: 't-live-unsubscribe',
+      from: 'Promotions <promotions@example.com>',
+      subject: 'Promotion',
+      summary: 'Promotion',
+      archive: true,
+      unsubscribeLink: '',
+      confidence: 99,
+    }, {
+      account: 'me@example.com',
+      messageId: 'm-live-unsubscribe',
+      threadId: 't-live-unsubscribe',
+    });
+    let executedItem;
+    apiDependencies.executeEmailUnsubscribe = async candidate => {
+      executedItem = candidate;
+      return { status: 'succeeded', method: 'link', note: 'Submitted', urlHost: 'promotions.example.com' };
+    };
+
+    const response = await fetch(
+      `${baseUrl}/v1/emails/${encodeURIComponent(item.id)}/unsubscribe`,
+      { method: 'POST', headers: { Authorization: 'Bearer test-token' } },
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(executedItem.id, item.id);
+    assert.equal(executedItem.unsubscribeLink, '');
+    assert.equal(body.outcome, 'succeeded');
+    assert.equal(body.item.unsubscribeState, 'succeeded');
+  });
+
   it('refreshes attachment metadata and serves a scoped supported attachment', async () => {
     const headers = { Authorization: 'Bearer test-token' };
     const list = await fetch(`${baseUrl}/v1/emails`, { headers }).then(response => response.json());

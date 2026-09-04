@@ -359,6 +359,8 @@ export function formatEmailFeedMessage(result) {
  */
 export async function postEmailFeed(result) {
   if (isAlertsMuted()) return false;
+  const config = reloadConfig(); // re-read so the kill switch works without restart
+  if (config.slack?.enabled === false || config.feed === false) return false;
 
   const emailItemId = result.emailItemId || makeEmailItemId(result.account, result.messageId, result.threadId);
   const existingDelivery = listDeliveryRecords(emailItemId, 'slack')
@@ -368,8 +370,6 @@ export async function postEmailFeed(result) {
     return true;
   }
 
-  const config = reloadConfig(); // re-read so toggle works without restart
-  if (config.feed === false) return false;
   const feedMode = config.slack?.feed_mode || 'all';
   if (feedMode === 'off') return false;
   if (feedMode === 'kept' && result.archive) return false;

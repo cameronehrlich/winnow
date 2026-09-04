@@ -67,7 +67,7 @@ describe('GogAdapter assistant primitives', () => {
   it('supports complete inbox snapshots and incremental Gmail history', async () => {
     const { adapter, calls } = fakeAdapter([
       { messages: [{ id: 'm1', threadId: 't1', labels: ['INBOX', 'UNREAD'] }] },
-      { history: [{ id: '12', messagesAdded: [{ message: { id: 'm2', threadId: 't2' } }] }], historyId: '12' },
+      { messages: ['m2'], historyId: '12', nextPageToken: '' },
     ]);
 
     const snapshot = await adapter.searchAllMailbox('me@example.com', 'in:inbox', 500);
@@ -76,6 +76,7 @@ describe('GogAdapter assistant primitives', () => {
     assert.equal(snapshot.complete, true);
     assert.deepEqual(snapshot.messages[0].labelIds, ['INBOX', 'UNREAD']);
     assert.equal(history.historyId, '12');
+    assert.deepEqual(history.messages, ['m2']);
     assert.deepEqual(calls[0].args, [
       'gmail', 'messages', 'search', 'in:inbox', '--max', '500', '--all',
       '--account', 'me@example.com', '--json', '--no-input',

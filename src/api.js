@@ -47,6 +47,7 @@ import {
   registerPushDevice,
   finishHandlingUndo,
   storeEvents,
+  setEmailItemUnsubscribeLinkIfMissing,
   updateEmailItemAttachments,
 } from './store.js';
 
@@ -563,7 +564,13 @@ async function handleAuthed(req, res, url, dependencies = {}) {
       const getContent = dependencies.fetchEmailContent || fetchEmailContent;
       const content = await getContent(item);
       if (Array.isArray(content?.attachments)) updateEmailItemAttachments(item.id, content.attachments);
-      sendJson(res, 200, { content });
+      if (content?.unsubscribeLink) {
+        setEmailItemUnsubscribeLinkIfMissing(item.id, content.unsubscribeLink);
+      }
+      sendJson(res, 200, {
+        content,
+        item: mobileEmailItem(getEmailItem(item.id) || item),
+      });
     } catch (err) {
       console.error(`[winnow/api] email content fetch failed for ${item.id}: ${err.message}`);
       sendJson(res, 502, { error: 'email_content_unavailable' });
@@ -719,8 +726,6 @@ async function handleAuthed(req, res, url, dependencies = {}) {
     const item = getEmailItem(unsubscribeMatch.id);
     if (!item) {
       sendJson(res, 404, { error: 'email_not_found' });
-    } else if (!item.unsubscribeLink) {
-      sendJson(res, 400, { error: 'unsubscribe_link_missing', item: mobileEmailItem(item) });
     } else {
       const previous = findUnsubscribeForEmail({
         account: item.account,

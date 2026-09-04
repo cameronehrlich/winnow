@@ -139,7 +139,7 @@ struct SettingsView: View {
                         if let lastRefresh = model.lastRefresh {
                             LabeledContent("Last app refresh", value: lastRefresh.relativeWinnowTime)
                         }
-                        Text("When notifications are allowed, Winnow alerts you about new Inbox email and silently refreshes automatically archived mail. Slack remains available as a fallback.")
+                        Text("When notifications are allowed, Winnow alerts you about new Inbox email and silently refreshes automatically archived mail.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

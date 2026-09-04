@@ -133,12 +133,15 @@ struct APIClient: AssistantService {
     }
 
     func emailContent(emailID: String) async throws -> EmailContent {
+        try await emailContentEnvelope(emailID: emailID).content
+    }
+
+    func emailContentEnvelope(emailID: String) async throws -> EmailContentEnvelope {
         let encodedID = emailID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? emailID
-        let response: EmailContentEnvelope = try await request(
+        return try await request(
             path: "/v1/emails/\(encodedID)/content",
             timeoutInterval: 30
         )
-        return response.content
     }
 
     func emailAttachments(emailID: String) async throws -> [EmailAttachment] {

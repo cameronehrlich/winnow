@@ -30,6 +30,16 @@ describe('unsubscribe discovery', () => {
     ]);
   });
 
+  it('checks a separately normalized HTML body when plain text omits the URL', () => {
+    const result = discoverUnsubscribeMethods({
+      body: 'To stop receiving these messages, use the link in this email.',
+      htmlBody: '<a href="https://example.com/html-only-leave">Unsubscribe</a>',
+    });
+
+    assert.equal(result.preferred.url, 'https://example.com/html-only-leave');
+    assert.equal(result.preferred.source, 'body');
+  });
+
   it('extracts URLs only from plain-text lines with unsubscribe language', () => {
     const result = discoverUnsubscribeMethods({ body: `
       Receipt: https://example.com/order/123

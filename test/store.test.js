@@ -19,6 +19,7 @@ import {
   listDeliveryRecords,
   registerPushDevice,
   recordDelivery,
+  setEmailItemUnsubscribeLinkIfMissing,
   updateEmailItemState,
   upsertEmailItemFromResult,
 } from '../src/store.js';
@@ -38,6 +39,21 @@ afterEach(() => {
 });
 
 describe('daily action summary', () => {
+  it('self-heals a missing unsubscribe link without replacing existing metadata', () => {
+    const missing = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-missing-unsub', threadId: 't-missing-unsub',
+      unsubscribeLink: '',
+    });
+    assert.equal(
+      setEmailItemUnsubscribeLinkIfMissing(missing.id, 'https://example.com/footer-leave').unsubscribeLink,
+      'https://example.com/footer-leave',
+    );
+    assert.equal(
+      setEmailItemUnsubscribeLinkIfMissing(missing.id, 'https://example.com/different-link').unsubscribeLink,
+      'https://example.com/footer-leave',
+    );
+  });
+
   it('lists one newest representative per Gmail thread', () => {
     upsertEmailItemFromResult({
       account: 'me@example.com', messageId: 'm-old', threadId: 't-shared', archive: false,

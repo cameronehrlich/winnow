@@ -1,4 +1,5 @@
 const MAX_DISCOVERY_BODY_LENGTH = 100_000;
+const MAX_DISCOVERY_TOTAL_BODY_LENGTH = 300_000;
 const MAX_URL_LENGTH = 4096;
 const UNSUBSCRIBE_LANGUAGE = /\b(?:unsubscribe|un-subscribe|opt[ -]?out|stop (?:receiving|getting) (?:these |this )?emails?|manage (?:email )?(?:preferences|subscriptions))\b/i;
 const URL_IN_TEXT_RE = /(?:https?:\/\/[^\s<>"')\]]+|mailto:[^\s<>"')\]]+)/gi;
@@ -120,19 +121,30 @@ function decodePayloadBody(payload, depth = 0) {
   return '';
 }
 
-function messageBody(message) {
+function messageBodies(message) {
   const candidates = [
     message?.body,
     message?.Body,
     message?.text,
+    message?.htmlBody,
+    message?.html,
     message?.message?.body,
+    message?.message?.htmlBody,
     decodePayloadBody(message?.payload),
     decodePayloadBody(message?.message?.payload),
   ];
-  return candidates
-    .filter(value => typeof value === 'string' && value)
-    .map(value => value.slice(0, MAX_DISCOVERY_BODY_LENGTH))
-    .sort((left, right) => right.length - left.length)[0] || '';
+  const bodies = [];
+  const seen = new Set();
+  let remaining = MAX_DISCOVERY_TOTAL_BODY_LENGTH;
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate || remaining === 0) continue;
+    const body = candidate.slice(0, Math.min(MAX_DISCOVERY_BODY_LENGTH, remaining));
+    if (!body || seen.has(body)) continue;
+    seen.add(body);
+    bodies.push(body);
+    remaining -= body.length;
+  }
+  return bodies;
 }
 
 /**
@@ -168,9 +180,10 @@ export function discoverUnsubscribeMethods(message) {
   if (typeof message?.unsubscribe === 'string') add(message.unsubscribe, 'header', oneClick);
   if (typeof message?.message?.unsubscribe === 'string') add(message.message.unsubscribe, 'header', oneClick);
 
-  const body = messageBody(message);
-  for (const candidate of anchorCandidates(body)) add(candidate, 'body');
-  for (const candidate of plainTextCandidates(body)) add(candidate, 'body');
+  for (const body of messageBodies(message)) {
+    for (const candidate of anchorCandidates(body)) add(candidate, 'body');
+    for (const candidate of plainTextCandidates(body)) add(candidate, 'body');
+  }
 
   discovered.sort((left, right) => {
     // Prefer an automatable body link over a mailto-only header. Header

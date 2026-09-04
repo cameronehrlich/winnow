@@ -6,6 +6,7 @@ import {
   resolveFreshAttachment,
 } from './email-attachments.js';
 import { emailBodyToText } from './message-content.js';
+import { discoverUnsubscribeMethods } from './unsubscribe-discovery.js';
 
 const MAX_MESSAGES = 100;
 const MAX_MESSAGE_CHARS = 100_000;
@@ -49,6 +50,13 @@ export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {
     messages = [normalizeGogMessage(await adapter.getMessage(item.account, item.messageId), { includeHtml: true })];
   }
 
+  const focusedSourceMessage = item.messageId
+    ? messages.find(message => message?.id === item.messageId || message?.messageId === item.messageId)
+    : messages.at(-1);
+  const unsubscribeLink = focusedSourceMessage
+    ? discoverUnsubscribeMethods(focusedSourceMessage).preferred?.url || ''
+    : '';
+
   let budget = MAX_TOTAL_CHARS;
   let htmlBudget = MAX_TOTAL_HTML_CHARS;
   let truncated = false;
@@ -86,6 +94,7 @@ export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {
     subject: item.subject || normalized[0].subject,
     messages: normalized,
     attachments,
+    unsubscribeLink,
     truncated: truncated || budget === 0 || htmlBudget === 0 || messages.length > MAX_MESSAGES,
     fetchedAt: new Date().toISOString(),
   };

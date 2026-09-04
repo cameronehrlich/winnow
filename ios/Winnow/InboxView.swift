@@ -46,12 +46,57 @@ struct InboxView: View {
     let openSettings: () -> Void
     let openStats: () -> Void
 
+    @State private var navigationPath: [String] = []
+
+    var body: some View {
+        NavigationStack(path: $navigationPath) {
+            MailboxListView(
+                mailbox: mailbox,
+                openSettings: openSettings,
+                openStats: openStats
+            ) { item in
+                navigationPath.append(item.id)
+            }
+            .navigationDestination(for: String.self) { emailID in
+                EmailDetailView(emailID: emailID)
+            }
+            .onChange(of: model.navigationRequest) { _, request in
+                guard let request,
+                      request.mailboxState == mailbox.apiState else { return }
+                navigationPath.append(request.emailID)
+                model.consumeNavigation(request)
+            }
+        }
+    }
+}
+
+struct MailboxListView: View {
+    @EnvironmentObject private var model: AppModel
+    let mailbox: MailboxTab
+    let showsSettingsButton: Bool
+    let openSettings: () -> Void
+    let openStats: () -> Void
+    let openEmail: (EmailItem) -> Void
+
     @State private var account = ""
     @State private var searchText = ""
     @State private var isSearchAvailable = false
     @State private var isSearchPresented = false
-    @State private var navigationPath: [String] = []
     @State private var scrollPositionID: String?
+
+    init(
+        mailbox: MailboxTab,
+        showsSettingsButton: Bool = true,
+        openSettings: @escaping () -> Void,
+        openStats: @escaping () -> Void,
+        openEmail: @escaping (EmailItem) -> Void
+    ) {
+        self.mailbox = mailbox
+        self.showsSettingsButton = showsSettingsButton
+        self.openSettings = openSettings
+        self.openStats = openStats
+        self.openEmail = openEmail
+    }
 
     private var searchQuery: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -83,110 +128,101 @@ struct InboxView: View {
 
     var body: some View {
         let snapshot = mailboxSnapshot
-        NavigationStack(path: $navigationPath) {
-            ZStack {
-                AppBackdrop()
-                List {
-                    ForEach(snapshot.items) { item in
-                        if item.id == snapshot.newItemsDividerID {
-                            NewItemsDivider()
-                                .listRowInsets(EdgeInsets(top: 4, leading: 18, bottom: 4, trailing: 18))
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
-                        }
-                        let isUnseenArchived = mailbox == .archived && model.isArchivedItemUnseen(item)
-                        EmailCard(
-                            item: item,
-                            account: model.account(email: item.account),
-                            isPerforming: model.performingEmailIDs.contains(item.id),
-                            isArchivedCell: mailbox == .archived,
-                            isUnseenArchived: isUnseenArchived,
-                            openAction: {
-                                // Keep a stable fallback even if SwiftUI has not yet
-                                // reported the currently visible scroll target.
-                                scrollPositionID = scrollPositionID ?? item.id
-                                if mailbox == .archived {
-                                    model.markArchivedItemSeen(item)
-                                }
-                                navigationPath.append(item.id)
-                            }
-                        )
-                        .equatable()
-                        .id(item.id)
-                        .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                        .modifier(
-                            ArchivedExposureModifier(isEnabled: isUnseenArchived) {
+        ZStack {
+            AppBackdrop()
+            List {
+                ForEach(snapshot.items) { item in
+                    if item.id == snapshot.newItemsDividerID {
+                        NewItemsDivider()
+                            .listRowInsets(EdgeInsets(top: 4, leading: 18, bottom: 4, trailing: 18))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                    }
+                    let isUnseenArchived = mailbox == .archived && model.isArchivedItemUnseen(item)
+                    EmailCard(
+                        item: item,
+                        account: model.account(email: item.account),
+                        isPerforming: model.performingEmailIDs.contains(item.id),
+                        isArchivedCell: mailbox == .archived,
+                        isUnseenArchived: isUnseenArchived,
+                        openAction: {
+                            // Keep a stable fallback even if SwiftUI has not yet
+                            // reported the currently visible scroll target.
+                            scrollPositionID = scrollPositionID ?? item.id
+                            if mailbox == .archived {
                                 model.markArchivedItemSeen(item)
                             }
-                        )
-                        .swipeActions(edge: mailbox.swipeEdge, allowsFullSwipe: true) {
-                            Button {
-                                perform(mailbox.primaryAction, on: item)
-                            } label: {
-                                Label(mailbox.primaryAction.label, systemImage: mailbox.primaryAction.systemImage)
-                            }
-                            .tint(mailbox == .inbox ? WinnowDesign.amber : WinnowDesign.accent)
+                            openEmail(item)
                         }
+                    )
+                    .equatable()
+                    .id(item.id)
+                    .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .modifier(
+                        ArchivedExposureModifier(isEnabled: isUnseenArchived) {
+                            model.markArchivedItemSeen(item)
+                        }
+                    )
+                    .swipeActions(edge: mailbox.swipeEdge, allowsFullSwipe: true) {
+                        Button {
+                            perform(mailbox.primaryAction, on: item)
+                        } label: {
+                            Label(mailbox.primaryAction.label, systemImage: mailbox.primaryAction.systemImage)
+                        }
+                        .tint(mailbox == .inbox ? WinnowDesign.amber : WinnowDesign.accent)
                     }
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .scrollDismissesKeyboard(.interactively)
-                .scrollPosition(id: $scrollPositionID)
-                .refreshable { await model.refresh() }
-                .modifier(SearchRevealModifier(isAvailable: $isSearchAvailable))
-                .modifier(
-                    TuckedSearchModifier(
-                        text: $searchText,
-                        isPresented: $isSearchPresented,
-                        isAvailable: isSearchAvailable
-                    )
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+            .scrollPosition(id: $scrollPositionID)
+            .refreshable { await model.refresh() }
+            .modifier(SearchRevealModifier(isAvailable: $isSearchAvailable))
+            .modifier(
+                TuckedSearchModifier(
+                    text: $searchText,
+                    isPresented: $isSearchPresented,
+                    isAvailable: isSearchAvailable
                 )
+            )
 
-                if model.isLoading && model.emails.isEmpty {
-                    ProgressView("Distilling your inbox…")
-                        .padding(22)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                } else if snapshot.items.isEmpty {
-                    ContentUnavailableView {
-                        Label(emptyTitle, systemImage: emptySymbol)
-                    } description: {
-                        Text(emptyDescription)
-                    } actions: {
-                        Button("Refresh") { Task { await model.refresh() } }
-                    }
+            if model.isLoading && model.emails.isEmpty {
+                ProgressView("Distilling your inbox…")
+                    .padding(22)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            } else if snapshot.items.isEmpty {
+                ContentUnavailableView {
+                    Label(emptyTitle, systemImage: emptySymbol)
+                } description: {
+                    Text(emptyDescription)
+                } actions: {
+                    Button("Refresh") { Task { await model.refresh() } }
                 }
             }
-            .navigationTitle(mailbox.title)
-            .navigationDestination(for: String.self) { emailID in
-                EmailDetailView(emailID: emailID)
-            }
-            .toolbar {
+        }
+        .navigationTitle(mailbox.title)
+        .toolbar {
+            if showsSettingsButton {
                 WinnowSettingsToolbarItem(action: openSettings)
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if model.accounts.count > 1 {
-                        AccountFilterMenu(selection: $account, accounts: model.accounts)
-                    }
-                    WinnowStatusButton(
-                        isOnline: model.isOnline,
-                        isRefreshing: model.isRefreshing,
-                        action: openStats
-                    )
-                }
             }
-            .onChange(of: model.navigationRequest) { _, request in
-                guard let request,
-                      request.mailboxState == mailbox.apiState else { return }
-                navigationPath.append(request.emailID)
-                model.consumeNavigation(request)
-            }
-            .onDisappear {
-                if searchText.isEmpty {
-                    isSearchPresented = false
-                    isSearchAvailable = false
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if model.accounts.count > 1 {
+                    AccountFilterMenu(selection: $account, accounts: model.accounts)
                 }
+                WinnowStatusButton(
+                    isOnline: model.isOnline,
+                    isRefreshing: model.isRefreshing,
+                    action: openStats
+                )
+            }
+        }
+        .onDisappear {
+            if searchText.isEmpty {
+                isSearchPresented = false
+                isSearchAvailable = false
             }
         }
     }

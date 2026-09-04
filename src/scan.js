@@ -13,6 +13,7 @@ import { postEmailFeed } from './notify.js';
 import { maybeSendPushForEmail } from './push.js';
 import { appendEmailEvent, upsertEmailItemFromResult } from './store.js';
 import { normalizeEmailHeaderText } from './email-metadata.js';
+import { discoverUnsubscribeMethods } from './unsubscribe-discovery.js';
 
 const execShellAsync = promisify(execRaw);
 
@@ -38,27 +39,6 @@ function shouldVerifyLabels(state, account) {
   if (!value || value === true) return true;
   const verifiedAt = new Date(value).getTime();
   return !Number.isFinite(verifiedAt) || (Date.now() - verifiedAt) > LABEL_VERIFICATION_TTL_MS;
-}
-
-function extractUnsubscribeLink(headers) {
-  if (!headers) return null;
-
-  let value = null;
-  if (Array.isArray(headers)) {
-    const h = headers.find(h => h.name?.toLowerCase() === 'list-unsubscribe');
-    value = h?.value || null;
-  } else if (typeof headers === 'object') {
-    value = headers['list-unsubscribe'] || headers['List-Unsubscribe'] || null;
-  }
-
-  if (!value) return null;
-
-  // Prefer HTTP(S) unsubscribe endpoints over mailto links for one-click handling.
-  const httpMatch = String(value).match(/<((?:https?):\/\/[^>]+)>|((?:https?):\/\/[^,\s>]+)/i);
-  if (httpMatch) return httpMatch[1] || httpMatch[2];
-
-  const mailtoMatch = String(value).match(/<(mailto:[^>]+)>|(mailto:[^,\s>]+)/i);
-  return mailtoMatch ? (mailtoMatch[1] || mailtoMatch[2]) : null;
 }
 
 async function getFullMessage(adapter, account, msg) {
@@ -106,25 +86,19 @@ function inferReadState(message, searchQuery = '') {
 }
 
 async function getUnsubscribeLink(adapter, account, msg, fullMessage = null) {
-  const fromSearchResult = extractUnsubscribeLink(msg.headers);
-  if (fromSearchResult) return fromSearchResult;
+  // Prefer the exact full message because it contains both RFC unsubscribe
+  // headers and semantically labelled footer links. Search results are often
+  // header-only and should be only a fallback.
+  for (const candidate of [fullMessage, msg]) {
+    const preferred = discoverUnsubscribeMethods(candidate).preferred;
+    if (preferred?.url) return preferred.url;
+  }
 
-  const fromFullMessage = fullMessage?.unsubscribe
-    || extractUnsubscribeLink(fullMessage?.headers)
-    || extractUnsubscribeLink(fullMessage?.message?.payload?.headers)
-    || extractUnsubscribeLink(fullMessage?.payload?.headers);
-  if (fromFullMessage) return fromFullMessage;
-
-  // `gog gmail messages search` does not include List-Unsubscribe headers, but
-  // `gog gmail get` exposes a normalized `unsubscribe` field. Fetch the full
-  // message lazily so archived cards can show the Unsubscribe button.
+  // If the caller could not fetch the full message, retry once here so a
+  // transient enrichment failure does not permanently hide the action.
   try {
     const full = await adapter.getMessage(account, msg.id || msg.threadId);
-    return full?.unsubscribe
-      || extractUnsubscribeLink(full?.headers)
-      || extractUnsubscribeLink(full?.message?.payload?.headers)
-      || extractUnsubscribeLink(full?.payload?.headers)
-      || null;
+    return discoverUnsubscribeMethods(full).preferred?.url || null;
   } catch (err) {
     console.log(`[winnow] ⚠️ Could not fetch unsubscribe link for ${msg.threadId || msg.id}: ${err.message}`);
     return null;

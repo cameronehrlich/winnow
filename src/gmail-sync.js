@@ -28,8 +28,20 @@ function readStateFor(message) {
   return labelsFor(message).includes('UNREAD') ? 'unread' : 'read';
 }
 
+function normalizeFetchedMessage(value, expectedId) {
+  const message = normalizeGogMessage(value);
+  if (!message.id || message.id !== String(expectedId)) {
+    throw new Error('Gmail returned an incomplete or mismatched message');
+  }
+  return message;
+}
+
 function historyIdFrom(value) {
   return String(value?.historyId || value?.HistoryId || value?.message?.historyId || value?.message?.HistoryId || '');
+}
+
+function nextPageTokenFrom(value) {
+  return String(value?.nextPageToken || value?.NextPageToken || '');
 }
 
 function messageTimestamp(message) {
@@ -112,11 +124,17 @@ function collectHistoryChanges(data) {
   const records = data?.history || data?.History || [];
   const remember = (entry, flags = {}) => {
     const message = entry?.message || entry?.Message || entry;
-    const id = String(message?.id || message?.Id || '');
+    const id = typeof message === 'string' || typeof message === 'number'
+      ? String(message)
+      : String(message?.id || message?.Id || '');
     if (!id) return;
     changes.set(id, { ...(changes.get(id) || {}), id, ...flags });
   };
 
+  // gog's JSON response is intentionally compact and returns changed IDs in a
+  // top-level `messages` array. Keep support for the raw Gmail history record
+  // shape as well so alternate adapters and older fixtures remain compatible.
+  for (const entry of data?.messages || data?.Messages || []) remember(entry);
   for (const record of Array.isArray(records) ? records : []) {
     for (const entry of record.messages || record.Messages || []) remember(entry);
     for (const entry of record.messagesAdded || record.MessagesAdded || []) remember(entry, { added: true });
@@ -134,6 +152,11 @@ function collectHistoryChanges(data) {
 export function isExpiredHistoryError(error) {
   const message = String(error?.stderr || error?.message || error || '');
   return /(?:\b404\b|startHistoryId|historyId.*(?:invalid|not found|too old)|failedPrecondition)/i.test(message);
+}
+
+function isMissingMessageError(error) {
+  const message = String(error?.stderr || error?.message || error || '');
+  return /(?:\b404\b|notFound|message.*(?:not found|does not exist)|requested entity was not found)/i.test(message);
 }
 
 export async function fullSyncGmailInbox(account, {
@@ -173,7 +196,7 @@ export async function fullSyncGmailInbox(account, {
       continue;
     }
 
-    const full = normalizeGogMessage(await adapter.getMessage(account, summary.id));
+    const full = normalizeFetchedMessage(await adapter.getMessage(account, summary.id), summary.id);
     if (readStateFor(full) === 'unread') unreadToClassify.push(full);
     else {
       importInboxMessage(account, full);
@@ -223,16 +246,24 @@ export async function syncGmailMailbox(account, {
     return fullSyncGmailInbox(account, { adapter, scanFn, syncSlackFn });
   }
 
+  // getHistory requests every page. A residual token means gog stopped at the
+  // safety limit, so a current inbox snapshot is safer than skipping unseen
+  // changes by accepting the response's final history ID.
+  if (nextPageTokenFrom(history)) {
+    return fullSyncGmailInbox(account, { adapter, scanFn, syncSlackFn });
+  }
+
   const changed = [];
   let imported = 0;
   const unreadToClassify = [];
-  for (const change of collectHistoryChanges(history)) {
+  const historyChanges = collectHistoryChanges(history);
+  for (const change of historyChanges) {
     const existing = findEmailItemByGmail({ account, messageId: change.id });
     let full;
     try {
-      full = normalizeGogMessage(await adapter.getMessage(account, change.id));
+      full = normalizeFetchedMessage(await adapter.getMessage(account, change.id), change.id);
     } catch (error) {
-      if (change.deleted || change.inboxRemoved) {
+      if (isMissingMessageError(error)) {
         if (existing) {
           const updated = await applyExistingState(existing, {
             labelIds: existing.readState === 'unread' ? ['UNREAD'] : [],
@@ -278,7 +309,7 @@ export async function syncGmailMailbox(account, {
   setGmailHistoryCursor(account, nextHistoryId);
   return {
     mode: 'history',
-    checked: collectHistoryChanges(history).length,
+    checked: historyChanges.length,
     imported,
     classified: unreadToClassify.length,
     changed: changed.length,

@@ -100,7 +100,7 @@ const TOOLS = [
   },
   {
     name: 'winnow_unsubscribe_email',
-    description: 'Follow the stored unsubscribe link for one tracked email item and record the result.',
+    description: 'Discover and follow a verified unsubscribe method for one tracked email item, then record the result.',
     inputSchema: jsonSchema({ id: { type: 'string' } }, ['id']),
   },
 ];
@@ -203,7 +203,6 @@ async function mutateEmail(id, action, reason = '') {
 
 async function unsubscribeEmail(id) {
   const item = requireEmail(id);
-  if (!item.unsubscribeLink) return { ok: false, error: 'unsubscribe_link_missing', item };
 
   const previous = findUnsubscribeForEmail({
     account: item.account,

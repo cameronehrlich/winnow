@@ -95,6 +95,14 @@ export function getSlackRoutingForAccount(email = '') {
   const account = accountForEmail(email);
   const accountSlack = account?.slack || {};
   const globalSlack = config.slack || {};
+  if (globalSlack.enabled === false) {
+    return {
+      account: email || '',
+      channelId: null,
+      botToken: null,
+      appToken: null,
+    };
+  }
   const hasAccountSlackTokens = Boolean(
     accountSlack.bot_token
     || accountSlack.bot_token_env

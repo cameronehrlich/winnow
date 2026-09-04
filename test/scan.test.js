@@ -37,6 +37,27 @@ afterEach(() => {
 });
 
 describe('scan execution controls', () => {
+  it('stores a semantically labelled footer unsubscribe link when headers omit one', async () => {
+    const messages = [{
+      id: 'm-footer-unsubscribe',
+      threadId: 't-footer-unsubscribe',
+      subject: 'Weekly offer',
+      from: 'Offers <offers@example.com>',
+      snippet: 'A promotion',
+      body: '<a href="https://clicks.example.com/leave/abc">Unsubscribe</a>',
+      headers: {},
+    }];
+
+    const results = await scan('me@example.com', {
+      adapter: makeAdapter(messages),
+      config: { scan: { max_messages: 10 } },
+      dryRun: true,
+      classifyEmailFn: async () => ({ archive: true, confidence: 95, summary: 'Promotion' }),
+    });
+
+    assert.equal(results[0].unsubscribeLink, 'https://clicks.example.com/leave/abc');
+  });
+
   it('applies the newest matching assistant archive rule without calling Gemini', async () => {
     const messages = [{
       id: 'm-assistant-archive',

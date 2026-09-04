@@ -675,6 +675,17 @@ export function updateEmailItemAttachments(id, attachments) {
   return result.changes === 1 ? getEmailItem(id) : null;
 }
 
+export function setEmailItemUnsubscribeLinkIfMissing(id, unsubscribeLink) {
+  const normalized = String(unsubscribeLink || '').trim();
+  if (!normalized) return getEmailItem(id);
+  getDb().prepare(`
+    UPDATE email_items
+    SET unsubscribe_url = ?, updated_at = ?
+    WHERE id = ? AND COALESCE(TRIM(unsubscribe_url), '') = ''
+  `).run(normalized, nowIso(), id);
+  return getEmailItem(id);
+}
+
 export function findEmailItemByGmail({ account, messageId, threadId }) {
   const database = getDb();
   const row = messageId

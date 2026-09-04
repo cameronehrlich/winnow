@@ -85,6 +85,49 @@ describe('on-demand email content', () => {
     assert.equal(content.messages.some(message => message.id === 'selected'), true);
   });
 
+  it('discovers unsubscribe only from the focused message in a conversation', async () => {
+    const adapter = {
+      async getThread() {
+        return { messages: [
+          {
+            id: 'earlier',
+            htmlBody: '<a href="https://old.example.com/leave">Unsubscribe</a>',
+          },
+          {
+            id: 'focused',
+            htmlBody: '<a href="https://current.example.com/leave">Manage email preferences</a>',
+          },
+        ] };
+      },
+    };
+
+    const content = await fetchEmailContent({
+      id: 'email-4', account: 'me@example.com', threadId: 't4', messageId: 'focused', subject: 'Thread',
+    }, { adapter });
+
+    assert.equal(content.unsubscribeLink, 'https://current.example.com/leave');
+  });
+
+  it('does not borrow an unsubscribe link from an earlier message in the thread', async () => {
+    const adapter = {
+      async getThread() {
+        return { messages: [
+          {
+            id: 'earlier',
+            body: '<a href="https://old.example.com/leave">Unsubscribe</a>',
+          },
+          { id: 'focused', body: 'Thanks for getting back to me.' },
+        ] };
+      },
+    };
+
+    const content = await fetchEmailContent({
+      id: 'email-5', account: 'me@example.com', threadId: 't5', messageId: 'focused', subject: 'Thread',
+    }, { adapter });
+
+    assert.equal(content.unsubscribeLink, '');
+  });
+
   it('returns canonical thread attachment metadata without downloading bytes', async () => {
     let downloads = 0;
     const adapter = {
