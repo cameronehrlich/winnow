@@ -46,6 +46,7 @@ describe('mailbox reconciliation', () => {
     assert.equal(result.checked, 1);
     assert.equal(result.changed, 1);
     assert.equal(getEmailItem(item.id).mailboxState, 'archived');
+    assert.ok(getEmailItem(item.id).archivedSeenAt);
   });
 
   it('silently hydrates migrated unknown read state', async () => {

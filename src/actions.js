@@ -80,9 +80,12 @@ export async function archiveEmail({
   const existing = lookupItem({ emailItemId, account, threadId, messageId });
   const current = latestThreadItem(account, threadId, existing);
   if (current?.mailboxState === 'archived' && current.readState === 'read') {
-    return updateEmailThreadState(current.id, {
-      triageState: 'manual_archived', mailboxState: 'archived', readState: 'read', reason,
+    const updated = updateEmailThreadState(current.id, {
+      triageState: 'manual_archived', mailboxState: 'archived', readState: 'read',
+      archivedSeenAt: new Date().toISOString(), reason,
     });
+    syncPushBadge(updated);
+    return updated;
   }
 
   const adapter = adapterFor();
@@ -94,6 +97,7 @@ export async function archiveEmail({
     triageState: 'manual_archived',
     mailboxState: 'archived',
     readState: 'read',
+    archivedSeenAt: new Date().toISOString(),
     reason,
   });
   appendEmailEvent('email.manual_archived', updated, { source, reason });

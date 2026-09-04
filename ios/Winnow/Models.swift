@@ -7,6 +7,13 @@ enum WinnowPreferences {
 struct EmailListResponse: Decodable {
     var items: [EmailItem]
     var nextCursor: String?
+    var archivedUnseenCount: Int?
+}
+
+struct ArchivedSeenResponse: Decodable {
+    let ok: Bool
+    let updated: Int
+    let archivedUnseenCount: Int
 }
 
 struct SentListResponse: Decodable {
@@ -456,6 +463,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
     let processedAt: String
     let updatedAt: String
     var readState: String
+    var archivedSeenAt: String?
     var trackedThreadMessageCount: Int
     var unreadThreadMessageCount: Int
     let handlingDecision: EmailHandlingDecision?
@@ -534,7 +542,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         case id, account, messageId, threadId, fromName, fromEmail, from, subject, snippet
         case summary, action, deadline, impact, handling, reason, confidence, ephemeral
         case lowConfidenceKept, triageState, mailboxState, archive, unsubscribeLink
-        case createdAt, processedAt, updatedAt, readState, isRead, unsubscribeState
+        case createdAt, processedAt, updatedAt, readState, isRead, archivedSeenAt, unsubscribeState
         case trackedThreadMessageCount, unreadThreadMessageCount, handlingDecision, undoAction
         case attachments
     }
@@ -568,6 +576,7 @@ struct EmailItem: Decodable, Identifiable, Equatable {
         createdAt = try values.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
         processedAt = try values.decodeIfPresent(String.self, forKey: .processedAt) ?? ""
         updatedAt = try values.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
+        archivedSeenAt = try values.decodeIfPresent(String.self, forKey: .archivedSeenAt)
         trackedThreadMessageCount = max(
             1,
             try values.decodeIfPresent(Int.self, forKey: .trackedThreadMessageCount) ?? 1
@@ -951,6 +960,7 @@ extension EmailItem {
         case .archive:
             mailboxState = "archived"
             triageState = "manual_archived"
+            archivedSeenAt = "local"
         case .moveToInbox:
             mailboxState = "inbox"
             triageState = "restored"

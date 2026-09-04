@@ -213,6 +213,7 @@ final class ModelDecodingTests: XCTestCase {
           "mailboxState":"inbox","archive":false,"unsubscribeLink":"https://example.com/unsubscribe",
           "createdAt":"2026-07-12T08:00:00.000Z","processedAt":"2026-07-12T08:00:00.000Z",
           "updatedAt":"2026-07-12T08:00:00.000Z","readState":"unread","isRead":false,
+          "archivedSeenAt":"2026-07-12T09:00:00.000Z",
           "trackedThreadMessageCount":3,"unreadThreadMessageCount":2
         }
         """#.data(using: .utf8)!
@@ -226,6 +227,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(item.trackedThreadMessageCount, 3)
         XCTAssertEqual(item.unreadThreadMessageCount, 2)
         XCTAssertEqual(item.displayedUnreadThreadCount, 2)
+        XCTAssertEqual(item.archivedSeenAt, "2026-07-12T09:00:00.000Z")
         XCTAssertNil(item.handlingDecision)
         XCTAssertNil(item.undoAction)
     }
@@ -561,6 +563,7 @@ final class ModelDecodingTests: XCTestCase {
         item.applyOptimistic(.archive)
         XCTAssertTrue(item.isArchived)
         XCTAssertEqual(item.triageState, "manual_archived")
+        XCTAssertNotNil(item.archivedSeenAt)
 
         item.applyOptimistic(.markRead)
         XCTAssertFalse(item.isUnread)
@@ -630,6 +633,36 @@ final class ModelDecodingTests: XCTestCase {
         let response = try JSONDecoder().decode(PushDeviceResponse.self, from: json)
         XCTAssertEqual(response.device.environment, "development")
         XCTAssertTrue(response.device.enabled)
+    }
+
+    func testEmailListDecodesSharedArchivedUnseenCount() throws {
+        let json = #"{"items":[{"id":"archived","mailboxState":"archived","archivedSeenAt":null}],"archivedUnseenCount":7}"#.data(using: .utf8)!
+        let response = try JSONDecoder().decode(EmailListResponse.self, from: json)
+        XCTAssertEqual(response.archivedUnseenCount, 7)
+        XCTAssertNil(response.items.first?.archivedSeenAt)
+    }
+
+    func testArchivedSeenAPIUsesOneBoundedBatch() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            session: URLSession(configuration: configuration)
+        )
+        MailRuleURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/v1/emails/archived-seen")
+            let body = try XCTUnwrap(MailRuleURLProtocol.bodyData(from: request))
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(payload["emailIds"] as? [String], ["email-1", "email-2"])
+            return (200, #"{"ok":true,"updated":2,"archivedUnseenCount":3}"#)
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+
+        let response = try await client.markArchivedSeen(emailIDs: ["email-1", "email-2"])
+        XCTAssertTrue(response.ok)
+        XCTAssertEqual(response.updated, 2)
+        XCTAssertEqual(response.archivedUnseenCount, 3)
     }
 
     func testNotificationReconciliationAPIUsesDeliveredIdentities() async throws {

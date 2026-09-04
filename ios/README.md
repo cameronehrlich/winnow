@@ -16,7 +16,7 @@ A personal, native SwiftUI client for Winnow. V1 keeps the useful, dynamic parts
 - Server health merged with per-account scan state in Settings
 - Pull to refresh, refresh whenever the app becomes active, and 30-second foreground refresh
 - APNs alerts for Inbox mail with the receiving account's avatar, silent refreshes for automatically archived mail, and push deep links
-- Inbox app-icon/tab badges plus a "new since viewed" Archived tab badge
+- Inbox app-icon/tab badges plus a server-synchronized Archived tab badge that clears as archived rows become visible on any signed-in device
 - Small and medium Inbox widgets with current attention count and email deep links
 - A global Ask tab for mailbox questions and search, with an explicit account scope
 - A persistent inline Winnow conversation on every email for questions, drafting, unsubscribe, and future-mail handling

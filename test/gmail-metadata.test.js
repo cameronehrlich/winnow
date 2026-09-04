@@ -102,7 +102,7 @@ describe('Gmail metadata index', () => {
     assert.equal(mine.direction, 'sent');
     assert.equal(mine.timestamp, '1970-01-01T00:00:03.000Z');
     assert.equal(findEmailItemByGmail({ account: 'me@example.com', messageId: 'sent-a2' }), null);
-    assert.deepEqual(getMailboxCounts(), { inbox: 0, archived: 0 });
+    assert.deepEqual(getMailboxCounts(), { inbox: 0, archived: 0, archivedUnseen: 0 });
   });
 
   it('uses labels rather than sender text, excludes drafts, and removes lost/deleted Sent membership', () => {

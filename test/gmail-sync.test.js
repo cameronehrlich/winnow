@@ -214,6 +214,7 @@ describe('durable Gmail synchronization', () => {
     const item = findEmailItemByGmail({ account: 'me@example.com', messageId: 'm-archived' });
     assert.equal(item.mailboxState, 'archived');
     assert.equal(item.readState, 'read');
+    assert.ok(item.archivedSeenAt);
     assert.equal(result.changed, 1);
     assert.deepEqual(result.changes.map(change => change.id), [item.id]);
     assert.equal(getGmailHistoryCursor('me@example.com'), '14');

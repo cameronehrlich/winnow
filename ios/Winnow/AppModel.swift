@@ -33,8 +33,11 @@ final class AppModel: ObservableObject {
     private var pendingOptimisticActions: [String: EmailAction] = [:]
     private var visibleMailbox: MailboxTab?
     private var sessionCutoffMailboxes: Set<MailboxTab> = []
+    private var archivedSeenStateIsAuthoritative = false
+    private var authoritativeArchivedUnseenCount = 0
     private var archivedSeenItemIDs: Set<String> = []
     private var archivedSeenFlushTask: Task<Void, Never>?
+    private var archivedSeenSyncInFlight = false
     @Published private var archivedVisitUnseenItemIDs: Set<String>?
     private let inboxViewedKey = "winnow.inbox-last-viewed"
     private let archivedViewedKey = "winnow.archived-last-viewed"
@@ -128,6 +131,10 @@ final class AppModel: ObservableObject {
                 .filter(\.shouldClearDeliveredNotification)
                 .map(\.notificationContext)
             emails = refreshedEmails
+            if let archivedUnseenCount = archivedPage.archivedUnseenCount {
+                archivedSeenStateIsAuthoritative = true
+                authoritativeArchivedUnseenCount = max(0, archivedUnseenCount)
+            }
             lastRefresh = Date()
             if visibleMailbox == .inbox { markMailboxSeen(.inbox) }
             updateArchivedUnseenCount()
@@ -139,6 +146,7 @@ final class AppModel: ObservableObject {
                 )
             }
             _ = await PushNotificationManager.shared.reconcileDeliveredNotifications()
+            scheduleArchivedSeenSyncIfNeeded()
 
             // The mailbox is the primary product surface. Release its loading
             // state before fetching optional status and statistics.
@@ -271,6 +279,9 @@ final class AppModel: ObservableObject {
             archivedSeenItemIDs.removeAll()
             archivedSeenFlushTask?.cancel()
             archivedSeenFlushTask = nil
+            archivedSeenSyncInFlight = false
+            archivedSeenStateIsAuthoritative = false
+            authoritativeArchivedUnseenCount = 0
             unseenArchivedItemCount = 0
             UserDefaults.standard.removeObject(forKey: archivedSeenItemIDsKey)
             stopAutoRefresh()
@@ -313,7 +324,7 @@ final class AppModel: ObservableObject {
             pendingOptimisticActions[item.id] = action
             withAnimation(.snappy(duration: 0.3, extraBounce: 0)) {
                 applyOptimistic(action, to: item.id)
-                if action == .archive {
+                if action == .archive, !archivedSeenStateIsAuthoritative {
                     recordArchivedSeenReceipt(item.id, finalizeWhenComplete: false)
                 }
                 publishEmailState()
@@ -620,36 +631,28 @@ final class AppModel: ObservableObject {
     /// the visible list region.
     func markArchivedItemSeen(_ item: EmailItem) {
         guard item.isArchived,
-              let cutoff = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date,
-              (item.displayDate ?? .distantPast) > cutoff,
+              isArchivedItemUnseen(item),
               archivedSeenItemIDs.insert(item.id).inserted
         else { return }
 
-        // Visibility can change for many recycled rows during one gesture.
-        // Debounce persistence and the published count until exposure settles
-        // so a long scroll does not invalidate the whole list every 120 ms.
-        archivedSeenFlushTask?.cancel()
-        archivedSeenFlushTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(240))
-            guard !Task.isCancelled else { return }
-            self?.flushArchivedSeenReceipts()
-        }
-    }
-
-    private func flushArchivedSeenReceipts() {
-        archivedSeenFlushTask = nil
-        UserDefaults.standard.set(Array(archivedSeenItemIDs), forKey: archivedSeenItemIDsKey)
+        persistArchivedSeenReceipts()
         updateArchivedUnseenCount()
         finalizeArchivedSeenReceiptsIfPossible()
+        scheduleArchivedSeenSyncIfNeeded()
+    }
+
+    private func persistArchivedSeenReceipts() {
+        UserDefaults.standard.set(Array(archivedSeenItemIDs), forKey: archivedSeenItemIDsKey)
     }
 
     private func recordArchivedSeenReceipt(_ emailID: String, finalizeWhenComplete: Bool = true) {
         guard archivedSeenItemIDs.insert(emailID).inserted else { return }
-        UserDefaults.standard.set(Array(archivedSeenItemIDs), forKey: archivedSeenItemIDsKey)
+        persistArchivedSeenReceipts()
         updateArchivedUnseenCount()
         if finalizeWhenComplete {
             finalizeArchivedSeenReceiptsIfPossible()
         }
+        scheduleArchivedSeenSyncIfNeeded()
     }
 
     private func finalizeArchivedSeenReceiptsIfPossible() {
@@ -663,19 +666,26 @@ final class AppModel: ObservableObject {
                 .max()
         else { return }
         UserDefaults.standard.set(newestDate, forKey: archivedViewedKey)
-        archivedSeenItemIDs.removeAll()
-        UserDefaults.standard.removeObject(forKey: archivedSeenItemIDsKey)
+        if !archivedSeenStateIsAuthoritative {
+            archivedSeenItemIDs.removeAll()
+            UserDefaults.standard.removeObject(forKey: archivedSeenItemIDsKey)
+        }
     }
 
     private func removeArchivedSeenReceipt(_ emailID: String) {
         guard archivedSeenItemIDs.remove(emailID) != nil else { return }
-        UserDefaults.standard.set(Array(archivedSeenItemIDs), forKey: archivedSeenItemIDsKey)
+        persistArchivedSeenReceipts()
         updateArchivedUnseenCount()
     }
 
     func isArchivedItemUnseen(_ item: EmailItem) -> Bool {
         if let archivedVisitUnseenItemIDs, visibleMailbox == .archived {
             return item.isArchived && archivedVisitUnseenItemIDs.contains(item.id)
+        }
+        if archivedSeenStateIsAuthoritative {
+            return item.isArchived
+                && item.archivedSeenAt == nil
+                && !archivedSeenItemIDs.contains(item.id)
         }
         guard item.isArchived,
               !self.archivedSeenItemIDs.contains(item.id),
@@ -706,13 +716,14 @@ final class AppModel: ObservableObject {
     @discardableResult
     func refreshFromPush() async -> Bool {
         let previous = emails
+        let previousArchivedUnseenCount = unseenArchivedItemCount
         await refresh(
             silent: true,
             presentsError: false,
             loadsSupplementalData: false,
             transientRetryCount: 1
         )
-        return emails != previous
+        return emails != previous || unseenArchivedItemCount != previousArchivedUnseenCount
     }
 
     private func activatePushNotifications() async {
@@ -736,6 +747,16 @@ final class AppModel: ObservableObject {
     }
 
     private func updateArchivedUnseenCount() {
+        if archivedSeenStateIsAuthoritative {
+            if visibleMailbox == .archived {
+                archivedVisitUnseenItemIDs?.formUnion(persistedUnseenArchivedItemIDs())
+            }
+            let pendingServerUnseenCount = emails.lazy.filter { item in
+                item.isArchived && item.archivedSeenAt == nil && self.archivedSeenItemIDs.contains(item.id)
+            }.count
+            unseenArchivedItemCount = max(0, authoritativeArchivedUnseenCount - pendingServerUnseenCount)
+            return
+        }
         guard let cutoff = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date
         else {
             unseenArchivedItemCount = 0
@@ -753,6 +774,15 @@ final class AppModel: ObservableObject {
     }
 
     private func persistedUnseenArchivedItemIDs() -> Set<String> {
+        if archivedSeenStateIsAuthoritative {
+            return Set(emails.lazy.compactMap { item in
+                guard item.isArchived,
+                      item.archivedSeenAt == nil,
+                      !self.archivedSeenItemIDs.contains(item.id)
+                else { return nil }
+                return item.id
+            })
+        }
         guard let cutoff = UserDefaults.standard.object(forKey: archivedViewedKey) as? Date
         else { return [] }
         return Set(emails.lazy.compactMap { item in
@@ -766,11 +796,47 @@ final class AppModel: ObservableObject {
 
     private func endArchivedVisitIfNeeded() {
         guard visibleMailbox == .archived else { return }
-        archivedSeenFlushTask?.cancel()
-        if archivedSeenFlushTask != nil {
-            flushArchivedSeenReceipts()
-        }
+        scheduleArchivedSeenSyncIfNeeded(delay: .zero)
         archivedVisitUnseenItemIDs = nil
+    }
+
+    private func scheduleArchivedSeenSyncIfNeeded(delay: Duration = .milliseconds(500)) {
+        guard isConfigured, !archivedSeenItemIDs.isEmpty, !archivedSeenSyncInFlight else { return }
+        archivedSeenFlushTask?.cancel()
+        archivedSeenFlushTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.syncArchivedSeenReceipts()
+        }
+    }
+
+    private func syncArchivedSeenReceipts() async {
+        archivedSeenFlushTask = nil
+        guard !archivedSeenSyncInFlight, isConfigured, !archivedSeenItemIDs.isEmpty else { return }
+        let ids = Array(archivedSeenItemIDs.prefix(200))
+        var shouldContinue = false
+        archivedSeenSyncInFlight = true
+        defer {
+            archivedSeenSyncInFlight = false
+            if shouldContinue { scheduleArchivedSeenSyncIfNeeded(delay: .zero) }
+        }
+        do {
+            let response = try await APIClient(configuration: configuration).markArchivedSeen(emailIDs: ids)
+            archivedSeenStateIsAuthoritative = true
+            authoritativeArchivedUnseenCount = max(0, response.archivedUnseenCount)
+            archivedSeenItemIDs.subtract(ids)
+            persistArchivedSeenReceipts()
+            updateArchivedUnseenCount()
+            finalizeArchivedSeenReceiptsIfPossible()
+            shouldContinue = !archivedSeenItemIDs.isEmpty
+        } catch {
+            // Receipts stay persisted locally and retry on the next refresh,
+            // foreground activation, or archived visit.
+        }
     }
 
     static func itemCount(

@@ -58,6 +58,9 @@ export async function reconcileMailbox({ account = '', days = 7, limit = 100, ad
       const updated = updateEmailItemState(item.id, {
         mailboxState: nextMailboxState,
         readState: nextReadState,
+        ...(mailboxChanged && nextMailboxState === 'archived'
+          ? { archivedSeenAt: new Date().toISOString() }
+          : {}),
         triageState: mailboxChanged
           ? (nextMailboxState === 'archived' ? 'manual_archived' : 'restored')
           : item.triageState,

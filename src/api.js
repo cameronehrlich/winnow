@@ -8,7 +8,7 @@ import { findUnsubscribeForEmail, getUnsubscribes, recordUnsubscribe } from './s
 import { executeEmailUnsubscribe } from './unsubscribe.js';
 import { handleMcpMessage } from './mcp.js';
 import { getRuntimeStatus, listAccountStatus } from './status.js';
-import { getPushCapabilities } from './push.js';
+import { getPushCapabilities, sendBadgeSync } from './push.js';
 import { reconcileDeliveredNotifications } from './notification-reconciliation.js';
 import {
   fetchEmailAttachment,
@@ -50,6 +50,7 @@ import {
   getMailboxCounts,
   listEmailItems,
   listEvents,
+  markArchivedEmailItemsSeen,
   registerPushDevice,
   finishHandlingUndo,
   storeEvents,
@@ -573,7 +574,40 @@ async function handleAuthed(req, res, url, dependencies = {}) {
     const unsubscribeEntries = getUnsubscribes().entries || [];
     sendJson(res, 200, {
       ...page,
+      archivedUnseenCount: getMailboxCounts().archivedUnseen,
       items: page.items.map(item => mobileEmailItem(item, unsubscribeEntries)),
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/emails/archived-seen') {
+    const body = await readJsonObject(req);
+    for (const key of Object.keys(body)) {
+      if (key !== 'emailIds') throw new HttpError(400, `invalid_${key}`);
+    }
+    if (!Array.isArray(body.emailIds) || body.emailIds.length < 1 || body.emailIds.length > 200) {
+      throw new HttpError(400, 'invalid_emailIds');
+    }
+    const emailIds = [...new Set(body.emailIds.map((value, index) => {
+      if (typeof value !== 'string' || !value.trim() || value.length > 1024) {
+        throw new HttpError(400, 'invalid_emailId', `emailIds[${index}] must be a non-empty string`);
+      }
+      return value.trim();
+    }))];
+    const result = markArchivedEmailItemsSeen(emailIds);
+    const mailboxCounts = getMailboxCounts();
+    if (result.updated > 0) {
+      const push = dependencies.sendBadgeSync || sendBadgeSync;
+      void Promise.resolve()
+        .then(() => push({ mailboxCounts }))
+        .catch(error => {
+          console.error(`[winnow/push] Archived seen sync failed: ${error.message}`);
+        });
+    }
+    sendJson(res, 200, {
+      ok: true,
+      updated: result.updated,
+      archivedUnseenCount: mailboxCounts.archivedUnseen,
     });
     return;
   }

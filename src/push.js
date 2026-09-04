@@ -103,7 +103,7 @@ function accountAvatarUrl(account, accounts) {
   }
 }
 
-function notificationPayload(item, badge, { silent = false, accounts = [] } = {}) {
+function notificationPayload(item, badge, { silent = false, accounts = [], archivedUnseenCount = 0 } = {}) {
   const emailId = item?.id || item?.emailItemId || '';
   const account = String(item?.account || '');
   const threadId = String(item?.threadId || '');
@@ -113,6 +113,7 @@ function notificationPayload(item, badge, { silent = false, accounts = [] } = {}
     account,
     threadId,
     mailboxState: item?.mailboxState || (item?.archive ? 'archived' : 'inbox'),
+    archivedUnseenCount,
   };
   if (silent) return { aps: { 'content-available': 1, badge }, ...common };
   const truncate = (value, length) => String(value || '').slice(0, length);
@@ -233,10 +234,12 @@ export async function maybeSendPushForEmail(item, opts = {}) {
   if (!devices.length) return { sent: false, reason: 'no_registered_devices' };
 
   const archived = Boolean(item.archive || item.mailboxState === 'archived');
-  const badge = (opts.mailboxCounts || getMailboxCounts()).inbox;
+  const mailboxCounts = opts.mailboxCounts || getMailboxCounts();
+  const badge = mailboxCounts.inbox;
   const payload = notificationPayload(item, badge, {
     silent: archived,
     accounts: archived ? [] : (opts.accounts || getAccounts()),
+    archivedUnseenCount: Number(mailboxCounts.archivedUnseen) || 0,
   });
   const send = opts.send || sendApnsRequest;
   const delivered = await deliverPayload(payload, { config, devices, send });
@@ -253,7 +256,8 @@ export async function sendBadgeSync(opts = {}) {
   }
   const devices = opts.devices || listPushDevices();
   if (!devices.length) return { sent: false, reason: 'no_registered_devices' };
-  const badge = (opts.mailboxCounts || getMailboxCounts()).inbox;
+  const mailboxCounts = opts.mailboxCounts || getMailboxCounts();
+  const badge = mailboxCounts.inbox;
   const clearNotifications = Array.from(new Map(
     (Array.isArray(opts.clearNotifications) ? opts.clearNotifications : [])
       .filter(item => item?.id || item?.emailId)
@@ -269,6 +273,7 @@ export async function sendBadgeSync(opts = {}) {
   const payload = {
     aps: { 'content-available': 1, badge },
     event: 'badge.sync',
+    archivedUnseenCount: Number(mailboxCounts.archivedUnseen) || 0,
     ...(clearNotifications.length ? { clearNotifications } : {}),
   };
   return {

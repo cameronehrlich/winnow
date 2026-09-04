@@ -17,6 +17,7 @@ import {
   listRecentTrackedEmailItems,
   listPushDevices,
   listDeliveryRecords,
+  markArchivedEmailItemsSeen,
   registerPushDevice,
   recordDelivery,
   setEmailItemUnsubscribeLinkIfMissing,
@@ -75,7 +76,7 @@ describe('daily action summary', () => {
 
     const archived = listEmailItems({ state: 'archived' });
     assert.deepEqual(archived.items.map(item => item.messageId), ['m-other']);
-    assert.deepEqual(getMailboxCounts(), { inbox: 1, archived: 1 });
+    assert.deepEqual(getMailboxCounts(), { inbox: 1, archived: 1, archivedUnseen: 1 });
 
     const firstPage = listEmailItems({ limit: 1 });
     const secondPage = listEmailItems({ limit: 1, cursor: firstPage.nextCursor });
@@ -87,7 +88,7 @@ describe('daily action summary', () => {
     assert.deepEqual(moved.items.map(item => item.messageId), ['m-new', 'm-other']);
     assert.equal(moved.items[0].trackedThreadMessageCount, 2);
     assert.equal(moved.items[0].unreadThreadMessageCount, 1);
-    assert.deepEqual(getMailboxCounts(), { inbox: 0, archived: 2 });
+    assert.deepEqual(getMailboxCounts(), { inbox: 0, archived: 2, archivedUnseen: 2 });
   });
 
   it('does not collapse unrelated rows that lack Gmail thread IDs', () => {
@@ -163,7 +164,46 @@ describe('daily action summary', () => {
       account: 'me@example.com', messageId: 'm-read', threadId: 't-read', archive: false, readState: 'read',
     });
     upsertEmailItemFromResult({ account: 'me@example.com', messageId: 'm-arch', threadId: 't-arch', archive: true });
-    assert.deepEqual(getMailboxCounts(), { inbox: 1, archived: 1 });
+    assert.deepEqual(getMailboxCounts(), { inbox: 1, archived: 1, archivedUnseen: 1 });
+  });
+
+  it('records archived view receipts idempotently without touching inbox rows', () => {
+    const archived = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-archived', threadId: 't-archived', archive: true,
+    });
+    const inbox = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-inbox', threadId: 't-inbox', archive: false,
+    });
+
+    assert.equal(archived.archivedSeenAt, null);
+    assert.deepEqual(markArchivedEmailItemsSeen([archived.id, archived.id, inbox.id], '2026-09-04T10:00:00.000Z'), {
+      updated: 1,
+      archivedUnseenCount: 0,
+    });
+    assert.equal(listEmailItems({ state: 'archived' }).items[0].archivedSeenAt, '2026-09-04T10:00:00.000Z');
+    assert.equal(listEmailItems({ state: 'inbox' }).items[0].archivedSeenAt, null);
+    assert.deepEqual(markArchivedEmailItemsSeen([archived.id], '2026-09-04T11:00:00.000Z'), {
+      updated: 0,
+      archivedUnseenCount: 0,
+    });
+  });
+
+  it('preserves a receipt while restored and makes a newly re-archived item unseen again', () => {
+    const archived = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-rearchive', threadId: 't-rearchive', archive: true,
+    });
+    markArchivedEmailItemsSeen([archived.id], '2026-09-04T10:00:00.000Z');
+
+    const restored = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-rearchive', threadId: 't-rearchive', archive: false,
+    });
+    assert.equal(restored.archivedSeenAt, '2026-09-04T10:00:00.000Z');
+
+    const rearchived = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-rearchive', threadId: 't-rearchive', archive: true,
+    });
+    assert.equal(rearchived.archivedSeenAt, null);
+    assert.equal(getMailboxCounts().archivedUnseen, 1);
   });
 
   it('migrates an existing email store to add read state and handling decisions', () => {
@@ -197,6 +237,10 @@ describe('daily action summary', () => {
         UNIQUE(account, gmail_message_id)
       )
     `);
+    legacy.prepare(`
+      INSERT INTO email_items (id, account, mailbox_state, created_at, updated_at)
+      VALUES (?, ?, 'archived', ?, ?)
+    `).run('legacy-archived', 'me@example.com', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
     legacy.exec(`
       CREATE TABLE assistant_conversations (
         id TEXT PRIMARY KEY,
@@ -237,8 +281,11 @@ describe('daily action summary', () => {
     const messageColumns = inspector.prepare('PRAGMA table_info(assistant_messages)').all();
     const runColumns = inspector.prepare('PRAGMA table_info(assistant_runs)').all();
     const indexes = inspector.prepare('PRAGMA index_list(email_items)').all();
+    const migratedArchived = inspector.prepare('SELECT archived_seen_at FROM email_items WHERE id = ?').get('legacy-archived');
     inspector.close();
     assert.ok(columns.some(column => column.name === 'read_state'));
+    assert.ok(columns.some(column => column.name === 'archived_seen_at'));
+    assert.ok(migratedArchived.archived_seen_at);
     assert.ok(columns.some(column => column.name === 'handling_decision_json'));
     assert.ok(columns.some(column => column.name === 'attachments_json'));
     assert.ok(columns.some(column => column.name === 'handling_undo_status'));
@@ -247,6 +294,7 @@ describe('daily action summary', () => {
     assert.ok(runColumns.some(column => column.name === 'lease_token'));
     assert.ok(runColumns.some(column => column.name === 'lease_updated_at'));
     assert.ok(indexes.some(index => index.name === 'idx_email_items_rule_activity'));
+    assert.ok(indexes.some(index => index.name === 'idx_email_items_archived_seen'));
   });
 
   it('round-trips typed handling decisions and derives forward-only rule activity', () => {

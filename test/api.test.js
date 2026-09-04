@@ -62,7 +62,8 @@ api:
       })),
     }),
     archiveEmail: async ({ emailItemId, reason }) => updateEmailItemState(emailItemId, {
-      triageState: 'manual_archived', mailboxState: 'archived', readState: 'read', reason,
+      triageState: 'manual_archived', mailboxState: 'archived', readState: 'read',
+      archivedSeenAt: new Date().toISOString(), reason,
     }),
     moveEmailToInbox: async ({ emailItemId, reason }) => updateEmailItemState(emailItemId, {
       triageState: 'restored', mailboxState: 'inbox', reason,
@@ -203,6 +204,7 @@ describe('local API', () => {
     assert.equal(emailJson.items[0].isRead, false);
     assert.equal(emailJson.items[0].trackedThreadMessageCount, 1);
     assert.equal(emailJson.items[0].unreadThreadMessageCount, 1);
+    assert.equal(emailJson.archivedUnseenCount, 0);
     assert.deepEqual(emailJson.items[0].attachments, [{
       messageId: 'm0', attachmentId: 'pdf-1', filename: 'invoice.pdf',
       mimeType: 'application/pdf', sizeBytes: 9,
@@ -240,6 +242,51 @@ describe('local API', () => {
     assert.equal(body.items[0].messageId, 'm2');
     assert.equal(body.items[0].trackedThreadMessageCount, 2);
     assert.equal(body.items[0].unreadThreadMessageCount, 2);
+  });
+
+  it('shares archived view receipts idempotently and invalidates registered clients', async () => {
+    const archived = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'm-unseen-archive', threadId: 't-unseen-archive',
+      subject: 'Newly handled', archive: true, readState: 'read',
+    });
+    let pushedCounts;
+    let pushCount = 0;
+    apiDependencies.sendBadgeSync = async ({ mailboxCounts }) => {
+      pushedCounts = mailboxCounts;
+      pushCount++;
+    };
+    const headers = { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' };
+
+    const before = await fetch(`${baseUrl}/v1/emails?state=archived`, { headers }).then(response => response.json());
+    assert.equal(before.archivedUnseenCount, 1);
+    assert.equal(before.items[0].archivedSeenAt, null);
+
+    const response = await fetch(`${baseUrl}/v1/emails/archived-seen`, {
+      method: 'POST', headers, body: JSON.stringify({ emailIds: [archived.id, archived.id] }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(body, { ok: true, updated: 1, archivedUnseenCount: 0 });
+    assert.equal(pushedCounts.archivedUnseen, 0);
+
+    const repeat = await fetch(`${baseUrl}/v1/emails/archived-seen`, {
+      method: 'POST', headers, body: JSON.stringify({ emailIds: [archived.id] }),
+    }).then(result => result.json());
+    assert.equal(repeat.updated, 0);
+    assert.equal(repeat.archivedUnseenCount, 0);
+    assert.equal(pushCount, 1);
+  });
+
+  it('rejects malformed archived view receipts', async () => {
+    const request = body => fetch(`${baseUrl}/v1/emails/archived-seen`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    assert.equal((await request({ emailIds: [] })).status, 400);
+    assert.equal((await request({ emailIds: [12] })).status, 400);
+    assert.equal((await request({ emailIds: ['valid'], extra: true })).status, 400);
+    assert.equal((await request({ emailIds: Array.from({ length: 201 }, () => 'id') })).status, 400);
   });
 
   it('returns the authoritative unread badge after a notification action', async () => {

@@ -91,6 +91,9 @@ async function applyExistingState(item, message, { source, syncSlackFn }) {
   const updated = updateEmailItemState(item.id, {
     mailboxState: nextMailboxState,
     readState: nextReadState,
+    ...(mailboxChanged && nextMailboxState === 'archived'
+      ? { archivedSeenAt: new Date().toISOString() }
+      : {}),
     triageState: mailboxChanged
       ? (nextMailboxState === 'archived' ? 'manual_archived' : 'restored')
       : item.triageState,

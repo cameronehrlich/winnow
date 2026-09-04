@@ -512,7 +512,7 @@ curl -H "Authorization: Bearer $WINNOW_API_TOKEN" \
   "http://127.0.0.1:3777/v1/sent?limit=50"
 ```
 
-The mobile feed supports `state=all|inbox|archived`, optional `account`, cursor pagination, and limits from 1–200. Email items include stable `readState` (`read`, `unread`, or `unknown`) plus nullable `isRead`. Detail and action routes are:
+The mobile feed supports `state=all|inbox|archived`, optional `account`, cursor pagination, and limits from 1–200. Email items include stable `readState` (`read`, `unread`, or `unknown`) plus nullable `isRead`. The response also includes the server-authoritative `archivedUnseenCount`; clients batch exact rows they have displayed so that state follows the user across devices. Detail and action routes are:
 
 ```text
 GET  /v1/emails/:id
@@ -523,6 +523,7 @@ POST /v1/emails/:id/archive
 POST /v1/emails/:id/move-to-inbox
 POST /v1/emails/:id/mark-read
 POST /v1/emails/:id/mark-unread
+POST /v1/emails/archived-seen
 POST /v1/emails/:id/unsubscribe
 POST /v1/emails/:id/undo-handling
 ```

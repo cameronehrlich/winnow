@@ -154,7 +154,7 @@ describe('push notification policy', () => {
     const result = await sendBadgeSync({
       config: testConfiguration(),
       devices: [device],
-      mailboxCounts: { inbox: 4, archived: 12 },
+      mailboxCounts: { inbox: 4, archived: 12, archivedUnseen: 3 },
       send: async value => {
         request = value;
         return { ok: true, status: 200, reason: '', apnsId: 'badge-1' };
@@ -167,6 +167,7 @@ describe('push notification policy', () => {
     assert.deepEqual(request.payload, {
       aps: { 'content-available': 1, badge: 4 },
       event: 'badge.sync',
+      archivedUnseenCount: 3,
     });
   });
 

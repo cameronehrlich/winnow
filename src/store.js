@@ -145,6 +145,7 @@ function migrate() {
       triage_state TEXT NOT NULL DEFAULT 'kept',
       mailbox_state TEXT NOT NULL DEFAULT 'unknown',
       read_state TEXT NOT NULL DEFAULT 'unknown',
+      archived_seen_at TEXT,
       unsubscribe_url TEXT,
       attachments_json TEXT,
       handling_decision_json TEXT,
@@ -445,6 +446,16 @@ function migrate() {
   if (!emailColumns.some(column => column.name === 'read_state')) {
     database.exec("ALTER TABLE email_items ADD COLUMN read_state TEXT NOT NULL DEFAULT 'unknown'");
   }
+  if (!emailColumns.some(column => column.name === 'archived_seen_at')) {
+    database.exec('ALTER TABLE email_items ADD COLUMN archived_seen_at TEXT');
+    // Existing archives predate shared view receipts. Treat them as already
+    // seen so the upgrade cannot create a badge containing the full history.
+    database.prepare(`
+      UPDATE email_items
+      SET archived_seen_at = ?
+      WHERE mailbox_state = 'archived'
+    `).run(nowIso());
+  }
   if (!emailColumns.some(column => column.name === 'handling_decision_json')) {
     database.exec('ALTER TABLE email_items ADD COLUMN handling_decision_json TEXT');
   }
@@ -462,6 +473,9 @@ function migrate() {
     }
   }
   database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_email_items_archived_seen
+    ON email_items(mailbox_state, archived_seen_at, processed_at DESC);
+
     CREATE INDEX IF NOT EXISTS idx_email_items_rule_activity
     ON email_items(
       account,
@@ -579,6 +593,7 @@ export function resultToEmailItem(result, opts = {}) {
     triageState,
     mailboxState,
     readState,
+    archivedSeenAt: opts.archivedSeenAt || null,
     unsubscribeUrl: result.unsubscribeLink || result.unsubscribe_url || '',
     attachmentsJson: Array.isArray(result.attachments)
       ? JSON.stringify(normalizeAttachmentList(result.attachments))
@@ -617,6 +632,7 @@ function rowToEmailItem(row) {
     triageState: row.triage_state,
     mailboxState: row.mailbox_state,
     readState: row.read_state || 'unknown',
+    archivedSeenAt: row.archived_seen_at || null,
     isRead: row.read_state === 'read' ? true : row.read_state === 'unread' ? false : null,
     archive: row.mailbox_state === 'archived' || row.triage_state === 'auto_archived' || row.triage_state === 'manual_archived',
     unsubscribeLink: row.unsubscribe_url || '',
@@ -644,13 +660,13 @@ export function upsertEmailItem(item) {
     INSERT INTO email_items (
       id, account, gmail_message_id, gmail_thread_id, from_name, from_email, subject, snippet,
       summary, action, deadline, impact, handling, reason, confidence, ephemeral, low_confidence_kept,
-      triage_state, mailbox_state, read_state, unsubscribe_url, attachments_json, handling_decision_json,
+      triage_state, mailbox_state, read_state, archived_seen_at, unsubscribe_url, attachments_json, handling_decision_json,
       created_at, processed_at, updated_at
     )
     VALUES (
       @id, @account, @gmailMessageId, @gmailThreadId, @fromName, @fromEmail, @subject, @snippet,
       @summary, @action, @deadline, @impact, @handling, @reason, @confidence, @ephemeral, @lowConfidenceKept,
-      @triageState, @mailboxState, @readState, @unsubscribeUrl, @attachmentsJson, @handlingDecisionJson,
+      @triageState, @mailboxState, @readState, @archivedSeenAt, @unsubscribeUrl, @attachmentsJson, @handlingDecisionJson,
       @createdAt, @processedAt, @updatedAt
     )
     ON CONFLICT(id) DO UPDATE SET
@@ -670,6 +686,11 @@ export function upsertEmailItem(item) {
       ephemeral = excluded.ephemeral,
       low_confidence_kept = excluded.low_confidence_kept,
       triage_state = excluded.triage_state,
+      archived_seen_at = CASE
+        WHEN email_items.mailbox_state != 'archived' AND excluded.mailbox_state = 'archived'
+          THEN excluded.archived_seen_at
+        ELSE COALESCE(email_items.archived_seen_at, excluded.archived_seen_at)
+      END,
       mailbox_state = excluded.mailbox_state,
       read_state = excluded.read_state,
       unsubscribe_url = excluded.unsubscribe_url,
@@ -875,32 +896,38 @@ export function findEmailItemByGmail({ account, messageId, threadId }) {
   return rowToEmailItem(row);
 }
 
-export function updateEmailItemState(id, { triageState, mailboxState, readState, reason } = {}) {
+export function updateEmailItemState(id, opts = {}) {
   const existing = getEmailItem(id);
   if (!existing) return null;
+  const { triageState, mailboxState, readState, reason } = opts;
   const normalizedReadState = ['read', 'unread', 'unknown'].includes(readState)
     ? readState
     : existing.readState;
+  const archivedSeenAt = Object.hasOwn(opts, 'archivedSeenAt')
+    ? (opts.archivedSeenAt || null)
+    : existing.archivedSeenAt;
   const updates = {
     id,
     triageState: triageState || existing.triageState,
     mailboxState: mailboxState || existing.mailboxState,
     readState: normalizedReadState,
+    archivedSeenAt,
     reason: reason || existing.reason,
     updatedAt: nowIso(),
   };
   getDb().prepare(`
     UPDATE email_items
     SET triage_state = @triageState, mailbox_state = @mailboxState, read_state = @readState,
-        reason = @reason, updated_at = @updatedAt
+        archived_seen_at = @archivedSeenAt, reason = @reason, updated_at = @updatedAt
     WHERE id = @id
   `).run(updates);
   return getEmailItem(id);
 }
 
-export function updateEmailThreadState(id, { triageState, mailboxState, readState, reason } = {}) {
+export function updateEmailThreadState(id, opts = {}) {
   const existing = getEmailItem(id);
   if (!existing) return null;
+  const { triageState, mailboxState, readState, reason } = opts;
 
   const assignments = ['updated_at = @updatedAt'];
   const params = { updatedAt: nowIso() };
@@ -915,6 +942,10 @@ export function updateEmailThreadState(id, { triageState, mailboxState, readStat
   if (['read', 'unread', 'unknown'].includes(readState)) {
     assignments.push('read_state = @readState');
     params.readState = readState;
+  }
+  if (Object.hasOwn(opts, 'archivedSeenAt')) {
+    assignments.push('archived_seen_at = @archivedSeenAt');
+    params.archivedSeenAt = opts.archivedSeenAt || null;
   }
   if (reason) {
     assignments.push('reason = @reason');
@@ -936,6 +967,25 @@ export function updateEmailThreadState(id, { triageState, mailboxState, readStat
     WHERE ${threadWhere}
   `).run(params);
   return getEmailItem(id);
+}
+
+export function markArchivedEmailItemsSeen(emailIds, timestamp = nowIso()) {
+  const ids = [...new Set((Array.isArray(emailIds) ? emailIds : [])
+    .map(id => String(id || '').trim())
+    .filter(Boolean))];
+  if (!ids.length) return { updated: 0, archivedUnseenCount: getMailboxCounts().archivedUnseen };
+
+  const updated = runImmediateTransaction(() => {
+    const statement = getDb().prepare(`
+      UPDATE email_items
+      SET archived_seen_at = COALESCE(archived_seen_at, ?), updated_at = ?
+      WHERE id = ? AND mailbox_state = 'archived' AND archived_seen_at IS NULL
+    `);
+    let changes = 0;
+    for (const id of ids) changes += statement.run(timestamp, timestamp, id).changes;
+    return changes;
+  });
+  return { updated, archivedUnseenCount: getMailboxCounts().archivedUnseen };
 }
 
 export function claimHandlingUndo(emailItemId, decisionId, claimToken, {
@@ -1485,7 +1535,7 @@ export function listPushDevices() {
 export function getMailboxCounts() {
   const rows = getDb().prepare(`
     WITH ranked_threads AS (
-      SELECT mailbox_state, read_state,
+      SELECT mailbox_state, read_state, archived_seen_at,
         ROW_NUMBER() OVER (
           PARTITION BY account,
             CASE
@@ -1496,18 +1546,18 @@ export function getMailboxCounts() {
         ) AS thread_rank
       FROM email_items
     )
-    SELECT mailbox_state, COUNT(*) AS count
+    SELECT
+      SUM(CASE WHEN mailbox_state = 'inbox' AND read_state = 'unread' THEN 1 ELSE 0 END) AS inbox,
+      SUM(CASE WHEN mailbox_state = 'archived' THEN 1 ELSE 0 END) AS archived,
+      SUM(CASE WHEN mailbox_state = 'archived' AND archived_seen_at IS NULL THEN 1 ELSE 0 END) AS archived_unseen
     FROM ranked_threads
     WHERE thread_rank = 1
-      AND (
-        mailbox_state = 'archived'
-        OR (mailbox_state = 'inbox' AND read_state = 'unread')
-      )
-    GROUP BY mailbox_state
-  `).all();
-  const counts = { inbox: 0, archived: 0 };
-  for (const row of rows) counts[row.mailbox_state] = Number(row.count);
-  return counts;
+  `).get();
+  return {
+    inbox: Number(rows?.inbox) || 0,
+    archived: Number(rows?.archived) || 0,
+    archivedUnseen: Number(rows?.archived_unseen) || 0,
+  };
 }
 
 export function setSyncState(key, value) {

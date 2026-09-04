@@ -71,6 +71,7 @@ describe('email actions', () => {
     });
 
     assert.equal(result.id, item.id);
+    assert.ok(result.archivedSeenAt);
     assert.equal(listEvents({ limit: 10 }).length, 0);
   });
 
@@ -244,6 +245,8 @@ describe('email actions', () => {
     });
     assert.equal(getEmailItem(original.id).mailboxState, 'archived');
     assert.equal(getEmailItem(original.id).readState, 'read');
+    assert.ok(getEmailItem(original.id).archivedSeenAt);
+    assert.ok(getEmailItem(reply.id).archivedSeenAt);
     assert.equal(listEmailItems({ state: 'archived' }).items.length, 1);
 
     await moveEmailToInbox({
@@ -278,6 +281,7 @@ describe('email actions', () => {
 
     assert.equal(getEmailItem(reply.id).mailboxState, 'archived');
     assert.equal(getEmailItem(reply.id).readState, 'read');
+    assert.ok(getEmailItem(reply.id).archivedSeenAt);
     assert.equal(listEvents({ limit: 10 }).filter(event => event.eventType === 'email.manual_archived').length, 1);
   });
 });

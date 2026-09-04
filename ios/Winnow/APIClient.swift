@@ -132,6 +132,11 @@ struct APIClient: AssistantService {
         return try await request(path: "/v1/emails", queryItems: query)
     }
 
+    func markArchivedSeen(emailIDs: [String]) async throws -> ArchivedSeenResponse {
+        let body = try JSONSerialization.data(withJSONObject: ["emailIds": emailIDs])
+        return try await request(path: "/v1/emails/archived-seen", method: "POST", body: body)
+    }
+
     func sent(account: String = "", limit: Int = 50) async throws -> SentListResponse {
         var query = [URLQueryItem(name: "limit", value: String(limit))]
         if !account.isEmpty { query.append(URLQueryItem(name: "account", value: account)) }
