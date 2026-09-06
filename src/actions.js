@@ -1,4 +1,5 @@
 import { GogAdapter } from './adapters/gog.js';
+import { assertAccountWritable } from './config.js';
 import {
   appendEmailEvent,
   findEmailItemByGmail,
@@ -77,6 +78,7 @@ export async function archiveEmail({
   reason = 'Archived',
 } = {}) {
   if (!account || !threadId) throw new Error('account and threadId are required');
+  assertAccountWritable(account);
   const existing = lookupItem({ emailItemId, account, threadId, messageId });
   const current = latestThreadItem(account, threadId, existing);
   if (current?.mailboxState === 'archived' && current.readState === 'read') {
@@ -119,6 +121,7 @@ export async function moveEmailToInbox({
   reason = 'Moved to inbox',
 } = {}) {
   if (!account || !threadId) throw new Error('account and threadId are required');
+  assertAccountWritable(account);
   const existing = lookupItem({ emailItemId, account, threadId, messageId });
   const current = latestThreadItem(account, threadId, existing);
   if (current?.mailboxState === 'inbox') {
@@ -154,6 +157,7 @@ export async function markEmailRead({
   reason = 'Marked read',
 } = {}) {
   if (!account || !threadId) throw new Error('account and threadId are required');
+  assertAccountWritable(account);
   const existing = lookupItem({ emailItemId, account, threadId, messageId });
   const current = latestThreadItem(account, threadId, existing);
   if (current?.readState === 'read') {
@@ -184,6 +188,7 @@ export async function markEmailUnread({
   reason = 'Marked unread',
 } = {}) {
   if (!account || !threadId) throw new Error('account and threadId are required');
+  assertAccountWritable(account);
   const existing = lookupItem({ emailItemId, account, threadId, messageId });
   const current = latestThreadItem(account, threadId, existing);
   if (current?.readState === 'unread') {

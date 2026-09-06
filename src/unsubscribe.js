@@ -1,4 +1,5 @@
 import { GogAdapter } from './adapters/gog.js';
+import { assertAccountWritable } from './config.js';
 import { discoverUnsubscribeMethods } from './unsubscribe-discovery.js';
 import { followUnsubscribeLink } from './slack-actions.js';
 
@@ -40,6 +41,7 @@ export async function executeEmailUnsubscribe(item, {
   getMessage = (account, messageId) => adapter.getMessage(account, messageId),
   follow = followUnsubscribeLink,
 } = {}) {
+  assertAccountWritable(item?.account);
   const stored = methodForUrl(item?.unsubscribeLink, 'stored');
   let discovered = [];
   try {

@@ -12,7 +12,10 @@ import {
   getSlackRoutingForAccount,
   getScanSearchQuery,
   reloadConfig,
+  getActiveAccounts,
+  assertAccountWritable,
 } from '../src/config.js';
+import { GogAdapter } from '../src/adapters/gog.js';
 
 let tempDir;
 
@@ -40,6 +43,18 @@ slack:
 });
 
 describe('AI model routing', () => {
+  it('preserves historical account IDs while routing read-only access to renamed credentials', async () => {
+    writeFileSync(process.env.WINNOW_CONFIG_PATH, `accounts:\n  - email: old@example.com\n    auth_account: legacy@example.com\n    read_only: true\n    sync_enabled: false\n  - email: support@example.com\n`);
+    reloadConfig();
+    assert.deepEqual(getActiveAccounts().map(account => account.email), ['support@example.com']);
+    assert.throws(() => assertAccountWritable('old@example.com'), { code: 'account_read_only' });
+    assert.doesNotThrow(() => assertAccountWritable('support@example.com'));
+    const calls = [];
+    const adapter = new GogAdapter({ execute: async (_, args) => { calls.push(args); return { stdout: '{}' }; } });
+    await adapter.getMessage('old@example.com', 'message1');
+    assert.equal(calls[0][calls[0].indexOf('--account') + 1], 'legacy@example.com');
+    assert.ok(calls[0].includes('--readonly'));
+  });
   it('uses separate durable defaults for classification and the assistant', () => {
     assert.equal(DEFAULT_CLASSIFICATION_MODEL, 'gemini-3.1-flash-lite');
     assert.equal(DEFAULT_ASSISTANT_MODEL, 'gemini-3.5-flash');

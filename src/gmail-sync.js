@@ -1,4 +1,5 @@
 import { GogAdapter, normalizeGogMessage } from './adapters/gog.js';
+import { getAccountConfig } from './config.js';
 import { scan } from './scan.js';
 import { syncSlackDeliveryForItem } from './reconcile.js';
 import { backfillRecentSentMetadata, indexGmailMessageMetadata } from './gmail-metadata.js';
@@ -245,6 +246,7 @@ export async function syncGmailMailbox(account, {
   scanFn = scan,
   syncSlackFn = syncSlackDeliveryForItem,
 } = {}) {
+  if (getAccountConfig(account).read_only) throw new Error('This retired mailbox is read-only; sync the replacement mailbox instead.');
   const cursor = getGmailHistoryCursor(account);
   const lastFullSyncAt = new Date(getGmailFullSyncAt(account)).getTime();
   const fullSyncIsStale = !Number.isFinite(lastFullSyncAt)

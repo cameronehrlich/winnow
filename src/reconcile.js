@@ -1,4 +1,5 @@
 import { GogAdapter } from './adapters/gog.js';
+import { getAccountConfig } from './config.js';
 import { appendEmailEvent, listDeliveryRecords, listRecentTrackedEmailItems, updateEmailItemState } from './store.js';
 import { formatEmailFeedMessage, updateSlackMessage } from './notify.js';
 
@@ -36,7 +37,8 @@ export async function syncSlackDeliveryForItem(item, reason = 'Mailbox state cha
 }
 
 export async function reconcileMailbox({ account = '', days = 7, limit = 100, adapter = new GogAdapter() } = {}) {
-  const items = listRecentTrackedEmailItems({ account, days, limit });
+  const items = listRecentTrackedEmailItems({ account, days, limit })
+    .filter(item => !getAccountConfig(item.account).read_only);
   const changes = [];
 
   for (const item of items) {

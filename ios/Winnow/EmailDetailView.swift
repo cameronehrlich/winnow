@@ -33,6 +33,13 @@ struct EmailDetailView: View {
                             senderHeader(item)
                                 .padding(.horizontal, 16)
 
+                            if model.account(email: item.account)?.readOnly == true {
+                                Text("Retired mailbox history · Open this email in Support to reply or change it.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 16)
+                            }
+
                             if item.unsubscribeState == "succeeded" {
                                 InsightBlock(title: "Unsubscribed", symbol: "checkmark.circle.fill", text: "Winnow completed the unsubscribe request.", color: WinnowDesign.mint)
                                     .padding(.horizontal, 16)
@@ -234,7 +241,7 @@ struct EmailDetailView: View {
                 )
             }
             .tint(item.isArchived ? WinnowDesign.mint : WinnowDesign.amber)
-            .disabled(model.performingEmailIDs.contains(item.id))
+            .disabled(model.performingEmailIDs.contains(item.id) || model.account(email: item.account)?.readOnly == true)
 
             Button {
                 Task { _ = await model.perform(item.isUnread ? .markRead : .markUnread, on: item) }
@@ -245,7 +252,7 @@ struct EmailDetailView: View {
                 )
             }
             .tint(WinnowDesign.accent)
-            .disabled(model.performingEmailIDs.contains(item.id))
+            .disabled(model.performingEmailIDs.contains(item.id) || model.account(email: item.account)?.readOnly == true)
 
             if item.canUnsubscribe {
                 Button {
@@ -254,7 +261,7 @@ struct EmailDetailView: View {
                     Label("Unsubscribe", systemImage: "person.crop.circle.badge.minus")
                 }
                 .tint(WinnowDesign.rose)
-                .disabled(model.performingEmailIDs.contains(item.id))
+                .disabled(model.performingEmailIDs.contains(item.id) || model.account(email: item.account)?.readOnly == true)
                 .confirmationDialog(
                     "Unsubscribe from this sender?",
                     isPresented: $confirmUnsubscribe,

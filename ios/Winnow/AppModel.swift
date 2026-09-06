@@ -451,6 +451,7 @@ final class AppModel: ObservableObject {
     }
 
     func markReadWhenOpened(_ item: EmailItem) async {
+        guard account(email: item.account)?.readOnly != true else { return }
         guard item.isUnread else { return }
         _ = await perform(
             .markRead,

@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { GogAdapter, normalizeGogMessage } from './adapters/gog.js';
 import { findMatchingAssistantRule } from './assistant-rules.js';
 import { classifyEmail } from './classify.js';
-import { loadConfig, getAdapter, getScanSearchQuery } from './config.js';
+import { loadConfig, getAdapter, getScanSearchQuery, getAccountConfig } from './config.js';
 import { loadAllRules } from './rules.js';
 import { listEffectiveExactRules, listOperatorActionRules } from './user-rules.js';
 import { ruleRevision } from './rule-revisions.js';
@@ -137,6 +137,7 @@ export function classificationForAssistantRule(rule) {
 }
 
 export async function scan(account, opts = {}) {
+  if (getAccountConfig(account).read_only) throw new Error('This retired mailbox is read-only; scan the replacement mailbox instead.');
   const config = opts.config || loadConfig();
   const adapter = opts.adapter || createAdapter();
   const classify = opts.classifyEmailFn || classifyEmail;

@@ -245,6 +245,7 @@ describe('GogAdapter assistant primitives', () => {
     const { adapter, calls } = fakeAdapter([{ id: 'sent1', threadId: 'thread1' }]);
     const body = '  Confirmed body with $(not-a-shell)\n';
     const result = await adapter.reply('me@example.com', { messageId: 'message1' }, {
+      from: 'info@brand.example',
       body,
       to: ['person@example.com'],
       cc: ['copy@example.com'],
@@ -254,6 +255,7 @@ describe('GogAdapter assistant primitives', () => {
     assert.equal(calls[0].command, '/fake/gog');
     assert.deepEqual(calls[0].args, [
       'gmail', 'reply', 'message1', '--body', body, '--no-quote', '--account', 'me@example.com',
+      '--from', 'info@brand.example',
       '--to', 'person@example.com', '--cc', 'copy@example.com', '--json', '--no-input',
     ]);
     assert.equal(calls[0].args.includes('--force'), false);
@@ -262,6 +264,7 @@ describe('GogAdapter assistant primitives', () => {
   it('sends an exact forward with validated recipients and attachment choice', async () => {
     const { adapter, calls } = fakeAdapter([{ id: 'sent2' }]);
     await adapter.forward('me@example.com', { messageId: 'message1' }, {
+      from: 'info@brand.example',
       to: ['one@example.com', 'two@example.com'],
       bcc: 'audit@example.com',
       note: ' FYI\n',
@@ -270,7 +273,7 @@ describe('GogAdapter assistant primitives', () => {
 
     assert.deepEqual(calls[0].args, [
       'gmail', 'forward', 'message1', '--to', 'one@example.com,two@example.com',
-      '--account', 'me@example.com', '--bcc', 'audit@example.com', '--note', ' FYI\n',
+      '--account', 'me@example.com', '--from', 'info@brand.example', '--bcc', 'audit@example.com', '--note', ' FYI\n',
       '--skip-attachments', '--json', '--no-input',
     ]);
   });

@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { archiveEmail, markEmailRead, markEmailUnread } from './actions.js';
-import { GogAdapter } from './adapters/gog.js';
-import { getAccounts } from './config.js';
+import { GogAdapter, normalizeGogMessage } from './adapters/gog.js';
+import { getAccounts, getAccountConfig } from './config.js';
+import { resolveMailIdentity, headerAddresses } from './mail-identity.js';
 import { followUnsubscribeLink } from './slack-actions.js';
 import { recordUnsubscribe } from './state.js';
 import { resolveTrackedContacts } from './contact-resolver.js';
@@ -432,12 +433,6 @@ function messageHeaders(message) {
   return {};
 }
 
-function emailAddress(value) {
-  const input = String(value || '').trim();
-  const candidate = (input.match(/<([^<>]+@[^<>]+)>/)?.[1] || input).trim();
-  return /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(candidate) ? candidate : '';
-}
-
 function evidenceFromMessage(message, account) {
   return {
     account,
@@ -493,6 +488,7 @@ export function createDefaultAssistantDependencies() {
     async searchMailbox(account, query, limit) { return adapter.searchMailbox(account, query, limit); },
     async getThread(account, threadId) { return adapter.getThread(account, threadId); },
     async getMessage(account, messageId) { return adapter.getMessage(account, messageId); },
+    async listSendAs(account) { return adapter.listSendAs(account); },
     async readAttachment(account, messageId, attachmentId, maxBytes) {
       return adapter.getAttachment(account, messageId, attachmentId, { maxBytes });
     },
@@ -526,6 +522,9 @@ export function createDefaultAssistantDependencies() {
 export async function prepareAssistantTool({ name, rawArguments, conversation, latestUserText, dependencies }) {
   const definition = DEFINITIONS.get(name);
   let args = enforceConversationScope(conversation, validateAssistantToolCall(name, rawArguments));
+  if (definition.risk !== 'read' && getAccountConfig(args.account || conversation.account).read_only) {
+    throw new AssistantToolError('account_read_only', 'This is the retired mailbox history. Open the email in the new support mailbox to act on it.', 409);
+  }
   let replacementRule = null;
   const pendingRuleProposal = ['rules.create', 'rules.upsert'].includes(name)
     ? getLatestPendingAssistantProposal(conversation.id, { tools: ['rules.create', 'rules.upsert'] })
@@ -707,14 +706,30 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
     }
     args = { ...args, method, sender: message?.from || '', subject: message?.subject || '' };
   }
-  if (name === 'mail.send_reply' && !args.draft.to?.length) {
-    const message = await dependencies.getMessage(args.account, args.messageId);
-    const headers = messageHeaders(message);
-    const recipient = emailAddress(headers['reply-to'] || headers.from || message?.from);
-    if (!recipient) {
-      throw new AssistantToolError('reply_recipient_unavailable', 'The exact reply recipient could not be determined', 422);
+  if (name === 'mail.send_reply' || name === 'mail.send_forward') {
+    const [rawMessage, sendAs] = await Promise.all([
+      dependencies.getMessage(args.account, args.messageId), dependencies.listSendAs(args.account),
+    ]);
+    const message = normalizeGogMessage(rawMessage);
+    const identity = resolveMailIdentity(args.account, message, sendAs, getAccountConfig(args.account));
+    const draft = { ...args.draft };
+    if (name === 'mail.send_reply') {
+      const own = new Set(identity.ownedAddresses);
+      for (const field of ['to', 'cc', 'bcc']) {
+        draft[field] = (draft[field] || []).filter(address => !own.has(address.toLowerCase()));
+      }
+      if (!draft.to.length) {
+        const headers = messageHeaders(message);
+        const recipients = (message.labelIds || []).includes('SENT')
+          ? headerAddresses(headers.to || message.to)
+          : headerAddresses(headers['reply-to'] || headers.from || message.from);
+        draft.to = recipients.filter(address => !own.has(address));
+      }
+      if (!draft.to.length) {
+        throw new AssistantToolError('reply_recipient_unavailable', 'The exact reply recipient could not be determined', 422);
+      }
     }
-    args = { ...args, draft: { ...args.draft, to: [recipient] } };
+    args = { ...args, draft, from: identity.from };
   }
   if ((name === 'rules.create' || name === 'rules.upsert') && conversation.scope === 'email') {
     args = { ...args, sourceEmailItemId: conversation.emailItemId };
@@ -779,6 +794,13 @@ export function assistantProposalDigest(proposal) {
 
 export async function executeAssistantProposal(proposal, conversation, dependencies) {
   let validationArguments = proposal.arguments;
+  if (getAccountConfig(proposal.arguments.account || conversation.account).read_only) {
+    throw new AssistantToolError('account_read_only', 'This mailbox is read-only. Open the email in the new support mailbox.', 409);
+  }
+  if (proposal.tool === 'mail.send_reply' || proposal.tool === 'mail.send_forward') {
+    const { from: _from, ...input } = proposal.arguments;
+    validationArguments = input;
+  }
   if (proposal.tool === 'unsubscribe.request') {
     validationArguments = {
       account: proposal.arguments.account,
@@ -811,11 +833,28 @@ export async function executeAssistantProposal(proposal, conversation, dependenc
     if (!current) throw new AssistantToolError('unsubscribe_method_changed', 'The unsubscribe method changed; request a new proposal', 409);
     return dependencies.executeUnsubscribe(current, proposal.arguments);
   }
-  if (proposal.tool === 'mail.send_reply') {
-    return dependencies.reply(args.account, { messageId: args.messageId, threadId: args.threadId }, args.draft);
-  }
-  if (proposal.tool === 'mail.send_forward') {
-    return dependencies.forward(args.account, { messageId: args.messageId, threadId: args.threadId }, args.draft);
+  if (proposal.tool === 'mail.send_reply' || proposal.tool === 'mail.send_forward') {
+    const [rawMessage, sendAs] = await Promise.all([
+      dependencies.getMessage(args.account, args.messageId), dependencies.listSendAs(args.account),
+    ]);
+    const message = normalizeGogMessage(rawMessage);
+    const identity = resolveMailIdentity(args.account, message, sendAs, getAccountConfig(args.account));
+    if (identity.from !== proposal.arguments.from) {
+      throw new AssistantToolError('sender_changed', 'The sending address changed. Please review a new proposal before sending.', 409);
+    }
+    // gog's --to/--cc flags add to its inferred reply recipients. Explicitly
+    // remove any inferred correspondent not present in the approved draft.
+    const headers = messageHeaders(message);
+    const approved = new Set(['to', 'cc', 'bcc'].flatMap(field => args.draft[field] || []).map(address => address.toLowerCase()));
+    const removeRecipients = [...new Set(['from', 'reply-to', 'to', 'cc', 'bcc']
+      .flatMap(field => headerAddresses(headers[field] || message[field])))].filter(address => (
+      !approved.has(address) && !identity.ownedAddresses.includes(address)
+    ));
+    const send = proposal.tool === 'mail.send_reply' ? dependencies.reply : dependencies.forward;
+    return send(args.account, { messageId: args.messageId, threadId: args.threadId }, {
+      ...args.draft, from: identity.from,
+      ...(proposal.tool === 'mail.send_reply' && removeRecipients.length ? { removeRecipients } : {}),
+    });
   }
   if (proposal.tool === 'rules.create' || proposal.tool === 'rules.upsert') {
     return upsertUserRule(proposal.arguments, { source: 'assistant' });

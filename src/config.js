@@ -73,6 +73,22 @@ export function getAccounts() {
   return accounts.map(a => typeof a === 'string' ? { email: a, channel: null } : a);
 }
 
+export function getAccountConfig(email) {
+  return getAccounts().find(account => account.email.toLowerCase() === String(email).toLowerCase()) || {};
+}
+
+export function getActiveAccounts() {
+  return getAccounts().filter(account => account.sync_enabled !== false && account.read_only !== true);
+}
+
+export function assertAccountWritable(email) {
+  if (getAccountConfig(email).read_only) {
+    throw Object.assign(new Error('This is retired mailbox history. Open the email in the replacement mailbox to act on it.'), {
+      code: 'account_read_only', status: 409,
+    });
+  }
+}
+
 function readEnv(name) {
   return name ? process.env[name] || null : null;
 }

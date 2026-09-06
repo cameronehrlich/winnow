@@ -1028,7 +1028,7 @@ private struct ProposalConfirmationView: View {
                         confirmationRow("Scope", scopeTitle)
                         confirmationRow("Action", proposal.summary)
                         if isOutbound, let draft = proposal.arguments["draft"]?.objectValue {
-                            confirmationRow("From", proposal.arguments["account"]?.displayString ?? "")
+                            confirmationRow("From", proposal.arguments["from"]?.displayString ?? proposal.arguments["account"]?.displayString ?? "")
                             if let to = draft["to"] { confirmationRow("To", to.displayString) }
                             if let cc = draft["cc"], !cc.displayString.isEmpty { confirmationRow("Cc", cc.displayString) }
                             if let bcc = draft["bcc"], !bcc.displayString.isEmpty { confirmationRow("Bcc", bcc.displayString) }

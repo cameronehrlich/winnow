@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { GmailAdapter } from './gmail.js';
+import { getAccountConfig } from '../config.js';
 import { normalizeEmailHeaderText } from '../email-metadata.js';
 import { collectMessageAttachments, MAX_ATTACHMENT_BYTES } from '../email-attachments.js';
 
@@ -223,6 +224,11 @@ export class GogAdapter extends GmailAdapter {
   }
 
   async #run(args, { force = false } = {}) {
+    const accountIndex = args.indexOf('--account');
+    const config = accountIndex >= 0 ? getAccountConfig(args[accountIndex + 1]) : {};
+    args = [...args];
+    if (config.auth_account) args[accountIndex + 1] = validateAccount(config.auth_account);
+    if (config.read_only) args.push('--readonly');
     try {
       return await this.#execute(
         this.#command,
@@ -376,6 +382,16 @@ export class GogAdapter extends GmailAdapter {
     }
   }
 
+  async listSendAs(account) {
+    const result = await this.#runJson(['gmail', 'settings', 'sendas', 'list', '--account', validateAccount(account)]);
+    if (!Array.isArray(result?.sendAs)) throw new Error('Could not verify Gmail sending addresses. Please try again.');
+    return result.sendAs.map(alias => ({
+      sendAsEmail: alias.sendAsEmail,
+      isPrimary: alias.isPrimary === true,
+      verificationStatus: alias.verificationStatus,
+    }));
+  }
+
   async reply(account, reference, draft) {
     const messageId = validateGmailId(reference?.messageId, 'messageId');
     const safeAccount = validateAccount(account);
@@ -384,6 +400,8 @@ export class GogAdapter extends GmailAdapter {
     const cc = normalizeRecipientList(draft?.cc, 'cc');
     const bcc = normalizeRecipientList(draft?.bcc, 'bcc');
     const args = ['gmail', 'reply', messageId, '--body', body, '--no-quote', '--account', safeAccount];
+    if (draft?.from) args.push('--from', validateAccount(draft.from));
+    for (const recipient of normalizeRecipientList(draft?.removeRecipients, 'removeRecipients')) args.push('--remove', recipient);
     for (const recipient of to) args.push('--to', recipient);
     for (const recipient of cc) args.push('--cc', recipient);
     for (const recipient of bcc) args.push('--bcc', recipient);
@@ -402,6 +420,7 @@ export class GogAdapter extends GmailAdapter {
       '--to', to.join(','),
       '--account', safeAccount,
     ];
+    if (draft?.from) args.push('--from', validateAccount(draft.from));
     if (cc.length) args.push('--cc', cc.join(','));
     if (bcc.length) args.push('--bcc', bcc.join(','));
     if (draft?.note != null) {

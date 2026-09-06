@@ -26,6 +26,8 @@ function publicAccountMetadata(account) {
   const gmailAppAccountId = Number(account.gmail_app_account_id);
   return {
     avatarUrl,
+    readOnly: account.read_only === true,
+    syncEnabled: account.sync_enabled !== false && account.read_only !== true,
     gmailAppAccountId: Number.isSafeInteger(gmailAppAccountId) && gmailAppAccountId > 0
       ? gmailAppAccountId
       : null,

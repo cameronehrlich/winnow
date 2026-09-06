@@ -1,5 +1,5 @@
 import { scan } from './scan.js';
-import { getAccounts, getScanSearchQuery, loadConfig } from './config.js';
+import { getActiveAccounts, getScanSearchQuery, loadConfig } from './config.js';
 import { startActionListener, stopActionListener } from './slack-actions.js';
 import { startApiServer } from './api.js';
 import { reconcileMailbox } from './reconcile.js';
@@ -100,7 +100,7 @@ function guarded(fn, label) {
 export async function startDaemon(opts = {}) {
   ensureStore();
   const config = loadConfig();
-  const accounts = getAccounts().map(a => a.email);
+  const accounts = getActiveAccounts().map(a => a.email);
   const { scanIntervalSec, reconcileIntervalSec } = resolveDaemonIntervals(opts, config);
   const scanSearchQuery = getScanSearchQuery(config);
 

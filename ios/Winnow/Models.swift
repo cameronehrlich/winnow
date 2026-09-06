@@ -842,6 +842,7 @@ struct AccountListResponse: Decodable {
 
 struct AccountStatus: Decodable, Equatable, Identifiable {
     let email: String
+    var readOnly: Bool? = nil
     let avatarUrl: String?
     let gmailAppAccountId: Int?
     let scan: AccountScan

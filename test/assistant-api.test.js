@@ -119,6 +119,7 @@ api:
     },
   }));
   setAssistantDependenciesFactoryForTests(() => ({
+    async listSendAs(account) { return calls.sendAs || [{ sendAsEmail: account, isPrimary: true }]; },
     async searchMailbox(account) {
       calls.search += 1;
       return { messages: [{
@@ -139,6 +140,7 @@ api:
       return {
         id: 'm1', messageId: 'm1', threadId: 't1', subject: 'Newsletter',
         from: 'Sender <sender@example.com>',
+        to: calls.messageTo || 'me@example.com',
         headers: [{ name: 'List-Unsubscribe', value: '<https://sender.example/unsubscribe/abc>' }],
       };
     },
@@ -1415,7 +1417,48 @@ describe('assistant API', () => {
     });
     assert.equal(confirmed.status, 200);
     assert.equal(calls.reply, 1);
-    assert.deepEqual(calls.lastReply.draft, proposal.arguments.draft);
+    assert.equal(proposal.arguments.from, 'me@example.com');
+    assert.deepEqual(calls.lastReply.draft, { ...proposal.arguments.draft, from: proposal.arguments.from });
+  });
+
+  it('binds the addressed alias into approval and refuses sending after alias revocation', async () => {
+    calls.messageTo = 'Brand <info@brand.example>';
+    calls.sendAs = [
+      { sendAsEmail: 'me@example.com', isPrimary: true },
+      { sendAsEmail: 'info@brand.example', verificationStatus: 'accepted' },
+    ];
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    addAssistantMessage({
+      id: 'branded-draft', conversationId: created.conversation.id, role: 'assistant', text: 'Draft',
+      draft: { kind: 'reply', body: 'Thanks!', to: ['sender@example.com'], cc: ['info@brand.example'], bcc: [], subject: 'Re: Order 123' },
+    });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/draft-send-proposal`, {
+      messageId: 'branded-draft', idempotencyKey: 'branded-proposal',
+    });
+    assert.equal(response.status, 200);
+    const proposal = (await response.json()).messages.at(-1).proposal;
+    assert.equal(proposal.arguments.from, 'info@brand.example');
+    assert.deepEqual(proposal.arguments.draft.cc, []);
+    assert.equal(calls.reply, 0);
+    calls.sendAs[1].verificationStatus = 'pending';
+    await post(`/v1/assistant/proposals/${proposal.id}/confirm`, { confirmationDigest: proposal.confirmationDigest });
+    assert.equal(calls.reply, 0, 'revoked alias must never be sent or silently replaced');
+  });
+
+  it('sends from the exact confirmed branded alias', async () => {
+    calls.messageTo = 'info@brand.example';
+    calls.sendAs = [{ sendAsEmail: 'me@example.com', isPrimary: true }, { sendAsEmail: 'info@brand.example', verificationStatus: 'accepted' }];
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    addAssistantMessage({
+      id: 'alias-draft', conversationId: created.conversation.id, role: 'assistant', text: 'Draft',
+      draft: { kind: 'reply', body: 'Hello!', to: ['sender@example.com'], cc: [], bcc: [], subject: 'Re: Order 123' },
+    });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/draft-send-proposal`, { messageId: 'alias-draft', idempotencyKey: 'alias-send' });
+    const proposal = (await response.json()).messages.at(-1).proposal;
+    const confirmed = await post(`/v1/assistant/proposals/${proposal.id}/confirm`, { confirmationDigest: proposal.confirmationDigest });
+    assert.equal(confirmed.status, 200);
+    assert.equal(calls.lastReply.account, 'me@example.com');
+    assert.equal(calls.lastReply.draft.from, 'info@brand.example');
   });
 
   it('keeps iOS reminder proposals pending until the client reports a successful save', async () => {

@@ -1,11 +1,11 @@
 import { scan } from './scan.js';
-import { getAccounts, getScanSearchQuery, loadConfig } from './config.js';
+import { getActiveAccounts, getScanSearchQuery, loadConfig } from './config.js';
 import { startActionListener, stopActionListener } from './slack-actions.js';
 
 const DEFAULT_INTERVAL_SEC = 30;
 
 export async function watch(opts = {}) {
-  const accounts = getAccounts();
+  const accounts = getActiveAccounts();
   const intervalSec = Number.isFinite(opts.interval) && opts.interval > 0
     ? opts.interval
     : DEFAULT_INTERVAL_SEC;

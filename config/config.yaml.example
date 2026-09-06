@@ -5,6 +5,16 @@ accounts:
     # Optional UI/push identity and Gmail iOS account slot (first Gmail account is 1).
     avatar_url: https://example.com/your-account-avatar.png
     gmail_app_account_id: 1
+    # Optional additional receiving addresses for this mailbox. Replies/forwards
+    # use the addressed alias only when Gmail lists it as a verified send-as.
+    # An unverified listed alias produces an explicit setup error, not fallback
+    # to the primary mailbox. Addresses here do NOT configure Google routing.
+    # receiving_aliases: [info@your-brand.example, support@another-brand.example]
+    # For a retired/renamed source mailbox, keep its existing email key/IDs and
+    # route read-only history access to its current gog-authenticated identity:
+    # auth_account: legacy@example.com
+    # read_only: true
+    # sync_enabled: false
 
   # Optional: route one Gmail account to a different Slack workspace/app.
   # Keep tokens in .env and reference their variable names here.
