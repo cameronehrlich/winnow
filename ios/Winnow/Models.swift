@@ -843,12 +843,14 @@ struct AccountListResponse: Decodable {
 struct AccountStatus: Decodable, Equatable, Identifiable {
     let email: String
     var readOnly: Bool? = nil
+    var syncEnabled: Bool? = nil
     let avatarUrl: String?
     let gmailAppAccountId: Int?
     let scan: AccountScan
     let latestEvent: LatestEvent?
 
     var id: String { email }
+    var isActive: Bool { readOnly != true && syncEnabled != false }
     var avatarURL: URL? { avatarUrl.flatMap(URL.init(string:)) }
 }
 

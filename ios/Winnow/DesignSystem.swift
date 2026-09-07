@@ -128,29 +128,73 @@ struct AccountFilterMenu: View {
     @Binding var selection: String
     let accounts: [AccountStatus]
     var accessibilityLabel = "Filter account"
+    var showsSelection = false
+    var emptySelectionTitle = "All Accounts"
+    @State private var isPresented = false
+
+    private var activeAccounts: [AccountStatus] { accounts.filter(\.isActive) }
 
     var body: some View {
-        Menu {
-            Picker("Account", selection: $selection) {
-                Text("All Accounts").tag("")
-                ForEach(accounts) { account in
-                    Text(verbatim: nonBreakingEmail(account.email))
-                        .font(.subheadline)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-                        .allowsTightening(true)
-                        .accessibilityLabel(account.email)
-                        .tag(account.email)
-                }
-            }
+        Button {
+            isPresented = true
         } label: {
-            Image(systemName: selection.isEmpty ? "person.2" : "person.crop.circle")
+            if showsSelection {
+                HStack(spacing: 6) {
+                    Text(verbatim: selection.isEmpty ? emptySelectionTitle : selection)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption)
+                }
+            } else {
+                Image(systemName: selection.isEmpty ? "person.2" : "person.crop.circle")
+            }
         }
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(selection.isEmpty ? emptySelectionTitle : selection)
+        .popover(isPresented: $isPresented) {
+            ScrollView {
+                VStack(spacing: 0) {
+                    accountButton(emptySelectionTitle, value: "")
+                    ForEach(activeAccounts) { account in
+                        accountButton(account.email, value: account.email)
+                    }
+                }
+                .padding(8)
+            }
+            .frame(width: 320, height: min(CGFloat(activeAccounts.count + 1) * 44 + 16, 360))
+            .presentationCompactAdaptation(.popover)
+        }
+        .onChange(of: activeAccounts.map(\.email), initial: true) { _, emails in
+            guard !accounts.isEmpty, !selection.isEmpty, !emails.contains(selection) else { return }
+            selection = ""
+        }
     }
 
-    private func nonBreakingEmail(_ email: String) -> String {
-        email.replacingOccurrences(of: ".", with: "\u{2060}.\u{2060}")
+    private func accountButton(_ title: String, value: String) -> some View {
+        Button {
+            selection = value
+            isPresented = false
+        } label: {
+            HStack(spacing: 10) {
+                Text(verbatim: title)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .minimumScaleFactor(0.85)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "checkmark")
+                    .opacity(selection == value ? 1 : 0)
+                    .frame(width: 18)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selection == value ? .isSelected : [])
     }
 }
 

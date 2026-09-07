@@ -110,7 +110,7 @@ struct SettingsView: View {
                                 ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
                             }
 
-                            ForEach(model.accounts) { account in
+                            ForEach(model.activeAccounts) { account in
                                 HStack(spacing: 12) {
                                     Circle()
                                         .fill(account.scan.lastScanAt == nil ? Color.secondary : WinnowDesign.mint)

@@ -42,13 +42,9 @@ struct MailRulesView: View {
     var body: some View {
         List {
             Section {
-                Picker("Account", selection: $selectedAccount) {
-                    Text("All Accounts").tag("")
-                    ForEach(model.accounts) { account in
-                        Text(account.email).tag(account.email)
-                    }
+                LabeledContent("Account") {
+                    AccountFilterMenu(selection: $selectedAccount, accounts: model.accounts, showsSelection: true)
                 }
-                .pickerStyle(.menu)
             } footer: {
                 Text("Rules for all accounts remain visible because they also apply to the selected mailbox.")
             }
@@ -353,14 +349,11 @@ struct MailRuleEditorView: View {
                     .pickerStyle(.segmented)
 
                     if rule.isBaseline {
-                        Picker("Account", selection: Binding(
-                            get: { draft.account ?? "" },
-                            set: { draft.account = $0.isEmpty ? nil : $0 }
-                        )) {
-                            Text("Choose Account").tag("")
-                            ForEach(model.accounts) { account in
-                                Text(account.email).tag(account.email)
-                            }
+                        LabeledContent("Account") {
+                            AccountFilterMenu(selection: Binding(
+                                get: { draft.account ?? "" },
+                                set: { draft.account = $0.isEmpty ? nil : $0 }
+                            ), accounts: model.accounts, showsSelection: true, emptySelectionTitle: "Choose Account")
                         }
                         if draft.account == nil {
                             Text("A customization must belong to one managed account.")
@@ -489,8 +482,8 @@ struct MailRuleEditorView: View {
                 }
             }
             .onAppear {
-                if rule.isBaseline, draft.account == nil, model.accounts.count == 1 {
-                    draft.account = model.accounts[0].email
+                if rule.isBaseline, draft.account == nil, model.activeAccounts.count == 1 {
+                    draft.account = model.activeAccounts[0].email
                 }
             }
             .onChange(of: draft.type) { _, type in

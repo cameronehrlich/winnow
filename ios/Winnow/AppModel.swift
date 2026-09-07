@@ -9,6 +9,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var lifetimeSummary: LifetimeSummary = .empty
     @Published private(set) var status: RuntimeStatus?
     @Published private(set) var accounts: [AccountStatus] = []
+    // Keep retired metadata for historical message links, not account selection.
+    var activeAccounts: [AccountStatus] { accounts.filter(\.isActive) }
     @Published private(set) var mailRules: [MailRule] = []
     @Published private(set) var isLoading = false
     @Published private(set) var isRefreshing = false

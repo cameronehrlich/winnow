@@ -3,6 +3,19 @@ import XCTest
 @testable import Winnow
 
 final class ModelDecodingTests: XCTestCase {
+    func testAccountSelectionExcludesRetiredAndDisabledMailboxes() throws {
+        let json = #"{"accounts":[{"email":"legacy@example.com","readOnly":true,"syncEnabled":false,"scan":{}},{"email":"paused@example.com","syncEnabled":false,"scan":{}},{"email":"support@example.com","readOnly":false,"syncEnabled":true,"scan":{}}]}"#
+        let response = try JSONDecoder().decode(AccountListResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(response.accounts.filter(\.isActive).map(\.email), ["support@example.com"])
+        XCTAssertEqual(response.accounts.count, 3, "Retain metadata for historical message links")
+    }
+
+    func testOlderServersAccountsRemainSelectable() throws {
+        let json = #"{"email":"me@example.com","scan":{}}"#
+        let account = try JSONDecoder().decode(AccountStatus.self, from: Data(json.utf8))
+        XCTAssertTrue(account.isActive)
+    }
+
     func testDefaultAPIClientWaitsForConnectivity() {
         let client = APIClient(
             configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret")
