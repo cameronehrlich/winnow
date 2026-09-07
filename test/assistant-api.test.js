@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { GmailCommandError } from '../src/adapters/gog.js';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -157,7 +158,11 @@ api:
       calls.lastReply = { account, reference, draft };
       return { ok: true };
     },
-    async forward() { return { ok: true }; },
+    async forward() {
+      calls.forward = (calls.forward || 0) + 1;
+      if (calls.forwardError) throw calls.forwardError;
+      return { ok: true };
+    },
   }));
 
   server = createApiServer();
@@ -1459,6 +1464,27 @@ describe('assistant API', () => {
     assert.equal(confirmed.status, 200);
     assert.equal(calls.lastReply.account, 'me@example.com');
     assert.equal(calls.lastReply.draft.from, 'info@brand.example');
+  });
+
+  it('explains a rejected forward command without attributing it to the model or replaying the send', async () => {
+    calls.forwardError = new GmailCommandError({ code: 2 });
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    addAssistantMessage({
+      id: 'failed-forward-draft', conversationId: created.conversation.id, role: 'assistant', text: 'Draft',
+      draft: { kind: 'forward', body: '---------- Forwarded message ---------', to: ['recipient@example.com'], cc: [], bcc: [] },
+    });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/draft-send-proposal`, {
+      messageId: 'failed-forward-draft', idempotencyKey: 'failed-forward-proposal',
+    });
+    const proposal = (await response.json()).messages.at(-1).proposal;
+    const confirmation = { confirmationDigest: proposal.confirmationDigest };
+    const confirmed = await post(`/v1/assistant/proposals/${proposal.id}/confirm`, confirmation);
+    assert.equal(confirmed.status, 200);
+    const envelope = await confirmed.json();
+    assert.match(envelope.messages.at(-1).text, /Nothing was sent/);
+    assert.doesNotMatch(envelope.messages.at(-1).text, /while.*answering/);
+    await post(`/v1/assistant/proposals/${proposal.id}/confirm`, confirmation);
+    assert.equal(calls.forward, 1);
   });
 
   it('keeps iOS reminder proposals pending until the client reports a successful save', async () => {

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { GmailCommandError } from './adapters/gog.js';
 import { createAssistantModel } from './assistant-model.js';
 import {
   ASSISTANT_TOOL_DEFINITIONS,
@@ -301,6 +302,7 @@ async function waitForExistingRun(run, timeoutMs = 80_000) {
 }
 
 function errorText(err) {
+  if (err instanceof GmailCommandError) return err.message;
   if (err instanceof AssistantToolError && err.code === 'invalid_tool_arguments') {
     return 'I couldn\u2019t prepare that request correctly. Please try again.';
   }

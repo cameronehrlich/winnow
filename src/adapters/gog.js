@@ -24,6 +24,17 @@ const MAX_THREAD_HTML_BODY_LENGTH = 1_500_000;
 const MAX_RECIPIENTS = 50;
 const MAX_SYNC_RESULTS = 500;
 
+export class GmailCommandError extends Error {
+  constructor(error) {
+    const invalidArguments = error.code === 2;
+    super(invalidArguments
+      ? 'Winnow could not prepare this email for Gmail. Nothing was sent. Please try creating a new send request.'
+      : 'Gmail could not confirm that this email was sent. Check Sent before trying again to avoid sending it twice.');
+    this.code = invalidArguments ? 'gmail_command_invalid' : 'gmail_send_unconfirmed';
+    // Do not retain stderr or the original message: the CLI can echo email text.
+  }
+}
+
 function parseJson(stdout) {
   try {
     return JSON.parse(String(stdout || ''));
@@ -237,6 +248,7 @@ export class GogAdapter extends GmailAdapter {
       );
     } catch (error) {
       if (error.code === 'ENOENT') throw new Error('gog CLI not found. Install gogcli: https://gogcli.sh');
+      if (['reply', 'forward'].includes(args[1])) throw new GmailCommandError(error);
       throw error;
     }
   }
@@ -399,13 +411,14 @@ export class GogAdapter extends GmailAdapter {
     const to = normalizeRecipientList(draft?.to, 'to');
     const cc = normalizeRecipientList(draft?.cc, 'cc');
     const bcc = normalizeRecipientList(draft?.bcc, 'bcc');
-    const args = ['gmail', 'reply', messageId, '--body', body, '--no-quote', '--account', safeAccount];
+    // Bind text to its option so a leading '-' is never parsed as a flag.
+    const args = ['gmail', 'reply', messageId, `--body=${body}`, '--no-quote', '--account', safeAccount];
     if (draft?.from) args.push('--from', validateAccount(draft.from));
     for (const recipient of normalizeRecipientList(draft?.removeRecipients, 'removeRecipients')) args.push('--remove', recipient);
     for (const recipient of to) args.push('--to', recipient);
     for (const recipient of cc) args.push('--cc', recipient);
     for (const recipient of bcc) args.push('--bcc', recipient);
-    if (draft?.subject != null) args.push('--subject', requireString(draft.subject, 'subject', 998));
+    if (draft?.subject != null) args.push(`--subject=${requireString(draft.subject, 'subject', 998)}`);
     return this.#runJson(args);
   }
 
@@ -424,7 +437,7 @@ export class GogAdapter extends GmailAdapter {
     if (cc.length) args.push('--cc', cc.join(','));
     if (bcc.length) args.push('--bcc', bcc.join(','));
     if (draft?.note != null) {
-      args.push('--note', requireString(draft.note, 'note', MAX_NOTE_LENGTH, { allowEmpty: true, preserve: true }));
+      args.push(`--note=${requireString(draft.note, 'note', MAX_NOTE_LENGTH, { allowEmpty: true, preserve: true })}`);
     }
     if (draft?.skipAttachments === true) args.push('--skip-attachments');
     return this.#runJson(args);

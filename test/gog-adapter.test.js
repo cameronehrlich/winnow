@@ -254,7 +254,7 @@ describe('GogAdapter assistant primitives', () => {
     assert.equal(result.id, 'sent1');
     assert.equal(calls[0].command, '/fake/gog');
     assert.deepEqual(calls[0].args, [
-      'gmail', 'reply', 'message1', '--body', body, '--no-quote', '--account', 'me@example.com',
+      'gmail', 'reply', 'message1', `--body=${body}`, '--no-quote', '--account', 'me@example.com',
       '--from', 'info@brand.example',
       '--to', 'person@example.com', '--cc', 'copy@example.com', '--json', '--no-input',
     ]);
@@ -273,7 +273,7 @@ describe('GogAdapter assistant primitives', () => {
 
     assert.deepEqual(calls[0].args, [
       'gmail', 'forward', 'message1', '--to', 'one@example.com,two@example.com',
-      '--account', 'me@example.com', '--from', 'info@brand.example', '--bcc', 'audit@example.com', '--note', ' FYI\n',
+      '--account', 'me@example.com', '--from', 'info@brand.example', '--bcc', 'audit@example.com', '--note= FYI\n',
       '--skip-attachments', '--json', '--no-input',
     ]);
   });
