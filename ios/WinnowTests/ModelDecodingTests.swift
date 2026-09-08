@@ -1,8 +1,32 @@
 import Foundation
 import XCTest
+import WebKit
 @testable import Winnow
 
 final class ModelDecodingTests: XCTestCase {
+    @MainActor
+    func testEmailReaderDisplaysEmbeddedImagesWithoutAllowingRemoteImages() async throws {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 500), configuration: configuration)
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII="
+        let html = "<img id='embedded' src='data:image/png;base64,\(png)'><img id='remote' src='https://tracker.invalid/pixel'>"
+        webView.loadHTMLString(SafeEmailHTML.document(for: html), baseURL: nil)
+        for _ in 0..<100 {
+            let loaded = try? await webView.evaluateJavaScript("document.getElementById('embedded')?.naturalWidth === 1")
+            if (loaded as? Bool) == true {
+                let visible = try await webView.evaluateJavaScript("getComputedStyle(document.getElementById('embedded')).display !== 'none'")
+                let remoteWidth = try await webView.evaluateJavaScript("document.getElementById('remote').naturalWidth")
+                XCTAssertEqual(visible as? Bool, true)
+                XCTAssertEqual(remoteWidth as? Int, 0)
+                return
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTFail("The embedded image should decode and render under the email reader's security policy")
+    }
+
     func testAccountSelectionExcludesRetiredAndDisabledMailboxes() throws {
         let json = #"{"accounts":[{"email":"legacy@example.com","readOnly":true,"syncEnabled":false,"scan":{}},{"email":"paused@example.com","syncEnabled":false,"scan":{}},{"email":"support@example.com","readOnly":false,"syncEnabled":true,"scan":{}}]}"#
         let response = try JSONDecoder().decode(AccountListResponse.self, from: Data(json.utf8))

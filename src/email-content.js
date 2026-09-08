@@ -8,6 +8,7 @@ import {
 } from './email-attachments.js';
 import { emailBodyToText } from './message-content.js';
 import { discoverUnsubscribeMethods } from './unsubscribe-discovery.js';
+import { embedInlineImages } from './email-inline-images.js';
 
 const MAX_MESSAGES = 100;
 const MAX_MESSAGE_CHARS = 100_000;
@@ -151,6 +152,11 @@ export async function fetchEmailContent(item, { adapter = new GogAdapter() } = {
     .filter(message => message.id || message.body);
 
   if (!normalized.length) throw new Error('Gmail returned no readable messages for this thread');
+  await embedInlineImages(normalized, messages, {
+    account: item.account,
+    focusedMessageId: item.messageId || normalized.at(-1)?.id,
+    adapter,
+  });
   const attachments = collectThreadAttachments({ messages });
   return {
     emailItemId: item.id,

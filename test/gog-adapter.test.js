@@ -241,6 +241,20 @@ describe('GogAdapter assistant primitives', () => {
     assert.equal(calls[0].args.includes('--out'), true);
   });
 
+  it('passes inline-image cancellation through to the Gmail subprocess', async () => {
+    const signal = AbortSignal.abort();
+    const adapter = new GogAdapter({
+      execute: async (command, args, options) => {
+        assert.equal(options.signal, signal);
+        options.signal.throwIfAborted();
+      },
+    });
+    await assert.rejects(
+      adapter.getAttachment('me@example.com', 'message1', 'attachment1', { maxBytes: 100, signal }),
+      error => error.name === 'AbortError',
+    );
+  });
+
   it('sends an exact reply only when reply is explicitly invoked', async () => {
     const { adapter, calls } = fakeAdapter([{ id: 'sent1', threadId: 'thread1' }]);
     const body = '  Confirmed body with $(not-a-shell)\n';

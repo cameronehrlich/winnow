@@ -7,6 +7,7 @@ import { GmailAdapter } from './gmail.js';
 import { getAccountConfig } from '../config.js';
 import { normalizeEmailHeaderText } from '../email-metadata.js';
 import { collectMessageAttachments, MAX_ATTACHMENT_BYTES } from '../email-attachments.js';
+import { collectInlineImages } from '../email-inline-images.js';
 
 const defaultExecute = promisify(execFile);
 const GOG_FLAGS = ['--json', '--no-input'];
@@ -217,7 +218,7 @@ export function normalizeGogMessage(message, {
     internalDate: String(value?.internalDate || value?.InternalDate || ''),
     headers,
     body,
-    ...(includeBody && includeHtml ? { htmlBody } : {}),
+    ...(includeBody && includeHtml ? { htmlBody, inlineImages: collectInlineImages(value) } : {}),
     attachments: collectMessageAttachments(value),
   };
 }
@@ -234,7 +235,7 @@ export class GogAdapter extends GmailAdapter {
     this.#command = command;
   }
 
-  async #run(args, { force = false } = {}) {
+  async #run(args, { force = false, signal } = {}) {
     const accountIndex = args.indexOf('--account');
     const config = accountIndex >= 0 ? getAccountConfig(args[accountIndex + 1]) : {};
     args = [...args];
@@ -244,7 +245,7 @@ export class GogAdapter extends GmailAdapter {
       return await this.#execute(
         this.#command,
         [...args, ...GOG_FLAGS, ...(force ? ['--force'] : [])],
-        EXEC_OPTIONS,
+        signal ? { ...EXEC_OPTIONS, signal } : EXEC_OPTIONS,
       );
     } catch (error) {
       if (error.code === 'ENOENT') throw new Error('gog CLI not found. Install gogcli: https://gogcli.sh');
@@ -366,7 +367,7 @@ export class GogAdapter extends GmailAdapter {
     };
   }
 
-  async getAttachment(account, messageId, attachmentId, { maxBytes = MAX_ATTACHMENT_BYTES } = {}) {
+  async getAttachment(account, messageId, attachmentId, { maxBytes = MAX_ATTACHMENT_BYTES, signal } = {}) {
     const safeAccount = validateAccount(account);
     const safeMessageId = validateGmailId(messageId, 'messageId');
     const safeAttachmentId = validateAttachmentId(attachmentId);
@@ -381,7 +382,7 @@ export class GogAdapter extends GmailAdapter {
         'gmail', 'attachment', safeMessageId, safeAttachmentId,
         '--account', safeAccount,
         '--out', path,
-      ]);
+      ], { signal });
       const file = await stat(path);
       if (!file.isFile() || file.size > maxBytes) {
         const error = new Error('attachment_size_not_supported');
