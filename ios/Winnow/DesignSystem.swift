@@ -330,6 +330,13 @@ struct CapsuleLabel: View {
 struct ConnectionBadge: View {
     let isOnline: Bool
     let isRefreshing: Bool
+    var syncState: String = "current"
+
+    private var statusLabel: String {
+        if !isOnline { return "Offline" }
+        if isRefreshing || syncState == "syncing" { return "Syncing" }
+        return syncState == "error" ? "Sync issue" : "Up to date"
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -337,24 +344,31 @@ struct ConnectionBadge: View {
                 ProgressView().controlSize(.mini)
             } else {
                 Circle()
-                    .fill(isOnline ? WinnowDesign.mint : Color.secondary)
+                    .fill(isOnline && syncState == "current" ? WinnowDesign.mint : Color.secondary)
                     .frame(width: 7, height: 7)
             }
-            Text(isRefreshing ? "Syncing" : (isOnline ? "Live" : "Offline"))
+            Text(statusLabel)
         }
         .font(.caption.weight(.semibold))
         .foregroundStyle(.secondary)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(.thinMaterial, in: Capsule())
-        .accessibilityLabel(isRefreshing ? "Syncing" : (isOnline ? "Winnow is online" : "Winnow is offline"))
+        .accessibilityLabel("Winnow: \(statusLabel)")
     }
 }
 
 struct WinnowStatusButton: View {
     let isOnline: Bool
     let isRefreshing: Bool
+    var syncState: String = "current"
     let action: () -> Void
+
+    private var statusLabel: String {
+        if !isOnline { return "Offline" }
+        if isRefreshing || syncState == "syncing" { return "Syncing" }
+        return syncState == "error" ? "Sync issue" : "Up to date"
+    }
 
     var body: some View {
         Button(action: action) {
@@ -363,10 +377,10 @@ struct WinnowStatusButton: View {
                     ProgressView().controlSize(.mini)
                 } else {
                     Circle()
-                        .fill(isOnline ? WinnowDesign.mint : Color.secondary)
+                        .fill(isOnline && syncState == "current" ? WinnowDesign.mint : Color.secondary)
                         .frame(width: 7, height: 7)
                 }
-                Text(isRefreshing ? "Syncing" : (isOnline ? "Live" : "Offline"))
+                Text(statusLabel)
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
@@ -375,7 +389,7 @@ struct WinnowStatusButton: View {
             .background(.thinMaterial, in: Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(isRefreshing ? "Winnow is syncing" : (isOnline ? "Winnow is live" : "Winnow is offline"))
+        .accessibilityLabel("Winnow: \(statusLabel)")
         .accessibilityHint("Shows status and activity")
     }
 }

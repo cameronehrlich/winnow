@@ -107,7 +107,7 @@ struct SettingsView: View {
                                     }
                                 }
                                 Spacer()
-                                ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing)
+                                ConnectionBadge(isOnline: model.isOnline, isRefreshing: model.isRefreshing, syncState: model.mailboxSyncState)
                             }
 
                             ForEach(model.activeAccounts) { account in

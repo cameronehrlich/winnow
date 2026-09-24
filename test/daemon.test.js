@@ -8,11 +8,11 @@ const require = createRequire(import.meta.url);
 describe('daemon interval resolution', () => {
   it('uses configured daemon scan interval when CLI interval is omitted', () => {
     assert.deepEqual(resolveDaemonIntervals({}, {
-      daemon: { scan_interval_seconds: 45 },
+      daemon: { scan_interval_seconds: 45, sync_interval_seconds: 20 },
       reconcile: { interval_seconds: 600 },
     }), {
       scanIntervalSec: 45,
-      reconcileIntervalSec: 600,
+      syncIntervalSec: 20,
     });
   });
 
@@ -28,7 +28,7 @@ describe('daemon interval resolution', () => {
       reconcile: { interval_seconds: -1 },
     }), {
       scanIntervalSec: 30,
-      reconcileIntervalSec: 300,
+      syncIntervalSec: 30,
     });
   });
 

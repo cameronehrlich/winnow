@@ -51,6 +51,7 @@ struct AssistantMailboxView: View {
                     WinnowStatusButton(
                         isOnline: model.isOnline,
                         isRefreshing: model.isRefreshing,
+                        syncState: model.mailboxSyncState,
                         action: openStats
                     )
                 }

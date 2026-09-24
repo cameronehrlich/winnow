@@ -5,6 +5,7 @@ import SwiftUI
 final class AppModel: ObservableObject {
     @Published private(set) var configuration: ServerConfiguration
     @Published private(set) var emails: [EmailItem] = []
+    @Published private(set) var mailboxSyncState = "syncing"
     @Published private(set) var summary: DailySummary = .empty
     @Published private(set) var lifetimeSummary: LifetimeSummary = .empty
     @Published private(set) var status: RuntimeStatus?
@@ -122,6 +123,11 @@ final class AppModel: ObservableObject {
 
         let client = APIClient(configuration: configuration)
         let pageCount = archivedPageCount
+        // The server bounds this wait and keeps catch-up running afterward.
+        // Still load cached mail when Gmail is unavailable.
+        let sync = try? await client.syncMailboxes()
+        guard generation == refreshGeneration else { return }
+        mailboxSyncState = sync?.state ?? "error"
         do {
             let (inboxPage, archivedPage) = try await withTransientRetry(count: transientRetryCount) {
                 async let fetchedInbox = client.emails(state: "inbox", limit: 200)

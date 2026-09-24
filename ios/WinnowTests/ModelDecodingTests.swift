@@ -4,6 +4,25 @@ import WebKit
 @testable import Winnow
 
 final class ModelDecodingTests: XCTestCase {
+    func testMailboxSyncUsesAuthenticatedBoundedPost() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test/base", token: "secret"),
+            session: URLSession(configuration: configuration)
+        )
+        MailRuleURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/base/v1/sync")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            XCTAssertEqual(request.timeoutInterval, 8)
+            return (200, #"{"state":"syncing","accounts":[]}"#)
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+        let response = try await client.syncMailboxes()
+        XCTAssertEqual(response.state, "syncing")
+    }
+
     @MainActor
     func testEmailReaderDisplaysEmbeddedImagesWithoutAllowingRemoteImages() async throws {
         let configuration = WKWebViewConfiguration()

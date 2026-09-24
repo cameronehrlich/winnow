@@ -182,6 +182,10 @@ struct APIClient: AssistantService {
         try await emailContentEnvelope(emailID: emailID).content
     }
 
+    func syncMailboxes() async throws -> MailboxSyncResponse {
+        try await request(path: "/v1/sync", method: "POST", timeoutInterval: 8)
+    }
+
     func emailContentEnvelope(emailID: String) async throws -> EmailContentEnvelope {
         let encodedID = emailID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? emailID
         return try await request(

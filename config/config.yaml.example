@@ -48,9 +48,8 @@ api:
 
 daemon:
   scan_interval_seconds: 30
-
-reconcile:
-  interval_seconds: 300
+  # Gmail label/history sync, independent of new-message classification.
+  sync_interval_seconds: 30
 
 # AI model configuration (uses GEMINI_API_KEY env var)
 model:

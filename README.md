@@ -176,6 +176,21 @@ Once running, every email shows up in your Slack channel with an emoji indicatin
 
 4. **Track + Notify** — Every email is written to the local feed/event store. Slack receives feed posts according to your config, and structured summaries are available from the CLI/API.
 
+### Mailbox synchronization
+
+Gmail remains authoritative for inbox/archive and read/unread labels. The daemon
+checks Gmail history every 30 seconds (`daemon.sync_interval_seconds`), separately
+from new-message scans. Each account has one in-flight sync shared with the app.
+Daily snapshots and expired-cursor recovery remain handled by the history sync;
+the daemon no longer polls hundreds of individual messages every five minutes.
+
+Authenticated `POST /v1/sync` checks all active accounts, joining existing work.
+It waits at most four seconds, then returns `state` (`current`, `syncing`, or
+`error`) and per-account `lastSuccessAt`, `syncing`, and sanitized `error` fields.
+Slow work continues in the background; ordinary feed reads remain available.
+The app calls this before refreshing its lists and still loads cached mail on
+sync failure. APNs hints follow changed mail; foreground refresh is the fallback.
+
 ### Ask Winnow assistant
 
 The private API also supports conversational email work for the native iOS app:

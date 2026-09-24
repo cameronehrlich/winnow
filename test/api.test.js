@@ -181,6 +181,24 @@ afterEach(async () => {
 });
 
 describe('local API', () => {
+  it('requires authentication for refresh and returns sync freshness without blocking feed reads', async () => {
+    let calls = 0;
+    apiDependencies.refreshMailboxes = async () => {
+      calls++;
+      return { state: 'syncing', accounts: [{ account: 'me@example.com', syncing: true, lastSuccessAt: null, error: null }] };
+    };
+    assert.equal((await fetch(`${baseUrl}/v1/sync`, { method: 'POST' })).status, 401);
+    assert.equal(calls, 0);
+    const headers = { Authorization: 'Bearer test-token' };
+    const response = await fetch(`${baseUrl}/v1/sync`, { method: 'POST', headers });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).state, 'syncing');
+    assert.equal(calls, 1);
+    const page = await fetch(`${baseUrl}/v1/emails`, { headers });
+    assert.equal(page.status, 200);
+    assert.equal(calls, 1, 'ordinary page reads must not start additional Gmail work');
+  });
+
   it('allows health without auth and protects v1 routes', async () => {
     const health = await fetch(`${baseUrl}/health`);
     assert.equal(health.status, 200);

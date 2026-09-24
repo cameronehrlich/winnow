@@ -10,6 +10,10 @@ struct EmailListResponse: Decodable {
     var archivedUnseenCount: Int?
 }
 
+struct MailboxSyncResponse: Decodable {
+    let state: String
+}
+
 struct ArchivedSeenResponse: Decodable {
     let ok: Bool
     let updated: Int

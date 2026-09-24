@@ -184,6 +184,7 @@ struct SentMailboxListView: View {
                 WinnowStatusButton(
                     isOnline: model.isOnline,
                     isRefreshing: isLoading,
+                    syncState: model.mailboxSyncState,
                     action: openStats
                 )
             }
@@ -472,6 +473,7 @@ struct MailboxListView: View {
                 WinnowStatusButton(
                     isOnline: model.isOnline,
                     isRefreshing: model.isRefreshing,
+                    syncState: model.mailboxSyncState,
                     action: openStats
                 )
             }

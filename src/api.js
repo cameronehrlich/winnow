@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { refreshMailboxes } from './mailbox-sync.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { loadConfig, getAccounts } from './config.js';
 import { archiveEmail, markEmailRead, markEmailUnread, moveEmailToInbox } from './actions.js';
@@ -372,6 +373,11 @@ function mobileEmailItem(item, entries) {
 }
 
 async function handleAuthed(req, res, url, dependencies = {}) {
+  if (req.method === 'POST' && url.pathname === '/v1/sync') {
+    const sync = dependencies.refreshMailboxes || refreshMailboxes;
+    sendJson(res, 200, await sync({ force: true }));
+    return;
+  }
   if (req.method === 'GET' && url.pathname === '/v1/bootstrap') {
     const accounts = listAccountStatus();
     sendJson(res, 200, {
