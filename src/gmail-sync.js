@@ -184,9 +184,14 @@ export async function fullSyncGmailInbox(account, {
 
   for (const item of listTrackedInboxEmailItems({ account, limit: 1000 })) {
     if (remoteIds.has(item.messageId)) continue;
-    const updated = await applyExistingState(item, {
-      labelIds: item.readState === 'unread' ? ['UNREAD'] : [],
-    }, {
+    let current;
+    try {
+      current = normalizeFetchedMessage(await adapter.getMessage(account, item.messageId), item.messageId);
+    } catch (error) {
+      if (!isMissingMessageError(error)) throw error;
+      current = { labelIds: [] };
+    }
+    const updated = await applyExistingState(item, current, {
       source: 'gmail_full_sync', syncSlackFn,
     });
     if (updated) changed.push(updated);
@@ -196,7 +201,8 @@ export async function fullSyncGmailInbox(account, {
     indexGmailMessageMetadata(account, summary);
     const existing = findEmailItemByGmail({ account, messageId: summary.id, threadId: summary.threadId });
     if (existing) {
-      const updated = await applyExistingState(existing, summary, {
+      const current = normalizeFetchedMessage(await adapter.getMessage(account, summary.id), summary.id);
+      const updated = await applyExistingState(existing, current, {
         source: 'gmail_full_sync', syncSlackFn,
       });
       if (updated) changed.push(updated);
@@ -347,5 +353,52 @@ export async function syncGmailMailbox(account, {
     changed: changed.length,
     changes: changed,
     historyId: nextHistoryId,
+  };
+}
+
+// Gmail's compact history can omit a label-only change. Compare the current
+// Inbox and unread sets on every sync, then fetch only messages that left Inbox.
+// A partial snapshot must never be treated as evidence that mail was archived.
+export async function reconcileTrackedInbox(account, {
+  adapter = new GogAdapter(), syncSlackFn = syncSlackDeliveryForItem,
+} = {}) {
+  const [inbox, unread] = await Promise.all([
+    adapter.searchAllMailbox(account, 'in:inbox', FULL_SYNC_LIMIT),
+    adapter.searchAllMailbox(account, 'in:inbox is:unread', FULL_SYNC_LIMIT),
+  ]);
+  if (!inbox.complete || !unread.complete) {
+    throw new Error('Gmail label snapshot incomplete');
+  }
+  const inboxIds = new Set(inbox.messages.map(message => message.id));
+  const unreadIds = new Set(unread.messages.map(message => message.id));
+  const changed = [];
+  for (const item of listTrackedInboxEmailItems({ account, limit: 1000 })) {
+    let current;
+    if (inboxIds.has(item.messageId)) {
+      current = { labelIds: unreadIds.has(item.messageId) ? ['INBOX', 'UNREAD'] : ['INBOX'] };
+    } else {
+      try {
+        current = normalizeFetchedMessage(await adapter.getMessage(account, item.messageId), item.messageId);
+      } catch (error) {
+        if (!isMissingMessageError(error)) throw error;
+        current = { labelIds: [] };
+      }
+    }
+    const updated = await applyExistingState(item, current, {
+      source: 'gmail_snapshot', syncSlackFn,
+    });
+    if (updated) changed.push(updated);
+  }
+  return { checked: inboxIds.size, changed: changed.length, changes: changed };
+}
+
+export async function synchronizeGmailMailbox(account, options = {}) {
+  const history = await syncGmailMailbox(account, options);
+  const snapshot = await reconcileTrackedInbox(account, options);
+  return {
+    ...history,
+    checked: history.checked + snapshot.checked,
+    changed: history.changed + snapshot.changed,
+    changes: [...history.changes, ...snapshot.changes],
   };
 }

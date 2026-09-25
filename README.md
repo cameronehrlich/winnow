@@ -179,9 +179,10 @@ Once running, every email shows up in your Slack channel with an emoji indicatin
 ### Mailbox synchronization
 
 Gmail remains authoritative for inbox/archive and read/unread labels. The daemon
-checks Gmail history every 30 seconds (`daemon.sync_interval_seconds`), separately
-from new-message scans. Each account has one in-flight sync shared with the app.
-Daily snapshots and expired-cursor recovery remain handled by the history sync;
+checks Gmail history and current Inbox/unread labels every 30 seconds
+(`daemon.sync_interval_seconds`), separately from new-message scans. Each
+account has one in-flight sync shared with the app. Daily full snapshots and
+expired-cursor recovery remain handled by the history sync;
 the daemon no longer polls hundreds of individual messages every five minutes.
 
 Authenticated `POST /v1/sync` checks all active accounts, joining existing work.

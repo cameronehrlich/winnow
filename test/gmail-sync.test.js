@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fullSyncGmailInbox, syncGmailMailbox } from '../src/gmail-sync.js';
+import { fullSyncGmailInbox, reconcileTrackedInbox, syncGmailMailbox, synchronizeGmailMailbox } from '../src/gmail-sync.js';
 import {
   closeStoreForTests,
   configureDatabaseForTests,
@@ -426,6 +426,7 @@ describe('durable Gmail synchronization', () => {
     const adapter = {
       searchAllMailbox: async () => ({ complete: true, messages: [] }),
       searchMailbox: async () => ({ messages: [] }),
+      getMessage: async () => fullMessage({ id: 'm-stale', labels: [], historyId: '20' }),
     };
 
     const result = await fullSyncGmailInbox('me@example.com', {
@@ -437,5 +438,41 @@ describe('durable Gmail synchronization', () => {
     assert.equal(result.changed, 1);
     assert.equal(findEmailItemByGmail({ account: 'me@example.com', messageId: 'm-stale' }).mailboxState, 'archived');
     assert.deepEqual(slackUpdates, [stale.id]);
+  });
+
+  it('repairs an external archive and read even when compact history omitted the label change', async () => {
+    upsertEmailItemFromResult({ account: 'me@example.com', messageId: 'm-archived',
+      threadId: 't-archived', archive: false, readState: 'unread' });
+    upsertEmailItemFromResult({ account: 'me@example.com', messageId: 'm-read',
+      threadId: 't-read', archive: false, readState: 'unread' });
+    setGmailHistoryCursor('me@example.com', '10');
+    setGmailFullSyncAt('me@example.com');
+    const calls = [];
+    const adapter = {
+      getHistory: async () => ({ historyId: '12', messages: [] }),
+      searchAllMailbox: async (_account, query) => ({ complete: true,
+        messages: query === 'in:inbox' ? [{ id: 'm-read' }] : [] }),
+      getMessage: async (_account, id) => { calls.push(id); return fullMessage({ id, labels: [], historyId: '11' }); },
+    };
+    const result = await synchronizeGmailMailbox('me@example.com', {
+      adapter, syncSlackFn: async () => ({ updated: 0 }),
+    });
+    assert.deepEqual(calls, ['m-archived'], 'only messages missing from Inbox need a full fetch');
+    assert.equal(result.changed, 2);
+    assert.equal(findEmailItemByGmail({ account: 'me@example.com', messageId: 'm-archived' }).mailboxState, 'archived');
+    assert.equal(findEmailItemByGmail({ account: 'me@example.com', messageId: 'm-archived' }).readState, 'read');
+    assert.equal(findEmailItemByGmail({ account: 'me@example.com', messageId: 'm-read' }).readState, 'read');
+    assert.equal(getGmailHistoryCursor('me@example.com'), '12');
+  });
+
+  it('does not infer archives or reads from an incomplete label snapshot', async () => {
+    upsertEmailItemFromResult({ account: 'me@example.com', messageId: 'm-1',
+      threadId: 't-1', archive: false, readState: 'unread' });
+    await assert.rejects(reconcileTrackedInbox('me@example.com', {
+      adapter: { searchAllMailbox: async () => ({ complete: false, messages: [] }) },
+    }), /snapshot incomplete/);
+    const item = findEmailItemByGmail({ account: 'me@example.com', messageId: 'm-1' });
+    assert.equal(item.mailboxState, 'inbox');
+    assert.equal(item.readState, 'unread');
   });
 });

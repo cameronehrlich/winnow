@@ -1,9 +1,9 @@
 import { getActiveAccounts } from './config.js';
-import { syncGmailMailbox } from './gmail-sync.js';
+import { synchronizeGmailMailbox } from './gmail-sync.js';
 import { sendBadgeSync } from './push.js';
 
 // One owner per account: background ticks and app refreshes join the same work.
-export function createMailboxSync({ sync = syncGmailMailbox, notify = sendBadgeSync, now = Date.now } = {}) {
+export function createMailboxSync({ sync = synchronizeGmailMailbox, notify = sendBadgeSync, now = Date.now } = {}) {
   const states = new Map();
 
   function status(account) {
