@@ -108,10 +108,15 @@ Winnow keeps its high-volume classification/summarization path separate from the
 The legacy shared `model.name` key remains supported as a fallback for existing installations; setting the two
 specific keys is recommended so each workload can be tuned independently.
 
-Set credentials in `.env`:
+Winnow calls Gemini through Vertex AI. Enable the Vertex AI API on the selected Google Cloud project and give the runtime identity the Vertex AI User role. Set up Application Default Credentials for that identity; for a local daemon, Google supports service account impersonation. Keep the ADC file outside this repository.
+
+Set the project and other credentials in `.env`:
 
 ```bash
-GEMINI_API_KEY=your_gemini_key
+GOOGLE_CLOUD_PROJECT=your_google_cloud_project
+GOOGLE_CLOUD_LOCATION=global
+GOOGLE_CLOUD_QUOTA_PROJECT=your_google_cloud_project
+# GOOGLE_APPLICATION_CREDENTIALS=/absolute/private/path/vertex-adc.json
 SLACK_BOT_TOKEN=xoxb-your-token
 SLACK_APP_TOKEN=xapp-your-token
 WORK_SLACK_BOT_TOKEN=xoxb-your-workspace-token

@@ -1,18 +1,7 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getClassificationModelName, loadConfig } from './config.js';
+import { getGeminiClient } from './gemini-client.js';
 import { normalizeMessageContent } from './message-content.js';
 import { loadAllRules, formatRulesForPrompt } from './rules.js';
-
-let geminiClient;
-
-function getClient() {
-  if (!geminiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error('GEMINI_API_KEY environment variable is required');
-    geminiClient = new GoogleGenerativeAI(apiKey);
-  }
-  return geminiClient;
-}
 
 export const SYSTEM_PROMPT = `You are an email triage assistant. Decide whether each email should be archived or kept in the inbox based on the triage rules provided.
 
@@ -211,13 +200,12 @@ export async function classifyEmail(email, { account } = {}) {
   const userPrompt = buildClassificationPrompt(email, rulesText);
 
   const modelName = getClassificationModelName(config);
-  const model = getClient().getGenerativeModel({
+  const response = await getGeminiClient().models.generateContent({
     model: modelName,
-    systemInstruction: SYSTEM_PROMPT,
+    contents: userPrompt,
+    config: { systemInstruction: SYSTEM_PROMPT },
   });
-
-  const response = await model.generateContent(userPrompt);
-  const text = response.response.text() || '{}';
+  const text = response.text || '{}';
 
   let result;
   try {

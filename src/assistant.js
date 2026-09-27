@@ -323,7 +323,7 @@ function assistantFailureCode(err) {
   if (typeof err?.code === 'string' && err.code) return err.code;
   const status = Number(err?.status || err?.statusCode || err?.response?.status || 0);
   if (status >= 400 && status <= 599) return `assistant_model_http_${status}`;
-  if (/GoogleGenerativeAI/i.test(String(err?.name || ''))) return 'assistant_model_provider_error';
+  if (/GoogleGenerativeAI|ApiError/i.test(String(err?.name || ''))) return 'assistant_model_provider_error';
   return 'assistant_failed';
 }
 
@@ -467,6 +467,7 @@ async function boundedModelResponse(model, input) {
 
 function isInvalidModelResponse(err) {
   return err?.code === 'assistant_model_invalid_json'
+    || err?.code === 'assistant_model_empty_response'
     || String(err?.message || '') === 'assistant_model_invalid_json'
     || /GoogleGenerativeAIResponseError/i.test(String(err?.name || ''));
 }

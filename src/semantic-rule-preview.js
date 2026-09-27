@@ -1,5 +1,5 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getClassificationModelName, loadConfig } from './config.js';
+import { getGeminiClient } from './gemini-client.js';
 
 const MAX_MESSAGES = 30;
 const MAX_FROM = 200;
@@ -8,23 +8,12 @@ const MAX_SUMMARY = 800;
 const MAX_SNIPPET = 800;
 const DEFAULT_TIMEOUT_MS = 20_000;
 
-let client;
-
 export class SemanticPreviewError extends Error {
   constructor(message = 'Semantic rule preview is temporarily unavailable', { cause } = {}) {
     super(message, { cause });
     this.code = 'semantic_preview_unavailable';
     this.retryable = true;
   }
-}
-
-function getClient() {
-  if (!client) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error('GEMINI_API_KEY environment variable is required');
-    client = new GoogleGenerativeAI(apiKey);
-  }
-  return client;
 }
 
 function truncate(value, max) {
@@ -105,9 +94,13 @@ Return exactly one result for every supplied emailItemId.`;
   try {
     const request = generateContent
       ? generateContent({ modelName, systemInstruction, prompt })
-      : getClient().getGenerativeModel({ model: modelName, systemInstruction }).generateContent(prompt);
+      : getGeminiClient().models.generateContent({
+        model: modelName,
+        contents: prompt,
+        config: { systemInstruction },
+      });
     const response = await withTimeout(Promise.resolve(request), Math.max(1, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
-    const parsed = parseJson(response.response.text());
+    const parsed = parseJson(response.text ?? response.response?.text());
     if (!Array.isArray(parsed.results) || parsed.results.length !== records.length) {
       throw new Error('Semantic preview evaluator returned an incomplete result set');
     }

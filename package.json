@@ -30,7 +30,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
+    "@google/genai": "^2.24.0",
     "@slack/socket-mode": "^2.0.6",
     "@slack/web-api": "^7.15.1",
     "commander": "^13.1.0",

@@ -1,5 +1,6 @@
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import { Type as SchemaType } from '@google/genai';
 import { getAssistantModelName, loadConfig } from './config.js';
+import { getGeminiClient } from './gemini-client.js';
 import {
   MAX_ASSISTANT_ATTACHMENT_BYTES,
   MAX_ASSISTANT_ATTACHMENT_ITEMS,
@@ -370,36 +371,27 @@ export function inlineAttachmentParts(input) {
 }
 
 export class GeminiAssistantModel {
-  #client;
-
-  constructor() {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error('GEMINI_API_KEY environment variable is required');
-    this.#client = new GoogleGenerativeAI(apiKey);
-  }
-
   async respond(input) {
     const config = loadConfig();
-    const model = this.#client.getGenerativeModel({
+    const serialized = serializeAssistantModelInput(input);
+    const attachments = inlineAttachmentParts(input);
+    const response = await getGeminiClient().models.generateContent({
       model: getAssistantModelName(config),
-      systemInstruction: ASSISTANT_SYSTEM_PROMPT,
-      generationConfig: {
+      contents: attachments.length ? [...attachments, { text: serialized }] : serialized,
+      config: {
+        systemInstruction: ASSISTANT_SYSTEM_PROMPT,
         responseMimeType: 'application/json',
         responseSchema: assistantResponseSchema(input.availableTools),
       },
     });
-    const serialized = serializeAssistantModelInput(input);
-    const attachments = inlineAttachmentParts(input);
-    const response = await model.generateContent(attachments.length
-      ? [...attachments, { text: serialized }]
-      : serialized);
-    const candidate = response.response.candidates?.[0];
+    const candidate = response.candidates?.[0];
     let responseText;
     try {
-      responseText = response.response.text();
+      responseText = response.text;
+      if (!responseText) throw codedModelError('assistant_model_empty_response');
     } catch (error) {
       error.diagnostic = {
-        candidateCount: response.response.candidates?.length || 0,
+        candidateCount: response.candidates?.length || 0,
         finishReason: String(candidate?.finishReason || '').slice(0, 80) || null,
         hasContent: Boolean(candidate?.content?.parts?.length),
       };
