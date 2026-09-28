@@ -51,7 +51,7 @@ The current production surface is Slack plus a private localhost API. Discord/Te
 - **Node.js** 24.18+ LTS (uses built-in SQLite support; see `.nvmrc`)
 - **Homebrew** — Recommended for installing external runtime tools
 - **[gogcli](https://gogcli.sh)** 0.31.1+ — Gmail CLI adapter (handles OAuth)
-- **Gemini API key** — [Get one free](https://aistudio.google.com/apikey)
+- **Vertex AI authentication** — A service-account-bound Vertex AI API key or Application Default Credentials
 - **Slack Bot/App Tokens** *(optional but recommended)* — For the email feed and buttons
 
 ### Install
@@ -108,7 +108,7 @@ Winnow keeps its high-volume classification/summarization path separate from the
 The legacy shared `model.name` key remains supported as a fallback for existing installations; setting the two
 specific keys is recommended so each workload can be tuned independently.
 
-Winnow calls Gemini through Vertex AI. Enable the Vertex AI API on the selected Google Cloud project and give the runtime identity the Vertex AI User role. Set up Application Default Credentials for that identity; for a local daemon, Google supports service account impersonation. Keep the ADC file outside this repository.
+Winnow calls Gemini through Vertex AI. Enable the Vertex AI API on the selected Google Cloud project and give the runtime service account the Vertex AI User role. For a local daemon that must not depend on a person's sign-in, use a service-account-bound API key restricted to `aiplatform.googleapis.com`. Store the key in a mode-`600` file outside this repository and set `WINNOW_VERTEX_API_KEY_FILE` to its path. The key is read on startup; restart Winnow after rotation. Alternatively, use Application Default Credentials for a runtime identity. Do not use an AI Studio/Developer API key here; this client calls the Vertex AI project endpoint.
 
 Set the project and other credentials in `.env`:
 
@@ -116,6 +116,8 @@ Set the project and other credentials in `.env`:
 GOOGLE_CLOUD_PROJECT=your_google_cloud_project
 GOOGLE_CLOUD_LOCATION=global
 GOOGLE_CLOUD_QUOTA_PROJECT=your_google_cloud_project
+# WINNOW_VERTEX_API_KEY_FILE=/absolute/private/path/vertex-api-key
+# Alternative to an API key:
 # GOOGLE_APPLICATION_CREDENTIALS=/absolute/private/path/vertex-adc.json
 SLACK_BOT_TOKEN=xoxb-your-token
 SLACK_APP_TOKEN=xapp-your-token
