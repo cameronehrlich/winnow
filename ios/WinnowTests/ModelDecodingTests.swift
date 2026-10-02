@@ -1457,6 +1457,60 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertFalse(service.draftSendIdempotencyKeys[0].isEmpty)
     }
 
+    func testAssistantDraftValidationIsAdditiveAndBlocksKnownInvalidDrafts() throws {
+        let valid = try JSONDecoder().decode(AssistantDraft.self, from: Data(#"{"kind":"reply","body":"Hi"}"#.utf8))
+        XCTAssertTrue(valid.canSend, "Existing stored drafts remain compatible")
+        let invalid = try JSONDecoder().decode(AssistantDraft.self, from: Data(#"{"kind":"reply","body":"Hi","validationError":"Check the To recipients."}"#.utf8))
+        XCTAssertFalse(invalid.canSend)
+        XCTAssertEqual(invalid.validationError, "Check the To recipients.")
+    }
+
+    @MainActor
+    func testAssistantViewModelShowsServerDraftFailureOnlyOnce() async throws {
+        let service = AssistantServiceStub()
+        service.draftSendEnvelope = try JSONDecoder().decode(AssistantConversationEnvelope.self, from: Data(#"""
+        {"conversation":{"id":"conversation-1","scope":"email"},"messages":[
+          {"id":"failure-message","role":"assistant","text":"Check the To recipients."}
+        ]}
+        """#.utf8))
+        let model = AssistantViewModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            scope: .email, emailItemID: "email-1", service: service
+        )
+        await model.startIfNeeded()
+        let proposal = await model.proposeDraftSend(messageID: "draft-1")
+        XCTAssertNil(proposal)
+        XCTAssertEqual(model.messages.last?.text, "Check the To recipients.")
+        XCTAssertNil(model.errorMessage, "The server failure bubble must not get a duplicate generic error card")
+    }
+
+    @MainActor
+    func testSelectedContactForwardIsDirectAndReusesKeyAfterTransportFailure() async throws {
+        let service = AssistantServiceStub()
+        let model = AssistantViewModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            scope: .email, emailItemID: "email-1", service: service
+        )
+        await model.startIfNeeded()
+        let failed = await model.proposeForward(to: " riley@example.com ")
+        XCTAssertNil(failed)
+        XCTAssertNotNil(model.errorMessage)
+        service.forwardEnvelope = try JSONDecoder().decode(AssistantConversationEnvelope.self, from: Data(#"""
+        {"conversation":{"id":"conversation-1","scope":"email"},"messages":[
+          {"id":"forward-message","role":"assistant","text":"Review before sending.",
+           "proposal":{"id":"forward-1","tool":"mail.send_forward","risk":"outbound","summary":"Forward","arguments":{},"confirmationDigest":"digest","status":"pending"}}
+        ]}
+        """#.utf8))
+        let proposal = await model.proposeForward(to: "riley@example.com")
+        XCTAssertEqual(proposal?.id, "forward-1")
+        XCTAssertEqual(service.forwardRecipients, [["riley@example.com"], ["riley@example.com"]])
+        XCTAssertEqual(service.forwardIdempotencyKeys.count, 2)
+        XCTAssertEqual(service.forwardIdempotencyKeys[0], service.forwardIdempotencyKeys[1])
+        XCTAssertTrue(service.idempotencyKeys.isEmpty, "Contact forwarding must not call the model chat endpoint")
+        XCTAssertEqual(service.confirmationCount, 0, "Preparation must never send without explicit confirmation")
+        XCTAssertNil(model.errorMessage)
+    }
+
     @MainActor
     func testAssistantViewModelRollsBackPreAcceptedFailureAndReusesIdempotencyKey() async throws {
         let service = AssistantServiceStub()
@@ -1670,6 +1724,10 @@ private final class AssistantServiceStub: AssistantService {
     var draftSendEnvelope: AssistantConversationEnvelope?
     var draftSendMessageIDs: [String] = []
     var draftSendIdempotencyKeys: [String] = []
+    var forwardEnvelope: AssistantConversationEnvelope?
+    var forwardRecipients: [[String]] = []
+    var forwardIdempotencyKeys: [String] = []
+    var confirmationCount = 0
 
     private let conversation = AssistantConversation(id: "conversation-1", scope: .mailbox)
 
@@ -1712,7 +1770,15 @@ private final class AssistantServiceStub: AssistantService {
     }
 
     func confirmAssistantProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope {
-        envelope(messages: [])
+        confirmationCount += 1
+        return envelope(messages: [])
+    }
+
+    func proposeForward(conversationID: String, to: [String], note: String, idempotencyKey: String) async throws -> AssistantConversationEnvelope {
+        forwardRecipients.append(to)
+        forwardIdempotencyKeys.append(idempotencyKey)
+        guard let forwardEnvelope else { throw StubError.failed }
+        return forwardEnvelope
     }
 
     func completeAssistantClientProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope {

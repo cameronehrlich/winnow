@@ -106,7 +106,7 @@ export function assistantResponseSchema(availableTools = []) {
         nullable: true,
         properties: {
           kind: { type: SchemaType.STRING, format: 'enum', enum: ['reply', 'forward'] },
-          to: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+          to: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING }, description: 'Exact bare email addresses, without display names. Never guess.' },
           cc: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
           bcc: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
           subject: { type: SchemaType.STRING },
@@ -190,6 +190,7 @@ Use only tools listed in availableTools and at most 3 tool calls. If tool result
 with precise evidence and do not repeat or slightly rephrase a search that already ran. When
 conversation.finalAnswerRequired is true, make no tool calls and provide the best supported answer from the
 context and existing tool results. For a reply or forward draft, return draft as
+an object whose To/Cc/Bcc entries are exact bare email addresses without display names; never guess an address.
 {"kind":"reply|forward","to":["email"],"cc":[],"bcc":[],"subject":"","body":""}.
 Do not put incoming raw email bodies in the answer.`;
 
@@ -383,7 +384,7 @@ export function inlineAttachmentParts(input) {
 }
 
 export class GeminiAssistantModel {
-  async respond(input) {
+  async respond(input, { signal } = {}) {
     const config = loadConfig();
     const serialized = serializeAssistantModelInput(input);
     const attachments = inlineAttachmentParts(input);
@@ -391,6 +392,7 @@ export class GeminiAssistantModel {
       model: getAssistantModelName(config),
       contents: attachments.length ? [...attachments, { text: serialized }] : serialized,
       config: {
+        abortSignal: signal,
         systemInstruction: ASSISTANT_SYSTEM_PROMPT,
         responseMimeType: 'application/json',
         responseSchema: assistantResponseSchema(input.availableTools),

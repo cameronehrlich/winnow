@@ -96,6 +96,12 @@ protocol AssistantService {
         messageID: String,
         idempotencyKey: String
     ) async throws -> AssistantConversationEnvelope
+    func proposeForward(
+        conversationID: String,
+        to: [String],
+        note: String,
+        idempotencyKey: String
+    ) async throws -> AssistantConversationEnvelope
     func confirmAssistantProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope
     func completeAssistantClientProposal(id: String, confirmationDigest: String) async throws -> AssistantConversationEnvelope
     func cancelAssistantProposal(id: String) async throws -> AssistantConversationEnvelope

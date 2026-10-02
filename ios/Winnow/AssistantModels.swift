@@ -302,8 +302,11 @@ struct AssistantDraft: Decodable {
     let bcc: [String]
     let subject: String
     let body: String
+    let validationError: String?
 
-    private enum CodingKeys: String, CodingKey { case kind, to, cc, bcc, subject, body }
+    var canSend: Bool { validationError == nil }
+
+    private enum CodingKeys: String, CodingKey { case kind, to, cc, bcc, subject, body, validationError }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -313,6 +316,7 @@ struct AssistantDraft: Decodable {
         bcc = try values.decodeIfPresent([String].self, forKey: .bcc) ?? []
         subject = try values.decodeIfPresent(String.self, forKey: .subject) ?? ""
         body = try values.decodeIfPresent(String.self, forKey: .body) ?? ""
+        validationError = try values.decodeIfPresent(String.self, forKey: .validationError)
     }
 }
 

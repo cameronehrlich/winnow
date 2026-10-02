@@ -19,7 +19,7 @@ final class AssistantViewModel: ObservableObject {
     private let service: any AssistantService
     private var generation = 0
     private var failedMessageAttempt: FailedMessageAttempt?
-    private var draftSendIdempotencyKeys: [String: String] = [:]
+    private var outboundIdempotencyKeys: [String: String] = [:]
 
     private struct FailedMessageAttempt {
         let text: String
@@ -66,6 +66,7 @@ final class AssistantViewModel: ObservableObject {
         hasIndeterminateMessageAttempt = false
         canonicalResponseRevision = 0
         failedMessageAttempt = nil
+        outboundIdempotencyKeys = [:]
         await createConversation()
     }
 
@@ -186,31 +187,59 @@ final class AssistantViewModel: ObservableObject {
     }
 
     func proposeDraftSend(messageID: String) async -> AssistantProposal? {
+        await prepareOutboundProposal(key: "draft:\(messageID)") { conversationID, idempotencyKey in
+            try await self.service.proposeAssistantDraftSend(
+                conversationID: conversationID,
+                messageID: messageID,
+                idempotencyKey: idempotencyKey
+            )
+        }
+    }
+
+    func proposeForward(to: String) async -> AssistantProposal? {
+        let recipient = to.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !recipient.isEmpty else { return nil }
+        return await prepareOutboundProposal(key: "forward:\(recipient)") { conversationID, idempotencyKey in
+            try await self.service.proposeForward(
+                conversationID: conversationID,
+                to: [recipient],
+                note: "",
+                idempotencyKey: idempotencyKey
+            )
+        }
+    }
+
+    private func prepareOutboundProposal(
+        key: String,
+        request: (String, String) async throws -> AssistantConversationEnvelope
+    ) async -> AssistantProposal? {
         guard !isLoading, !isSending, activeProposalID == nil else { return nil }
         if conversation == nil { await createConversation() }
         guard let conversation else { return nil }
 
-        let idempotencyKey = draftSendIdempotencyKeys[messageID] ?? UUID().uuidString
-        draftSendIdempotencyKeys[messageID] = idempotencyKey
+        let idempotencyKey = outboundIdempotencyKeys[key] ?? UUID().uuidString
+        outboundIdempotencyKeys[key] = idempotencyKey
+        let priorMessageIDs = Set(messages.map(\.id))
         isSending = true
         errorMessage = nil
         let currentGeneration = generation
         defer { if currentGeneration == generation { isSending = false } }
 
         do {
-            let envelope = try await service.proposeAssistantDraftSend(
-                conversationID: conversation.id,
-                messageID: messageID,
-                idempotencyKey: idempotencyKey
-            )
+            let envelope = try await request(conversation.id, idempotencyKey)
             guard currentGeneration == generation else { return nil }
             apply(envelope, animatesResponse: true)
             guard let proposal = envelope.messages.last?.proposal, proposal.isPending else {
-                draftSendIdempotencyKeys.removeValue(forKey: messageID)
-                errorMessage = "Winnow couldn’t prepare this draft to send. Please try again."
+                outboundIdempotencyKeys.removeValue(forKey: key)
+                // A durable server failure is already shown as an assistant
+                // message. Reserve the error card for transport/protocol errors.
+                let hasServerMessage = envelope.messages.contains {
+                    $0.role == "assistant" && !priorMessageIDs.contains($0.id) && !$0.text.isEmpty
+                }
+                if !hasServerMessage { errorMessage = "Winnow couldn’t prepare this draft to send. Please try again." }
                 return nil
             }
-            draftSendIdempotencyKeys.removeValue(forKey: messageID)
+            outboundIdempotencyKeys.removeValue(forKey: key)
             return proposal
         } catch {
             guard currentGeneration == generation else { return nil }

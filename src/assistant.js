@@ -13,6 +13,7 @@ import {
 } from './assistant-tools.js';
 import { getAccounts } from './config.js';
 import { emailBodyToText } from './message-content.js';
+import { normalizeAssistantDraft } from './assistant-drafts.js';
 import {
   addAssistantMessage,
   assistantRunHasTerminalOutput,
@@ -111,24 +112,6 @@ function requireConfiguredAccount(account) {
     throw new AssistantError(400, 'invalid_account', 'Account is not configured in Winnow');
   }
   return account;
-}
-
-function normalizeDraft(draft) {
-  if (!draft || typeof draft !== 'object' || Array.isArray(draft)) return null;
-  const kind = draft.kind === 'forward' ? 'forward' : (draft.kind === 'reply' ? 'reply' : '');
-  const body = typeof draft.body === 'string' ? draft.body : (typeof draft.note === 'string' ? draft.note : '');
-  if (!kind || (!body.trim() && (kind !== 'forward' || !Array.isArray(draft.to) || !draft.to.length))) return null;
-  const normalizeAddresses = value => Array.isArray(value)
-    ? value.filter(item => typeof item === 'string').slice(0, 20).map(item => item.slice(0, 320))
-    : [];
-  return {
-    kind,
-    to: normalizeAddresses(draft.to),
-    cc: normalizeAddresses(draft.cc),
-    bcc: normalizeAddresses(draft.bcc),
-    subject: String(draft.subject || '').slice(0, 500),
-    body: body.slice(0, 20000),
-  };
 }
 
 function modelMessages(messages) {
@@ -332,7 +315,7 @@ function safeModelDiagnostic(err) {
   const diagnostic = err?.diagnostic;
   if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)) return null;
   const result = {};
-  for (const key of ['candidateCount', 'responseCharacters']) {
+  for (const key of ['candidateCount', 'responseCharacters', 'elapsedMs']) {
     const value = Number(diagnostic[key]);
     if (Number.isSafeInteger(value) && value >= 0) result[key] = value;
   }
@@ -349,13 +332,14 @@ function safeModelDiagnostic(err) {
 
 function logAssistantFailure(run, err, errorCode) {
   if (process.env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT) return;
-  const status = Number(err?.status || err?.statusCode || err?.response?.status || 0) || null;
+  const status = Number(err?.providerStatus || err?.status || err?.statusCode || err?.response?.status || 0) || null;
   const diagnostic = safeModelDiagnostic(err);
   console.error('[assistant] run failed', {
     runId: run.id,
     errorCode,
     errorName: String(err?.name || 'Error').slice(0, 120),
-    providerStatus: status,
+    // Our own timeout carries HTTP 504; do not misreport it as Google's status.
+    providerStatus: err?.providerStatus || (!(err instanceof AssistantError || err instanceof AssistantToolError) ? status : null),
     ...(diagnostic ? { modelDiagnostic: diagnostic } : {}),
   });
 }
@@ -418,15 +402,18 @@ function startAssistantRunHeartbeat(run) {
 }
 
 async function boundedModelResponse(model, input) {
-  const request = async () => {
+  const request = async (timeoutMs = assistantModelTimeoutMs) => {
     let timeout;
-    const providerResponse = Promise.resolve().then(() => model.respond(input));
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const providerResponse = Promise.resolve().then(() => model.respond(input, { signal: controller.signal }));
     const deadline = new Promise((resolve, reject) => {
-      timeout = setTimeout(() => reject(new AssistantError(
-        504,
-        'assistant_model_timeout',
-        'The assistant model did not respond in time',
-      )), assistantModelTimeoutMs);
+      timeout = setTimeout(() => {
+        const failure = new AssistantError(504, 'assistant_model_timeout', 'The assistant model did not respond in time');
+        failure.diagnostic = { elapsedMs: Date.now() - startedAt };
+        reject(failure);
+        controller.abort();
+      }, timeoutMs);
       timeout.unref?.();
     });
     try {
@@ -439,12 +426,19 @@ async function boundedModelResponse(model, input) {
   try {
     return await request();
   } catch (err) {
-    // Gemini occasionally returns a short-lived 429/5xx response or an
-    // incomplete structured candidate. Retry either once, but never retry our
-    // deadline, validation, authentication, or configuration errors.
-    if (!isTransientModelProviderError(err) && !isInvalidModelResponse(err)) throw err;
+    // Recover once from a deadline, transient provider failure or incomplete
+    // structured response. Only retry generation, never an executed tool/send.
+    // Abort timed-out client requests and fence late results before retrying once.
+    const isTimeout = err instanceof AssistantError && err.code === 'assistant_model_timeout';
+    if (!isTransientModelProviderError(err) && !isInvalidModelResponse(err) && !isTimeout) throw err;
+    if (process.env.NODE_ENV !== 'test' && !process.env.NODE_TEST_CONTEXT) {
+      console.warn('[assistant] retrying model generation', {
+        reason: isTimeout ? 'deadline' : isInvalidModelResponse(err) ? 'invalid_response' : 'provider_transient',
+        ...(safeModelDiagnostic(err) || {}),
+      });
+    }
     try {
-      return await request();
+      return await request(isTimeout ? Math.min(assistantModelTimeoutMs, 30_000) : assistantModelTimeoutMs);
     } catch (retryErr) {
       if (isInvalidModelResponse(retryErr)) {
         const failure = new AssistantError(
@@ -456,11 +450,13 @@ async function boundedModelResponse(model, input) {
         throw failure;
       }
       if (!isTransientModelProviderError(retryErr)) throw retryErr;
-      throw new AssistantError(
+      const failure = new AssistantError(
         503,
         'assistant_model_unavailable',
         'The assistant model is temporarily unavailable',
       );
+      failure.providerStatus = Number(retryErr?.status || retryErr?.statusCode || retryErr?.response?.status || 0) || null;
+      throw failure;
     }
   }
 }
@@ -580,7 +576,7 @@ export async function proposeAssistantDraftSend(
   }
 
   const sourceMessage = getAssistantMessage(messageId);
-  const draft = normalizeDraft(sourceMessage?.draft);
+  const draft = normalizeAssistantDraft(sourceMessage?.draft);
   if (!sourceMessage || sourceMessage.conversationId !== conversationId || sourceMessage.role !== 'assistant' || !draft) {
     throw new AssistantError(404, 'draft_not_found', 'This draft is no longer available');
   }
@@ -669,6 +665,7 @@ async function finishDraftSendProposal(run, conversation, item, draft) {
     };
   try {
     requireAssistantRunLease(run);
+    if (draft.validationError) throw new AssistantToolError('invalid_draft', draft.validationError, 422);
     const prepared = await prepareAssistantTool({
       name: tool,
       rawArguments: {
@@ -730,6 +727,7 @@ async function finishDraftSendProposal(run, conversation, item, draft) {
   } catch (err) {
     if (err instanceof AssistantError && err.code === 'assistant_run_lease_lost') throw err;
     requireAssistantRunLease(run);
+    logAssistantFailure(run, err, assistantFailureCode(err));
     finishAssistantRunWithMessage({
       runId: run.id,
       leaseToken: run.leaseToken,
@@ -799,7 +797,7 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
         message: {
           id: randomUUID(), conversationId, role: 'assistant',
           text: response?.text || 'I could not find that detail in the available email context.',
-          evidence, draft: normalizeDraft(response?.draft),
+          evidence, draft: normalizeAssistantDraft(response?.draft),
         },
       });
     };
@@ -886,7 +884,7 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
               message: {
                 id: randomUUID(), conversationId, role: 'assistant',
                 text: response?.text || prepared.summary,
-                evidence, draft: normalizeDraft(response?.draft), proposalId: identity.id,
+                evidence, draft: normalizeAssistantDraft(response?.draft), proposalId: identity.id,
               },
             });
             if (!finished) throw new AssistantError(409, 'assistant_run_lease_lost');

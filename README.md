@@ -208,6 +208,8 @@ The private API also supports conversational email work for the native iOS app:
 - Archive and read-state changes run only when the newest user message explicitly asks for them.
 - Unsubscribe, future-mail rules, replies, and forwards are stored as expiring proposals. The client must return the exact server-issued confirmation digest before Winnow executes one proposal once.
 - Drafting never sends. Incoming email and tool output are marked as untrusted model data and cannot authorize an action.
+- Chat drafts and quick forwards share strict recipient validation. Named mailboxes are normalized to exact email addresses, duplicate recipients are removed, and invalid drafts show a correction message instead of an enabled Send button. Stored drafts and selected-contact forwards prepare confirmation directly without regenerating content through the model.
+- Model generation retries once after a transient failure, incomplete response, or 75-second deadline; a deadline retry is capped at 30 seconds. Late results cannot execute tools. Outbound sends are never automatically retried; confirmation and durable proposal identity still control execution.
 
 Assistant conversations, bounded evidence, proposals, and audit metadata are stored in SQLite. Raw incoming Gmail bodies and search-result bodies are not written to the assistant tables. Exact outgoing drafts are stored when needed for review and confirmation.
 

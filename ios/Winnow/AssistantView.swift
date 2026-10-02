@@ -378,10 +378,10 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                 if proposal.isDeviceAction {
                     DeviceProposalReviewView(
                         proposal: proposal,
-                        isWorking: viewModel.activeProposalID == proposal.id,
+                        isWorking: viewModel.isProposalWorking(proposal),
                         complete: { completeClientAction(proposal) },
                         cancel: { cancel(proposal) },
-                        selectedContact: { name, email in selectContact(name: name, email: email, for: proposal) }
+                        selectedContact: { _, email in selectContact(email: email, for: proposal) }
                     )
                 } else {
                     ProposalConfirmationView(
@@ -637,7 +637,7 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
     }
 
     private func sendDraft(_ message: AssistantMessage) {
-        guard message.draft != nil, !viewModel.isWorking else { return }
+        guard message.draft?.canSend == true, !viewModel.isWorking else { return }
         inlineThreadActivated = true
         composerFocused = false
         Task {
@@ -677,16 +677,14 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
         }
     }
 
-    private func selectContact(name: String, email: String, for proposal: AssistantProposal) {
+    private func selectContact(email: String, for proposal: AssistantProposal) {
         inlineThreadActivated = true
         Task {
-            guard await viewModel.completeClientAction(proposal) else { return }
-            reviewedProposal = nil
-            let cleanName = name.replacingOccurrences(of: "[\\r\\n<>]", with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !cleanEmail.isEmpty else { return }
-            _ = await viewModel.send("Forward this email to \(cleanName) <\(cleanEmail)>.")
+            // The selected address is exact user input, not another model prompt.
+            // Keep the picker recoverable if proposal preparation fails.
+            guard let forward = await viewModel.proposeForward(to: email) else { return }
+            _ = await viewModel.completeClientAction(proposal)
+            reviewedProposal = forward
         }
     }
 
@@ -923,6 +921,11 @@ private struct AssistantDraftCard: View {
             if !draft.subject.isEmpty { draftRow("Subject", draft.subject) }
             Divider()
             Text(draft.body).font(.subheadline).textSelection(.enabled)
+            if let validationError = draft.validationError {
+                Label(validationError + " Ask Winnow to correct this draft.", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(WinnowDesign.amber)
+            }
             HStack {
                 Button {
                     UIPasteboard.general.string = draft.body
@@ -941,7 +944,7 @@ private struct AssistantDraftCard: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(WinnowDesign.indigo)
-                    .disabled(isWorking)
+                    .disabled(isWorking || !draft.canSend)
                 }
             }
             .font(.caption.weight(.semibold))

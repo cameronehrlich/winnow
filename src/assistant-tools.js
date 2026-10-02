@@ -7,6 +7,7 @@ import { followUnsubscribeLink } from './slack-actions.js';
 import { recordUnsubscribe } from './state.js';
 import { resolveTrackedContacts } from './contact-resolver.js';
 import { emailBodyToText } from './message-content.js';
+import { DraftValidationError, normalizeOutboundDraft } from './assistant-drafts.js';
 import {
   assertReadableAttachment,
   collectThreadAttachments,
@@ -85,43 +86,20 @@ function string(value, name, { required = true, max = 1000 } = {}) {
   return value.trim();
 }
 
-function addresses(value, name, { required = false } = {}) {
-  if (!Array.isArray(value) || (required && value.length === 0) || value.length > 20) {
-    throw new AssistantToolError('invalid_tool_arguments', `${name} must be an array of email addresses`);
-  }
-  return value.map((address, index) => {
-    const normalized = string(address, `${name}[${index}]`, { max: 320 });
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
-      throw new AssistantToolError('invalid_tool_arguments', `${name}[${index}] is not a valid email address`);
-    }
-    return normalized;
-  });
-}
-
 function normalizeDraft(value, kind) {
   const draft = object(value, 'draft');
   exactKeys(draft, kind === 'reply'
     ? ['body', 'to', 'cc', 'bcc', 'subject']
     : ['to', 'cc', 'bcc', 'note', 'skipAttachments']);
-  if (kind === 'reply') {
-    return {
-      body: string(draft.body, 'draft.body', { max: 20000 }),
-      ...(draft.to === undefined ? {} : { to: addresses(draft.to, 'draft.to') }),
-      ...(draft.cc === undefined ? {} : { cc: addresses(draft.cc, 'draft.cc') }),
-      ...(draft.bcc === undefined ? {} : { bcc: addresses(draft.bcc, 'draft.bcc') }),
-      ...(draft.subject === undefined ? {} : { subject: string(draft.subject, 'draft.subject', { required: false, max: 500 }) }),
-    };
-  }
   if (draft.skipAttachments !== undefined && typeof draft.skipAttachments !== 'boolean') {
     throw new AssistantToolError('invalid_tool_arguments', 'draft.skipAttachments must be a boolean');
   }
-  return {
-    to: addresses(draft.to, 'draft.to', { required: true }),
-    ...(draft.cc === undefined ? {} : { cc: addresses(draft.cc, 'draft.cc') }),
-    ...(draft.bcc === undefined ? {} : { bcc: addresses(draft.bcc, 'draft.bcc') }),
-    ...(draft.note === undefined ? {} : { note: string(draft.note, 'draft.note', { required: false, max: 20000 }) }),
-    skipAttachments: draft.skipAttachments === true,
-  };
+  try {
+    return normalizeOutboundDraft(draft, kind);
+  } catch (error) {
+    if (error instanceof DraftValidationError) throw new AssistantToolError(error.code, error.message, 422);
+    throw error;
+  }
 }
 
 function optionalString(value, name, max) {
@@ -750,7 +728,9 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
         throw new AssistantToolError('reply_recipient_unavailable', 'The exact reply recipient could not be determined', 422);
       }
     }
-    args = { ...args, draft, from: identity.from };
+    // Reply defaults can introduce an address already present in Cc/Bcc.
+    // Apply the same canonical contract after materializing exact recipients.
+    args = { ...args, draft: normalizeDraft(draft, name === 'mail.send_reply' ? 'reply' : 'forward'), from: identity.from };
   }
   if ((name === 'rules.create' || name === 'rules.upsert') && conversation.scope === 'email') {
     args = { ...args, sourceEmailItemId: conversation.emailItemId };

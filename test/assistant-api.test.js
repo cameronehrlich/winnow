@@ -213,8 +213,8 @@ describe('assistant API', () => {
     const response = await post(`/v1/assistant/conversations/${created.conversation.id}/forward-proposal`, {
       to: ['not an address'], note: '', idempotencyKey: 'invalid-forward',
     });
-    assert.equal(response.status, 400);
-    assert.equal((await response.json()).error, 'invalid_tool_arguments');
+    assert.equal(response.status, 422);
+    assert.equal((await response.json()).error, 'invalid_draft');
     assert.equal(calls.model, 0);
     assert.equal(calls.forward || 0, 0);
   });
@@ -800,6 +800,36 @@ describe('assistant API', () => {
     assert.equal(inspector.prepare('SELECT COUNT(*) AS count FROM assistant_tool_calls').get().count, 0);
     assert.equal(inspector.prepare('SELECT COUNT(*) AS count FROM assistant_proposals').get().count, 0);
     assert.equal(inspector.prepare("SELECT COUNT(*) AS count FROM assistant_messages WHERE role = 'assistant'").get().count, 1);
+    inspector.close();
+  });
+
+  it('aborts one timed-out model request, recovers once and never executes its late tool call', async () => {
+    setAssistantModelTimeoutForTests(20);
+    const signals = [];
+    setAssistantModelFactoryForTests(() => ({
+      respond(request, { signal }) {
+        signals.push(signal);
+        if (signals.length === 1) return new Promise(resolve => setTimeout(() => resolve({
+          text: 'Late result', toolCalls: [{ name: 'mail.archive', arguments: { account: 'me@example.com', threadId: 't1' } }],
+        }), 80));
+        return Promise.resolve({ text: 'Here is your reply.', draft: {
+          kind: 'reply', to: ['Sender <sender@example.com>'], cc: [], bcc: [], subject: 'Re: Order 123', body: 'Thanks!',
+        }, toolCalls: [] });
+      },
+    }));
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const envelope = await (await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Draft a reply', idempotencyKey: 'draft-timeout-recovery',
+    })).json();
+    assert.equal(signals.length, 2);
+    assert.equal(signals[0].aborted, true);
+    assert.deepEqual(envelope.messages.at(-1).draft.to, ['sender@example.com']);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(calls.archive, 0);
+    assert.equal(calls.reply, 0);
+    const inspector = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(inspector.prepare('SELECT status FROM assistant_runs').get().status, 'completed');
+    assert.equal(inspector.prepare('SELECT COUNT(*) AS count FROM assistant_proposals').get().count, 0);
     inspector.close();
   });
 
@@ -1517,6 +1547,69 @@ describe('assistant API', () => {
     assert.equal(calls.reply, 1);
     assert.equal(proposal.arguments.from, 'me@example.com');
     assert.deepEqual(calls.lastReply.draft, { ...proposal.arguments.draft, from: proposal.arguments.from });
+  });
+
+  it('recovers existing named-recipient drafts and sends the exact body only after confirmation', async () => {
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const body = '\nHi Leon,\n\nThanks for reaching out. We’re not interested.\n';
+    addAssistantMessage({ id: 'legacy-named-draft', conversationId: created.conversation.id, role: 'assistant', text: 'Draft', draft: {
+      kind: 'reply', to: ['Leon Tsui <leon.tsui@okta.com>'], cc: ['"Tsui, Leon" <LEON.TSUI@okta.com>'],
+      bcc: ['archive@example.com'], subject: 'Re: Vinovest', body,
+    } });
+    const path = `/v1/assistant/conversations/${created.conversation.id}/draft-send-proposal`;
+    const request = { messageId: 'legacy-named-draft', idempotencyKey: 'legacy-send' };
+    const envelope = await (await post(path, request)).json();
+    const proposal = envelope.messages.at(-1).proposal;
+    assert.ok(proposal);
+    assert.deepEqual(proposal.arguments.draft.to, ['leon.tsui@okta.com']);
+    assert.deepEqual(proposal.arguments.draft.cc, []);
+    assert.deepEqual(proposal.arguments.draft.bcc, ['archive@example.com']);
+    assert.equal(proposal.arguments.draft.body, body);
+    assert.equal(calls.model, 0);
+    assert.equal(calls.reply, 0);
+    assert.equal((await (await post(path, request)).json()).messages.at(-1).proposal.id, proposal.id);
+    const confirmation = { confirmationDigest: proposal.confirmationDigest };
+    await post(`/v1/assistant/proposals/${proposal.id}/confirm`, confirmation);
+    await post(`/v1/assistant/proposals/${proposal.id}/confirm`, confirmation);
+    assert.equal(calls.reply, 1);
+    assert.equal(calls.lastReply.draft.body, body);
+  });
+
+  it('keeps malformed model drafts visibly invalid and never proposes or sends them', async () => {
+    responses.push({ text: 'Here is a draft.', toolCalls: [], draft: {
+      kind: 'reply', to: ['sender@example.com, hidden@example.com'], cc: [], bcc: [], subject: 'Hello', body: 'Thanks.',
+    } });
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const generated = await (await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'Draft a reply', idempotencyKey: 'invalid-draft',
+    })).json();
+    const draftMessage = generated.messages.at(-1);
+    assert.match(draftMessage.draft.validationError, /Check the To recipients/);
+    const prepared = await (await post(`/v1/assistant/conversations/${created.conversation.id}/draft-send-proposal`, {
+      messageId: draftMessage.id, idempotencyKey: 'invalid-send',
+    })).json();
+    assert.match(prepared.messages.at(-1).text, /Check the To recipients/);
+    assert.equal(prepared.messages.at(-1).proposal, undefined);
+    assert.equal(calls.reply, 0);
+  });
+
+  it('deduplicates reply defaults and removes named owned aliases before approval', async () => {
+    calls.sendAs = [
+      { sendAsEmail: 'me@example.com', isPrimary: true },
+      { sendAsEmail: 'info@brand.example', verificationStatus: 'accepted' },
+    ];
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    addAssistantMessage({ id: 'default-recipient-draft', conversationId: created.conversation.id, role: 'assistant', text: 'Draft', draft: {
+      kind: 'reply', to: ['Our brand <info@brand.example>'], cc: ['Sender <sender@example.com>'],
+      bcc: ['sender@example.com', 'hidden@example.com'], subject: 'Re: Order 123', body: 'Thanks!',
+    } });
+    const envelope = await (await post(`/v1/assistant/conversations/${created.conversation.id}/draft-send-proposal`, {
+      messageId: 'default-recipient-draft', idempotencyKey: 'default-recipient-send',
+    })).json();
+    assert.deepEqual(envelope.messages.at(-1).proposal.arguments.draft, {
+      to: ['sender@example.com'], cc: [], bcc: ['hidden@example.com'], subject: 'Re: Order 123', body: 'Thanks!',
+    });
+    assert.equal(calls.reply, 0);
   });
 
   it('binds the addressed alias into approval and refuses sending after alias revocation', async () => {
