@@ -1001,13 +1001,14 @@ private struct AssistantProposalCard: View {
     }
 }
 
-private struct ProposalConfirmationView: View {
+struct ProposalConfirmationView: View {
     @Environment(\.dismiss) private var dismiss
     let proposal: AssistantProposal
     let scopeTitle: String
     let isWorking: Bool
     let confirm: () -> Void
     let cancel: () -> Void
+    var errorMessage: String? = nil
 
     var body: some View {
         NavigationStack {
@@ -1061,6 +1062,12 @@ private struct ProposalConfirmationView: View {
                         Label("This changes how future messages are handled.", systemImage: "arrow.triangle.2.circlepath")
                             .font(.footnote.weight(.medium))
                             .foregroundStyle(WinnowDesign.amber)
+                    }
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundStyle(WinnowDesign.rose)
                     }
 
                     Button(action: confirm) {

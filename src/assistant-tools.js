@@ -6,6 +6,7 @@ import { resolveMailIdentity, headerAddresses } from './mail-identity.js';
 import { followUnsubscribeLink } from './slack-actions.js';
 import { recordUnsubscribe } from './state.js';
 import { resolveTrackedContacts } from './contact-resolver.js';
+import { emailBodyToText } from './message-content.js';
 import {
   assertReadableAttachment,
   collectThreadAttachments,
@@ -445,12 +446,14 @@ function evidenceFromMessage(message, account) {
   };
 }
 
-function boundedMessageForModel(message) {
+function boundedMessageForModel(message, account = '') {
+  const body = emailBodyToText(message?.body || '');
   return {
-    ...evidenceFromMessage(message, message?.account || ''),
+    ...evidenceFromMessage(message, message?.account || account),
     to: String(message?.to || '').slice(0, 1000),
     cc: String(message?.cc || '').slice(0, 1000),
-    body: String(message?.body || '').slice(0, MAX_BODY_CHARS),
+    body: body.slice(0, MAX_BODY_CHARS),
+    bodyTruncated: body.length > MAX_BODY_CHARS,
   };
 }
 
@@ -547,19 +550,33 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
   }
 
   if (name === 'mail.search') {
-    const accounts = args.account ? [args.account] : getAccounts().map(item => item.email);
+    const accounts = args.account ? [args.account] : getAccounts()
+      .filter(item => item.sync_enabled !== false).map(item => item.email);
     if (conversation.account && !args.account) accounts.splice(0, accounts.length, conversation.account);
-    const perAccountLimit = Math.max(1, Math.ceil(args.limit / accounts.length));
-    const batches = await Promise.all(accounts.map(async account => ({
+    const perAccountLimit = args.limit;
+    const settled = await Promise.allSettled(accounts.map(async account => ({
       account,
       result: await dependencies.searchMailbox(account, args.query, perAccountLimit),
     })));
-    const messages = batches.flatMap(({ account, result }) =>
+    const batches = settled.filter(result => result.status === 'fulfilled').map(result => result.value);
+    const unavailableAccounts = accounts.filter((account, index) => settled[index].status === 'rejected');
+    if (!batches.length) {
+      throw new AssistantToolError('mail_search_unavailable', 'Winnow couldn’t search your mailboxes. Please try again.', 502);
+    }
+    const candidates = batches.flatMap(({ account, result }) =>
       (result?.messages || []).map(message => ({ account, message }))
-    ).slice(0, args.limit);
+    );
+    const messages = candidates.sort((left, right) => {
+      const timestamp = message => Number(message.internalDate) || Date.parse(message.date || '') || 0;
+      return timestamp(right.message) - timestamp(left.message);
+    }).slice(0, args.limit);
     return {
       kind: 'result', risk: definition.risk,
-      result: { messages: messages.map(({ account, message }) => evidenceFromMessage(message, account)) },
+      result: {
+        messages: messages.map(({ account, message }) => evidenceFromMessage(message, account)),
+        truncated: candidates.length > args.limit || batches.some(batch => Boolean(batch.result?.nextPageToken)),
+        ...(unavailableAccounts.length ? { unavailableAccounts } : {}),
+      },
       evidence: messages.map(({ account, message }) => evidenceFromMessage(message, account)),
     };
   }
@@ -575,7 +592,11 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
     const messages = (thread?.messages || []).slice(-20);
     return {
       kind: 'result', risk: definition.risk,
-      result: { id: thread?.id || args.threadId, messages: messages.map(boundedMessageForModel) },
+      result: {
+        account: args.account,
+        id: thread?.id || args.threadId,
+        messages: messages.map(message => boundedMessageForModel(message, args.account)),
+      },
       evidence: messages.map(message => evidenceFromMessage(message, args.account)),
     };
   }

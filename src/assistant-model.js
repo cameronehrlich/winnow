@@ -1,4 +1,4 @@
-import { Type as SchemaType } from '@google/genai';
+import { ThinkingLevel, Type as SchemaType } from '@google/genai';
 import { getAssistantModelName, loadConfig } from './config.js';
 import { getGeminiClient } from './gemini-client.js';
 import {
@@ -16,7 +16,7 @@ const INPUT_PROFILES = Object.freeze([
     chatLimit: 16, chatTextLimit: 1200,
     contextLimit: 8, contextBodyLimit: 1600, focusedBodyLimit: 8000,
     attachmentLimit: 50, attachmentCharLimit: 12000,
-    toolResultLimit: 2400, toolResultCount: 6,
+    toolResultLimit: 4800, toolResultCount: 6,
   },
   {
     chatLimit: 8, chatTextLimit: 500,
@@ -31,38 +31,6 @@ const INPUT_PROFILES = Object.freeze([
     toolResultLimit: 500, toolResultCount: 2,
   },
 ]);
-
-function mergeResponseSchemas(left, right) {
-  if (!left) return right;
-  if (!right) return left;
-  if (left.type !== right.type) {
-    throw codedModelError('assistant_tool_schema_conflict');
-  }
-  if (left.type === SchemaType.OBJECT) {
-    const keys = new Set([...Object.keys(left.properties), ...Object.keys(right.properties)]);
-    return {
-      type: SchemaType.OBJECT,
-      properties: Object.fromEntries([...keys].map(key => [
-        key,
-        mergeResponseSchemas(left.properties[key], right.properties[key]),
-      ])),
-    };
-  }
-  if (left.type === SchemaType.ARRAY) {
-    return { type: SchemaType.ARRAY, items: mergeResponseSchemas(left.items, right.items) };
-  }
-  if (left.type === SchemaType.STRING) {
-    const leftValues = Array.isArray(left.enum) ? left.enum : null;
-    const rightValues = Array.isArray(right.enum) ? right.enum : null;
-    if (!leftValues || !rightValues) return { type: SchemaType.STRING };
-    return {
-      type: SchemaType.STRING,
-      format: 'enum',
-      enum: [...new Set([...leftValues, ...rightValues])],
-    };
-  }
-  return { type: left.type };
-}
 
 function responseSchemaFromToolValue(schema) {
   if (Array.isArray(schema?.enum) && schema.enum.every(value => typeof value === 'string')) {
@@ -90,7 +58,11 @@ function responseSchemaFromToolValue(schema) {
       if (!Object.keys(properties).length) {
         throw codedModelError('assistant_tool_schema_empty_object');
       }
-      return { type: SchemaType.OBJECT, properties };
+      return {
+        type: SchemaType.OBJECT,
+        properties,
+        ...(schema.required?.length ? { required: schema.required } : {}),
+      };
     }
     default:
       return { type: SchemaType.STRING };
@@ -98,33 +70,33 @@ function responseSchemaFromToolValue(schema) {
 }
 
 export function assistantResponseSchema(availableTools = []) {
-  const toolNames = availableTools.map(tool => tool?.name).filter(Boolean);
-  const argumentSchemas = availableTools
-    .map(tool => tool?.inputSchema)
-    .filter(schema => schema?.type === 'object' && Object.keys(schema.properties || {}).length)
-    .map(responseSchemaFromToolValue);
-  const argumentsSchema = argumentSchemas.reduce(mergeResponseSchemas, null) || {
+  const toolCalls = availableTools.filter(tool => tool?.name && tool?.inputSchema).map(tool => ({
+    type: SchemaType.OBJECT,
+    properties: {
+      name: { type: SchemaType.STRING, enum: [tool.name] },
+      arguments: responseSchemaFromToolValue(tool.inputSchema),
+    },
+    required: ['name', 'arguments'],
+  }));
+  const placeholderArguments = {
     type: SchemaType.OBJECT,
     // Gemini requires object schemas to declare at least one property. This
     // placeholder is unreachable when no tools are available because the
     // system prompt requires an empty toolCalls array.
     properties: { unused: { type: SchemaType.STRING, nullable: true } },
   };
-  const toolNameSchema = toolNames.length
-    ? { type: SchemaType.STRING, format: 'enum', enum: [...new Set(toolNames)] }
-    : { type: SchemaType.STRING };
   return {
     type: SchemaType.OBJECT,
     properties: {
       text: { type: SchemaType.STRING },
       toolCalls: {
         type: SchemaType.ARRAY,
-        maxItems: 3,
-        items: {
+        maxItems: toolCalls.length ? 3 : 0,
+        items: toolCalls.length ? { anyOf: toolCalls } : {
           type: SchemaType.OBJECT,
           properties: {
-            name: toolNameSchema,
-            arguments: argumentsSchema,
+            name: { type: SchemaType.STRING },
+            arguments: placeholderArguments,
           },
           required: ['name', 'arguments'],
         },
@@ -188,6 +160,17 @@ replacement proposal that still requires confirmation; do not mistake contextual
 For a named forward recipient without an exact email address, call contacts.resolve first. Use an address only
 when there is one clear matching candidate. If results are ambiguous, ask the user to choose; if there are no
 results, propose device.pick_contact. Never invent an email address.
+device.pick_contact requires {"name":"person or destination","action":"forward"}; do not use a type field.
+
+For mailbox searches, use Gmail query syntax and preserve the user's date and sender constraints. A named sender
+must use from: (for example from:principal), because a bare name also matches unrelated words inside email bodies.
+If the user gives a sender and an approximate date, the FIRST query must use ONLY that sender and date range:
+for example from:principal after:2026/09/01 before:2026/10/01. Do not add guessed subject or body keywords to this
+first query. Read plausible results before narrowing; the user's remembered wording may differ from the email.
+If a search is empty, remove uncertain constraints rather than adding more required words. Try a small
+set of useful terms or alternatives (for example {"x-ray" "xray" "x rays"}) instead of requiring every word.
+An empty or partial search is not proof that an email does not exist. Read promising thread results when needed.
+If a search lists unavailableAccounts or truncated results, explain that limitation and do not claim a complete search.
 
 For an explicit reminder request, propose device.create_reminder with an editable concise title. A dueAt value is
 optional; omit it rather than guessing. For an explicit calendar request, propose device.create_calendar_event
@@ -255,6 +238,35 @@ function boundedValue(value, maxChars) {
   const serialized = JSON.stringify(value ?? null);
   if (serialized.length <= maxChars) return value;
   return { truncated: true, preview: serialized.slice(0, maxChars) };
+}
+
+function boundedToolResult(item, maxChars) {
+  if (item.tool !== 'mail.search' || !Array.isArray(item.result?.messages)) {
+    return boundedValue(item.result, maxChars);
+  }
+  // Never cut serialized JSON in the middle of an account or Gmail identifier.
+  // The model must retain complete references to read a promising search hit.
+  const result = {
+    messages: [], returnedCount: item.result.messages.length, truncated: item.result.truncated === true,
+    ...(item.result.unavailableAccounts?.length ? { unavailableAccounts: item.result.unavailableAccounts } : {}),
+  };
+  for (const message of item.result.messages) {
+    const compact = {
+      account: message.account,
+      messageId: message.messageId,
+      threadId: message.threadId,
+      subject: String(message.subject || '').slice(0, 200),
+      from: String(message.from || '').slice(0, 200),
+      date: String(message.date || '').slice(0, 100),
+      snippet: String(message.snippet || '').slice(0, 200),
+    };
+    if (JSON.stringify({ ...result, messages: [...result.messages, compact] }).length > maxChars) {
+      result.truncated = true;
+      break;
+    }
+    result.messages.push(compact);
+  }
+  return result;
 }
 
 function boundedAttachments(attachments, focusedMessageId, profile) {
@@ -336,7 +348,7 @@ function boundedInput(input, profile) {
     toolResults: (input.toolResults || []).slice(-toolResultCount).map(item => ({
       tool: item.tool,
       trust: 'untrusted_tool_data',
-      result: boundedValue(item.result, toolResultLimit),
+      result: boundedToolResult(item, toolResultLimit),
     })),
     availableTools: input.availableTools,
   };
@@ -382,6 +394,9 @@ export class GeminiAssistantModel {
         systemInstruction: ASSISTANT_SYSTEM_PROMPT,
         responseMimeType: 'application/json',
         responseSchema: assistantResponseSchema(input.availableTools),
+        ...(getAssistantModelName(config).startsWith('gemini-3')
+          ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+          : {}),
       },
     });
     const candidate = response.candidates?.[0];

@@ -66,6 +66,110 @@ final class ModelDecodingTests: XCTestCase {
 
         XCTAssertTrue(client.session.configuration.waitsForConnectivity)
         XCTAssertEqual(client.session.configuration.timeoutIntervalForResource, 60)
+        XCTAssertTrue(client.assistantSession.configuration.waitsForConnectivity)
+        XCTAssertEqual(client.assistantSession.configuration.timeoutIntervalForResource, 600)
+    }
+
+    func testNonStreamingAssistantUsesTheAssistantDeadline() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            session: URLSession(configuration: configuration)
+        )
+        MailRuleURLProtocol.handler = { request in
+            XCTAssertEqual(request.timeoutInterval, 600)
+            return (200, #"{"conversation":{"id":"conversation-1","scope":"mailbox"},"messages":[]}"#)
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+        _ = try await client.sendAssistantMessage(conversationID: "conversation-1", text: "Find my dental email")
+    }
+
+    @MainActor
+    func testAutomaticReadLeavesActionsAvailableAndOrdersAnImmediateArchiveAfterIt() async throws {
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.protocolClasses = [MailRuleURLProtocol.self]
+        let session = URLSession(configuration: sessionConfiguration)
+        let model = AppModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            session: session
+        )
+        let item = try JSONDecoder().decode(EmailItem.self, from: Data(#"{"id":"email-1","account":"me@example.com","messageId":"m1","threadId":"t1","mailboxState":"inbox","readState":"unread"}"#.utf8))
+        let readStarted = expectation(description: "Automatic read started")
+        let releaseRead = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var actions: [String] = []
+        MailRuleURLProtocol.handler = { request in
+            guard request.url?.path.hasPrefix("/v1/emails/email-1/") == true else { return (404, "{}") }
+            let action = try XCTUnwrap(request.url?.lastPathComponent)
+            lock.withLock { actions.append(action) }
+            if action == "mark-read" {
+                readStarted.fulfill()
+                _ = releaseRead.wait(timeout: .now() + 5)
+            }
+            return (200, #"{"ok":true}"#)
+        }
+        defer { releaseRead.signal(); MailRuleURLProtocol.handler = nil }
+        let automaticRead = Task { await model.markReadWhenOpened(item) }
+        await fulfillment(of: [readStarted], timeout: 2)
+        XCTAssertFalse(model.performingEmailIDs.contains(item.id))
+        let archive = Task { await model.perform(.archive, on: item, showsConfirmation: false) }
+        await waitUntil { model.performingEmailIDs.contains(item.id) }
+        XCTAssertEqual(lock.withLock { actions }, ["mark-read"])
+        releaseRead.signal()
+        await automaticRead.value
+        let succeeded = await archive.value
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(lock.withLock { actions }, ["mark-read", "archive"])
+    }
+
+    @MainActor
+    func testEmailContentCacheCoalescesRequestsAndExplicitRefreshBypassesIt() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let model = AppModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            session: URLSession(configuration: configuration)
+        )
+        var requests = 0
+        MailRuleURLProtocol.handler = { _ in
+            requests += 1
+            return (200, #"{"content":{"emailItemId":"email-1","messages":[{"id":"m1","body":"Hello"}]}}"#)
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+        async let first = model.loadEmailContent(emailID: "email-1")
+        async let second = model.loadEmailContent(emailID: "email-1")
+        _ = try await (first, second)
+        XCTAssertEqual(requests, 1)
+        XCTAssertEqual(model.cachedEmailContent(emailID: "email-1")?.content.messages.first?.body, "Hello")
+        _ = try await model.loadEmailContent(emailID: "email-1")
+        XCTAssertEqual(requests, 1)
+        _ = try await model.loadEmailContent(emailID: "email-1", forceRefresh: true)
+        XCTAssertEqual(requests, 2)
+    }
+
+    func testQuickForwardUsesExactRecipientAndNoteProposalContract() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test/base", token: "secret"),
+            session: URLSession(configuration: configuration)
+        )
+        MailRuleURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/base/v1/assistant/conversations/conversation-1/forward-proposal")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            let data = try XCTUnwrap(MailRuleURLProtocol.bodyData(from: request))
+            let body = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            XCTAssertEqual(body?["to"] as? [String], ["receipts@example.com"])
+            XCTAssertEqual(body?["note"] as? String, "Please file this")
+            XCTAssertEqual(body?["idempotencyKey"] as? String, "forward-1")
+            return (200, #"{"conversation":{"id":"conversation-1","scope":"email"},"messages":[]}"#)
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+        _ = try await client.proposeForward(
+            conversationID: "conversation-1", to: ["receipts@example.com"], note: "Please file this", idempotencyKey: "forward-1"
+        )
     }
 
     func testOnlyRetryableAPIErrorsAreClassifiedAsTransient() {

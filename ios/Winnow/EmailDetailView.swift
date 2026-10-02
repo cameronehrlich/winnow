@@ -12,6 +12,7 @@ struct EmailDetailView: View {
     @State private var editingRule: MailRule?
     @State private var showingCreateRule = false
     @State private var showingAssistant = false
+    @State private var showingForward = false
     @State private var showingHandlingExplanation = false
     @State private var emailContent: EmailContent?
     @State private var isLoadingEmail = true
@@ -58,7 +59,7 @@ struct EmailDetailView: View {
                                 attachments: fetchedAttachments ?? emailContent?.attachments ?? item.attachments,
                                 downloadingAttachmentID: downloadingAttachmentID,
                                 openAttachment: { openAttachment($0, from: item) },
-                                retry: { Task { await loadEmail(item) } }
+                                retry: { Task { await loadEmail(item, forceRefresh: true) } }
                             )
                             .frame(maxHeight: .infinity, alignment: .top)
                         }
@@ -85,6 +86,11 @@ struct EmailDetailView: View {
                         summary: item.summary,
                         onMailboxChanged: { await refreshEmailAfterAssistant(item) }
                     )
+                }
+                .sheet(isPresented: $showingForward) {
+                    EmailForwardSheet(item: item, configuration: model.configuration) {
+                        await refreshEmailAfterAssistant(item)
+                    }
                 }
                 .sheet(isPresented: $showingHandlingExplanation) {
                     if let decision = item.handlingDecision {
@@ -117,11 +123,11 @@ struct EmailDetailView: View {
         }
         .task(id: emailID) {
             guard let item = model.email(id: emailID) else { return }
+            openAssistantIfRequested()
             await model.markReadWhenOpened(item)
             if item.handlingDecision?.appliedRule != nil {
                 await model.loadMailRules(showsError: false)
             }
-            openAssistantIfRequested()
         }
         .task(id: "content-\(emailID)") {
             guard let item = model.email(id: emailID) else { return }
@@ -138,18 +144,21 @@ struct EmailDetailView: View {
     }
 
     @MainActor
-    private func loadEmail(_ item: EmailItem) async {
-        isLoadingEmail = true
+    private func loadEmail(_ item: EmailItem, forceRefresh: Bool = false) async {
+        if let cached = model.cachedEmailContent(emailID: item.id) {
+            emailContent = cached.content
+            fetchedAttachments = cached.content.attachments
+        }
+        isLoadingEmail = emailContent == nil
         emailLoadError = nil
         do {
-            let response = try await APIClient(configuration: model.configuration).emailContentEnvelope(emailID: item.id)
+            let response = try await model.loadEmailContent(emailID: item.id, forceRefresh: forceRefresh)
             emailContent = response.content
             fetchedAttachments = response.content.attachments
             if let updatedItem = response.item {
                 model.applyUnsubscribeCapability(from: updatedItem)
             }
         } catch {
-            emailContent = nil
             emailLoadError = error.localizedDescription
         }
         isLoadingEmail = false
@@ -278,6 +287,12 @@ struct EmailDetailView: View {
 
             Spacer(minLength: 8)
 
+            Button { showingForward = true } label: {
+                Label("Forward", systemImage: "arrowshape.turn.up.right")
+            }
+            .tint(WinnowDesign.accent)
+            .disabled(model.account(email: item.account)?.readOnly == true)
+
             Menu {
                 Button {
                     if let decision = item.handlingDecision {
@@ -300,7 +315,6 @@ struct EmailDetailView: View {
                 Label("More Email Actions", systemImage: "ellipsis.circle")
             }
             .tint(WinnowDesign.accent)
-            .disabled(model.performingEmailIDs.contains(item.id))
 
             Button {
                 showingAssistant = true
@@ -309,7 +323,6 @@ struct EmailDetailView: View {
             }
             .tint(WinnowDesign.accent)
             .accessibilityHint("Opens a conversation about this email")
-            .disabled(model.performingEmailIDs.contains(item.id))
         }
     }
 
@@ -384,7 +397,7 @@ struct EmailDetailView: View {
     @MainActor
     private func refreshEmailAfterAssistant(_ originalItem: EmailItem) async {
         await model.refresh(silent: true)
-        await loadEmail(model.email(id: emailID) ?? originalItem)
+        await loadEmail(model.email(id: emailID) ?? originalItem, forceRefresh: true)
     }
 
 }
@@ -849,6 +862,145 @@ private struct InsightBlock: View {
             }
         }
         .winnowCard()
+    }
+}
+
+private struct EmailForwardSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let item: EmailItem
+    let configuration: ServerConfiguration
+    let onMailboxChanged: () async -> Void
+    @State private var recipient = ""
+    @State private var note = ""
+    @State private var conversationID: String?
+    @State private var idempotencyKey = UUID().uuidString
+    @State private var proposal: AssistantProposal?
+    @State private var isWorking = false
+    @State private var errorMessage: String?
+    @FocusState private var recipientFocused: Bool
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("To") {
+                    TextField("Email address", text: $recipient)
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .focused($recipientFocused)
+                }
+                Section("Message") {
+                    TextField("Add a note (optional)", text: $note, axis: .vertical)
+                        .lineLimit(3...8)
+                }
+                Section {
+                    Text(item.displaySubject ?? "No subject")
+                        .font(.subheadline)
+                    Label("Original message and attachments included", systemImage: "paperclip")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if let errorMessage {
+                    Section { Text(errorMessage).foregroundStyle(WinnowDesign.rose) }
+                }
+                Section {
+                    Button(action: prepareForward) {
+                        HStack {
+                            Text("Review Forward")
+                            Spacer()
+                            if isWorking { ProgressView() }
+                        }
+                    }
+                    .disabled(recipient.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isWorking)
+                }
+            }
+            .disabled(isWorking)
+            .navigationTitle("Forward")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(isWorking)
+                }
+            }
+            .task { recipientFocused = true }
+            .onChange(of: recipient) { _, _ in idempotencyKey = UUID().uuidString }
+            .onChange(of: note) { _, _ in idempotencyKey = UUID().uuidString }
+            .sheet(item: $proposal) { reviewed in
+                ProposalConfirmationView(
+                    proposal: reviewed,
+                    scopeTitle: item.displaySubject ?? "This email",
+                    isWorking: isWorking,
+                    confirm: { confirmForward(reviewed) },
+                    cancel: { cancelForward(reviewed) },
+                    errorMessage: errorMessage
+                )
+            }
+        }
+        .interactiveDismissDisabled(isWorking)
+    }
+
+    private func prepareForward() {
+        recipientFocused = false
+        isWorking = true
+        errorMessage = nil
+        Task {
+            defer { isWorking = false }
+            do {
+                let client = APIClient(configuration: configuration)
+                let id: String
+                if let conversationID { id = conversationID }
+                else {
+                    let conversation = try await client.createAssistantConversation(
+                        scope: .email, account: item.account, emailItemID: item.id
+                    )
+                    id = conversation.conversation.id
+                    conversationID = id
+                }
+                let recipients = recipient.split(whereSeparator: { $0 == "," || $0 == ";" })
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                let response = try await client.proposeForward(
+                    conversationID: id, to: recipients, note: note, idempotencyKey: idempotencyKey
+                )
+                guard let prepared = response.messages.last?.proposal, prepared.isPending else {
+                    throw APIClientError.invalidRequest(response.messages.last?.text ?? "Couldn’t prepare this forward.")
+                }
+                proposal = prepared
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    private func confirmForward(_ reviewed: AssistantProposal) {
+        isWorking = true
+        Task {
+            defer { isWorking = false }
+            do {
+                let response = try await APIClient(configuration: configuration).confirmAssistantProposal(
+                    id: reviewed.id, confirmationDigest: reviewed.confirmationDigest
+                )
+                guard response.messages.contains(where: { $0.proposal?.id == reviewed.id && $0.proposal?.status == "completed" }) else {
+                    proposal = nil
+                    idempotencyKey = UUID().uuidString
+                    throw APIClientError.invalidRequest(response.messages.last?.text ?? "The forward couldn’t be sent.")
+                }
+                proposal = nil
+                dismiss()
+                await onMailboxChanged()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func cancelForward(_ reviewed: AssistantProposal) {
+        isWorking = true
+        Task {
+            defer { isWorking = false }
+            do {
+                _ = try await APIClient(configuration: configuration).cancelAssistantProposal(id: reviewed.id)
+                proposal = nil
+                idempotencyKey = UUID().uuidString
+            } catch { errorMessage = error.localizedDescription }
+        }
     }
 }
 

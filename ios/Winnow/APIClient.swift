@@ -104,16 +104,27 @@ protocol AssistantService {
 struct APIClient: AssistantService {
     let configuration: ServerConfiguration
     var session: URLSession
+    let assistantSession: URLSession
 
     init(configuration: ServerConfiguration, session: URLSession? = nil) {
         self.configuration = configuration
         self.session = session ?? Self.connectivityAwareSession
+        self.assistantSession = session ?? Self.assistantStreamingSession
     }
 
     private static let connectivityAwareSession: URLSession = {
         let configuration = URLSessionConfiguration.default
         configuration.waitsForConnectivity = true
         configuration.timeoutIntervalForResource = 60
+        return URLSession(configuration: configuration)
+    }()
+
+    // Heartbeats keep the request active, but URLSession's resource deadline
+    // still caps the entire multi-step assistant run regardless of activity.
+    private static let assistantStreamingSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.waitsForConnectivity = true
+        configuration.timeoutIntervalForResource = 600
         return URLSession(configuration: configuration)
     }()
 
@@ -369,7 +380,26 @@ struct APIClient: AssistantService {
             path: "/v1/assistant/conversations/\(encodedID)/messages",
             method: "POST",
             body: body,
-            timeoutInterval: 90
+            timeoutInterval: 600,
+            requestSession: assistantSession
+        )
+    }
+
+    func proposeForward(
+        conversationID: String,
+        to: [String],
+        note: String,
+        idempotencyKey: String
+    ) async throws -> AssistantConversationEnvelope {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "to": to, "note": note, "idempotencyKey": idempotencyKey,
+        ])
+        return try await request(
+            path: "/v1/assistant/conversations/\(Self.encodedPathSegment(conversationID))/forward-proposal",
+            method: "POST",
+            body: body,
+            timeoutInterval: 30,
+            pathIsPercentEncoded: true
         )
     }
 
@@ -405,7 +435,7 @@ struct APIClient: AssistantService {
 
                     let (bytes, response): (URLSession.AsyncBytes, URLResponse)
                     do {
-                        (bytes, response) = try await session.bytes(for: request)
+                        (bytes, response) = try await assistantSession.bytes(for: request)
                     } catch {
                         throw APIClientError.transport(error.localizedDescription)
                     }
@@ -536,7 +566,8 @@ struct APIClient: AssistantService {
         method: String = "GET",
         body: Data? = nil,
         timeoutInterval: TimeInterval = 20,
-        pathIsPercentEncoded: Bool = false
+        pathIsPercentEncoded: Bool = false,
+        requestSession: URLSession? = nil
     ) async throws -> Response {
         let data = try await responseData(
             path: path,
@@ -545,7 +576,8 @@ struct APIClient: AssistantService {
             body: body,
             accept: "application/json",
             timeoutInterval: timeoutInterval,
-            pathIsPercentEncoded: pathIsPercentEncoded
+            pathIsPercentEncoded: pathIsPercentEncoded,
+            requestSession: requestSession
         )
 
         do {
@@ -562,7 +594,8 @@ struct APIClient: AssistantService {
         body: Data? = nil,
         accept: String,
         timeoutInterval: TimeInterval,
-        pathIsPercentEncoded: Bool = false
+        pathIsPercentEncoded: Bool = false,
+        requestSession: URLSession? = nil
     ) async throws -> Data {
         guard let baseURL = configuration.normalizedBaseURL else { throw APIClientError.invalidServerURL }
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
@@ -596,7 +629,7 @@ struct APIClient: AssistantService {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await (requestSession ?? session).data(for: request)
         } catch {
             throw APIClientError.transport(error.localizedDescription)
         }

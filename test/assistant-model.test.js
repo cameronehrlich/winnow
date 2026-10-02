@@ -57,12 +57,12 @@ describe('assistant model context', () => {
 
     assert.deepEqual(schema.required, ['text', 'toolCalls', 'draft']);
     assert.deepEqual(
-      schema.properties.toolCalls.items.properties.name.enum,
+      schema.properties.toolCalls.items.anyOf.map(call => call.properties.name.enum[0]),
       ['mail.search', 'device.create_reminder'],
     );
     assert.deepEqual(
-      Object.keys(schema.properties.toolCalls.items.properties.arguments.properties).sort(),
-      ['dueAt', 'limit', 'query', 'title'],
+      Object.keys(schema.properties.toolCalls.items.anyOf[0].properties.arguments.properties).sort(),
+      ['limit', 'query'],
     );
     assert.equal(schema.properties.draft.nullable, true);
     assert.deepEqual(
@@ -76,16 +76,22 @@ describe('assistant model context', () => {
     const toolCall = schema.properties.toolCalls.items;
     assert.equal(toolCall.properties.name.enum, undefined);
     assert.deepEqual(Object.keys(toolCall.properties.arguments.properties), ['unused']);
-    assert.equal(schema.properties.toolCalls.maxItems, 3);
+    assert.equal(schema.properties.toolCalls.maxItems, 0);
   });
 
   it('represents every registered assistant tool without schema conflicts', () => {
     const schema = assistantResponseSchema(ASSISTANT_TOOL_DEFINITIONS);
     assert.equal(
-      schema.properties.toolCalls.items.properties.name.enum.length,
+      schema.properties.toolCalls.items.anyOf.length,
       ASSISTANT_TOOL_DEFINITIONS.length,
     );
-    assert.ok(schema.properties.toolCalls.items.properties.arguments.properties.draft);
+    const contact = schema.properties.toolCalls.items.anyOf.find(call => call.properties.name.enum[0] === 'device.pick_contact');
+    assert.deepEqual(contact.properties.arguments.required, ['name', 'action']);
+    assert.deepEqual(contact.properties.arguments.properties.action.enum, ['forward']);
+    assert.equal(contact.properties.arguments.properties.type, undefined);
+    const forward = schema.properties.toolCalls.items.anyOf.find(call => call.properties.name.enum[0] === 'mail.send_forward');
+    assert.deepEqual(forward.properties.arguments.properties.draft.required, ['to']);
+    assert.equal(forward.properties.arguments.properties.draft.properties.body, undefined);
   });
 
   it('keeps oversized context valid, bounded, and preserves tools and newest chat', () => {
@@ -112,6 +118,24 @@ describe('assistant model context', () => {
     assert.match(parsed.chatMessages.at(-1).text, /^29:/);
     assert.equal(parsed.contextualEmail.trust, 'untrusted_email_data');
     assert.equal(parsed.toolResults[0].trust, 'untrusted_tool_data');
+  });
+
+  it('keeps search hits structured with complete Gmail references and an explicit truncation marker', () => {
+    const messages = Array.from({ length: 25 }, (_, index) => ({
+      account: 'me@example.com', messageId: `message-${index}`, threadId: `thread-${index}`,
+      subject: 'Dental X-ray request', from: 'Principal', date: '2026-09-15', snippet: 'x'.repeat(500),
+    }));
+    const input = JSON.parse(serializeAssistantModelInput({
+      conversation: { scope: 'mailbox' }, chatMessages: [], availableTools: [],
+      toolResults: [{ tool: 'mail.search', result: { messages } }],
+    }));
+    const result = input.toolResults[0].result;
+    assert.ok(result.messages.length > 1);
+    assert.ok(result.messages.length < 25);
+    assert.equal(result.truncated, true);
+    assert.equal(result.returnedCount, 25);
+    assert.equal(result.preview, undefined);
+    assert.equal(result.messages[1].threadId, 'thread-1');
   });
 
   it('compacts attachment-heavy threads without losing the focused message or tool model', () => {

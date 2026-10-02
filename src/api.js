@@ -38,6 +38,7 @@ import {
   createConversation,
   getConversation,
   proposeAssistantDraftSend,
+  proposeAssistantForward,
   submitAssistantMessage,
   validateAssistantMessageRequest,
 } from './assistant.js';
@@ -538,6 +539,14 @@ async function handleAuthed(req, res, url, dependencies = {}) {
     const body = await readJsonObject(req);
     assertBodyKeys(body, ['messageId', 'idempotencyKey']);
     sendJson(res, 200, await proposeAssistantDraftSend(assistantDraftSendMatch.id, body));
+    return;
+  }
+
+  const assistantForwardMatch = route(url.pathname, '/v1/assistant/conversations/:id/forward-proposal');
+  if (req.method === 'POST' && assistantForwardMatch) {
+    const body = await readJsonObject(req);
+    assertBodyKeys(body, ['to', 'note', 'idempotencyKey']);
+    sendJson(res, 200, await proposeAssistantForward(assistantForwardMatch.id, body));
     return;
   }
 

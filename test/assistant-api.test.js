@@ -184,6 +184,99 @@ afterEach(async () => {
 });
 
 describe('assistant API', () => {
+  it('prepares quick forwards without the model, requires confirmation, and replays sends once', async () => {
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const path = `/v1/assistant/conversations/${created.conversation.id}/forward-proposal`;
+    const input = { to: ['receipts@example.com'], note: '', idempotencyKey: 'quick-forward' };
+    const preparedResponse = await post(path, input);
+    assert.equal(preparedResponse.status, 200);
+    const envelope = await preparedResponse.json();
+    const proposal = envelope.messages.at(-1).proposal;
+    assert.equal(proposal.tool, 'mail.send_forward');
+    assert.deepEqual(proposal.arguments.draft.to, input.to);
+    assert.equal(proposal.arguments.draft.skipAttachments, false);
+    assert.equal(calls.model, 0);
+    assert.equal(calls.forward || 0, 0);
+    const replay = await (await post(path, input)).json();
+    assert.equal(replay.messages.at(-1).proposal.id, proposal.id);
+    const changed = await post(path, { ...input, to: ['somebody-else@example.com'] });
+    assert.equal(changed.status, 409);
+    const confirmPath = `/v1/assistant/proposals/${proposal.id}/confirm`;
+    const confirmed = await post(confirmPath, { confirmationDigest: proposal.confirmationDigest });
+    assert.equal(confirmed.status, 200);
+    await post(confirmPath, { confirmationDigest: proposal.confirmationDigest });
+    assert.equal(calls.forward, 1);
+  });
+
+  it('rejects malformed recipients in the quick Forward editor without creating a proposal', async () => {
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/forward-proposal`, {
+      to: ['not an address'], note: '', idempotencyKey: 'invalid-forward',
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, 'invalid_tool_arguments');
+    assert.equal(calls.model, 0);
+    assert.equal(calls.forward || 0, 0);
+  });
+
+  it('keeps useful mailbox search results when another account is unavailable', async () => {
+    setAssistantDependenciesFactoryForTests(() => ({
+      async searchMailbox(account) {
+        if (account !== 'me@example.com') throw new Error('provider_timeout');
+        return { messages: [{ id: 'dental-1', threadId: 'dental-thread', subject: 'X-ray request' }] };
+      },
+    }));
+    responses.push(
+      { text: '', toolCalls: [{ name: 'mail.search', arguments: { query: 'xray' } }] },
+      { text: 'Found an X-ray request. One mailbox was unavailable.', toolCalls: [] },
+    );
+    const created = await createConversation({ scope: 'mailbox' });
+    const response = await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, { text: 'Find my dental email' });
+    const envelope = await response.json();
+    assert.equal(envelope.messages.at(-1).evidence.length, 1);
+    assert.equal(calls.requests[1].toolResults[0].result.unavailableAccounts.length, 1);
+  });
+
+  it('normalizes searched thread HTML before applying the model body limit', async () => {
+    setAssistantDependenciesFactoryForTests(() => ({
+      async getThread() {
+        return { id: 'dental-thread', messages: [{
+          id: 'dental-email', body: `<html><head><style>${'x'.repeat(20000)}</style></head><body>Please provide the dental X-rays.</body></html>`,
+        }] };
+      },
+    }));
+    responses.push(
+      { text: '', toolCalls: [{ name: 'mail.get_thread', arguments: { account: 'me@example.com', threadId: 'dental-thread' } }] },
+      { text: 'This email requests dental X-rays.', toolCalls: [] },
+    );
+    const created = await createConversation({ scope: 'mailbox' });
+    await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, { text: 'What did the dental email ask for?' });
+    const message = calls.requests[1].toolResults[0].result.messages[0];
+    assert.equal(message.account, 'me@example.com');
+    assert.equal(message.body, 'Please provide the dental X-rays.');
+  });
+
+  it('returns each account’s full requested search window and marks provider truncation', async () => {
+    setAssistantDependenciesFactoryForTests(() => ({
+      async searchMailbox(account, query, limit) {
+        assert.equal(limit, 10);
+        return {
+          messages: [{ id: account, threadId: 'dental-thread', date: account === 'me@example.com' ? '2026-09-17' : '2026-09-18' }],
+          nextPageToken: 'more-results',
+        };
+      },
+    }));
+    responses.push(
+      { text: '', toolCalls: [{ name: 'mail.search', arguments: { query: 'from:principal', limit: 10 } }] },
+      { text: 'There are more results beyond this search window.', toolCalls: [] },
+    );
+    const created = await createConversation({ scope: 'mailbox' });
+    await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, { text: 'Find my dental email' });
+    const result = calls.requests[1].toolResults[0].result;
+    assert.equal(result.truncated, true);
+    assert.equal(result.messages[0].account, 'other@example.com');
+  });
+
   it('streams only allowlisted lifecycle events and completes with the normal envelope', async () => {
     responses.push(
       { text: '', toolCalls: [{ name: 'mail.search', arguments: { query: 'EIN', limit: 10 } }] },

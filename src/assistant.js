@@ -9,6 +9,7 @@ import {
   createProposalIdentity,
   executeAssistantProposal,
   prepareAssistantTool,
+  validateAssistantToolCall,
 } from './assistant-tools.js';
 import { getAccounts } from './config.js';
 import { emailBodyToText } from './message-content.js';
@@ -116,7 +117,7 @@ function normalizeDraft(draft) {
   if (!draft || typeof draft !== 'object' || Array.isArray(draft)) return null;
   const kind = draft.kind === 'forward' ? 'forward' : (draft.kind === 'reply' ? 'reply' : '');
   const body = typeof draft.body === 'string' ? draft.body : (typeof draft.note === 'string' ? draft.note : '');
-  if (!kind || !body.trim()) return null;
+  if (!kind || (!body.trim() && (kind !== 'forward' || !Array.isArray(draft.to) || !draft.to.length))) return null;
   const normalizeAddresses = value => Array.isArray(value)
     ? value.filter(item => typeof item === 'string').slice(0, 20).map(item => item.slice(0, 320))
     : [];
@@ -347,7 +348,6 @@ function safeModelDiagnostic(err) {
 }
 
 function logAssistantFailure(run, err, errorCode) {
-  if (err instanceof AssistantToolError) return;
   if (process.env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT) return;
   const status = Number(err?.status || err?.statusCode || err?.response?.status || 0) || null;
   const diagnostic = safeModelDiagnostic(err);
@@ -589,6 +589,41 @@ export async function proposeAssistantDraftSend(
 
   const actionText = draft.kind === 'forward' ? 'Forward and send this draft.' : 'Send this reply draft.';
   const requestFingerprint = assistantRequestFingerprint(`${actionText}\n${messageId}`);
+  return prepareDraftSendRun(conversation, item, draft, idempotencyKey, actionText, requestFingerprint);
+}
+
+// The explicit Forward editor shares the same validated proposal/confirmation
+// path as chat drafts, without asking an LLM to construct a user's exact input.
+export async function proposeAssistantForward(conversationId, { to, note = '', idempotencyKey }) {
+  const conversation = getAssistantConversation(conversationId);
+  if (!conversation) throw new AssistantError(404, 'conversation_not_found');
+  if (conversation.scope !== 'email') throw new AssistantError(400, 'email_scope_required');
+  if (typeof idempotencyKey !== 'string' || !idempotencyKey || idempotencyKey.length > 200) {
+    throw new AssistantError(400, 'invalid_idempotency_key');
+  }
+  const item = getEmailItem(conversation.emailItemId);
+  if (!item) throw new AssistantError(404, 'email_not_found');
+  let validated;
+  try {
+    validated = validateAssistantToolCall('mail.send_forward', {
+      account: item.account, messageId: item.messageId, threadId: item.threadId,
+      draft: { to, note, skipAttachments: false },
+    });
+  } catch (error) {
+    if (error instanceof AssistantToolError) throw new AssistantError(error.status, error.code, error.message);
+    throw error;
+  }
+  const draft = {
+    kind: 'forward', to: validated.draft.to, cc: [], bcc: [],
+    subject: item.subject, body: validated.draft.note || '',
+  };
+  const actionText = `Forward this email to ${draft.to.join(', ')}.`;
+  const fingerprint = assistantRequestFingerprint(JSON.stringify(draft));
+  return prepareDraftSendRun(conversation, item, draft, idempotencyKey, actionText, fingerprint);
+}
+
+async function prepareDraftSendRun(conversation, item, draft, idempotencyKey, actionText, requestFingerprint) {
+  const conversationId = conversation.id;
   const leaseToken = randomUUID();
   const existingRun = getAssistantRunByIdempotencyKey(conversationId, idempotencyKey);
   if (existingRun) {

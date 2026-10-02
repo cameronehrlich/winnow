@@ -38,6 +38,12 @@ final class AppModel: ObservableObject {
     private var refreshInFlight = false
     private var refreshGeneration = 0
     private var pendingOptimisticActions: [String: EmailAction] = [:]
+    private var backgroundReadTasks: [String: Task<Bool, Never>] = [:]
+    private let apiSession: URLSession?
+    private var contentCache: [String: (response: EmailContentEnvelope, loadedAt: Date)] = [:]
+    private var contentCacheOrder: [String] = []
+    private var contentRequests: [String: Task<EmailContentEnvelope, Error>] = [:]
+    private var contentGeneration = 0
     private var visibleMailbox: MailboxTab?
     private var sessionCutoffMailboxes: Set<MailboxTab> = []
     private var archivedSeenStateIsAuthoritative = false
@@ -50,8 +56,9 @@ final class AppModel: ObservableObject {
     private let archivedViewedKey = "winnow.archived-last-viewed"
     private let archivedSeenItemIDsKey = "winnow.archived-seen-item-ids"
 
-    init(configuration: ServerConfiguration = ConfigurationStore.load()) {
+    init(configuration: ServerConfiguration = ConfigurationStore.load(), session: URLSession? = nil) {
         self.configuration = configuration
+        self.apiSession = session
         let defaults = UserDefaults.standard
         let now = Date()
         if defaults.object(forKey: inboxViewedKey) == nil {
@@ -68,6 +75,56 @@ final class AppModel: ObservableObject {
     var isConfigured: Bool { configuration.isComplete }
     var isOnline: Bool { status?.ok == true }
     var inboxBadgeCount: Int { emails.lazy.filter { !$0.isArchived && $0.isUnread }.count }
+
+    func cachedEmailContent(emailID: String) -> EmailContentEnvelope? {
+        contentCache[emailID]?.response
+    }
+
+    func loadEmailContent(emailID: String, forceRefresh: Bool = false) async throws -> EmailContentEnvelope {
+        let generation = contentGeneration
+        if !forceRefresh, let cached = contentCache[emailID], Date().timeIntervalSince(cached.loadedAt) < 60 {
+            return cached.response
+        }
+        if let request = contentRequests[emailID] {
+            let response = try await request.value
+            guard generation == contentGeneration else { throw CancellationError() }
+            return response
+        }
+        let client = APIClient(configuration: configuration, session: apiSession)
+        let request = Task { try await client.emailContentEnvelope(emailID: emailID) }
+        contentRequests[emailID] = request
+        defer { if generation == contentGeneration { contentRequests.removeValue(forKey: emailID) } }
+        let response = try await request.value
+        guard generation == contentGeneration else { throw CancellationError() }
+        contentCache[emailID] = (response, Date())
+        contentCacheOrder.removeAll { $0 == emailID }
+        contentCacheOrder.append(emailID)
+        // Embedded pictures can be large. Keep this private session cache small.
+        while contentCacheOrder.count > 8 || contentCacheBytes > 16 * 1024 * 1024 {
+            guard let oldest = contentCacheOrder.first else { break }
+            contentCacheOrder.removeFirst()
+            contentCache.removeValue(forKey: oldest)
+        }
+        return response
+    }
+
+    private var contentCacheBytes: Int {
+        contentCache.values.reduce(0) { total, cached in
+            total + cached.response.content.messages.reduce(0) {
+                $0 + $1.body.utf8.count + $1.htmlBody.utf8.count
+            }
+        }
+    }
+
+    private func clearEmailContentCache() {
+        contentGeneration &+= 1
+        contentCache.removeAll()
+        contentCacheOrder.removeAll()
+        for request in contentRequests.values { request.cancel() }
+        contentRequests.removeAll()
+        for request in backgroundReadTasks.values { request.cancel() }
+        backgroundReadTasks.removeAll()
+    }
 
     func initialLoad() async {
         guard isConfigured, !hasLoaded else { return }
@@ -121,7 +178,7 @@ final class AppModel: ObservableObject {
             isRefreshing = false
         }
 
-        let client = APIClient(configuration: configuration)
+        let client = APIClient(configuration: configuration, session: apiSession)
         let pageCount = archivedPageCount
         // The server bounds this wait and keeps catch-up running afterward.
         // Still load cached mail when Gmail is unavailable.
@@ -139,6 +196,10 @@ final class AppModel: ObservableObject {
             for (emailID, action) in pendingOptimisticActions {
                 guard let index = refreshedEmails.firstIndex(where: { $0.id == emailID }) else { continue }
                 refreshedEmails[index].applyOptimistic(action)
+            }
+            for emailID in backgroundReadTasks.keys where pendingOptimisticActions[emailID] == nil {
+                guard let index = refreshedEmails.firstIndex(where: { $0.id == emailID }) else { continue }
+                refreshedEmails[index].applyOptimistic(.markRead)
             }
             let resolvedNotificationContexts = refreshedEmails
                 .filter(\.shouldClearDeliveredNotification)
@@ -274,6 +335,7 @@ final class AppModel: ObservableObject {
             let verifiedStatus = try await APIClient(configuration: candidate).status()
             try ConfigurationStore.save(candidate)
             refreshGeneration &+= 1
+            clearEmailContentCache()
             configuration = candidate
             status = verifiedStatus
             hasLoaded = true
@@ -312,6 +374,7 @@ final class AppModel: ObservableObject {
         do {
             try ConfigurationStore.clear()
             refreshGeneration &+= 1
+            clearEmailContentCache()
             configuration = ServerConfiguration(serverURL: "", token: "")
             emails = []
             archivedNextCursor = nil
@@ -358,9 +421,13 @@ final class AppModel: ObservableObject {
         let originalItem = email(id: item.id) ?? item
         let wasAlreadySeenInArchive = archivedSeenItemIDs.contains(item.id)
         let appliesOptimistically = action.supportsOptimisticUpdate
-        let client = APIClient(configuration: configuration)
+        let client = APIClient(configuration: configuration, session: apiSession)
+        let backgroundRead = backgroundReadTasks[item.id]
         async let actionResponse = withTransientRetry(count: transientRetryCount) {
-            try await client.perform(action, emailID: item.id)
+            // Accept the user's action immediately while keeping server writes
+            // ordered with the automatic read started when they opened it.
+            if let backgroundRead { _ = await backgroundRead.value }
+            return try await client.perform(action, emailID: item.id)
         }
 
         performingEmailIDs.insert(item.id)
@@ -460,14 +527,44 @@ final class AppModel: ObservableObject {
 
     func markReadWhenOpened(_ item: EmailItem) async {
         guard account(email: item.account)?.readOnly != true else { return }
-        guard item.isUnread else { return }
-        _ = await perform(
-            .markRead,
-            on: item,
-            showsConfirmation: false,
-            presentsFailure: false,
-            transientRetryCount: 1
-        )
+        guard item.isUnread, backgroundReadTasks[item.id] == nil,
+              !performingEmailIDs.contains(item.id) else { return }
+        let client = APIClient(configuration: configuration, session: apiSession)
+        let originalConfiguration = configuration
+        let cacheGeneration = contentGeneration
+        refreshGeneration &+= 1
+        let readGeneration = refreshGeneration
+        applyOptimistic(.markRead, to: item.id)
+        publishEmailState()
+        let request = Task { @MainActor in
+            do {
+                let response = try await withTransientRetry(count: 1) {
+                    try await client.perform(.markRead, emailID: item.id)
+                }
+                // A newer explicit action owns visible state once requested.
+                guard self.configuration == originalConfiguration,
+                      self.contentGeneration == cacheGeneration else { return false }
+                if self.pendingOptimisticActions[item.id] == nil {
+                    self.refreshGeneration &+= 1
+                    if let updated = response.item { self.replace(updated) }
+                    else { self.applyOptimistic(.markRead, to: item.id) }
+                    self.publishEmailState()
+                }
+                await PushNotificationManager.shared.removeDeliveredNotifications(for: [item.notificationContext])
+                return true
+            } catch {
+                if self.configuration == originalConfiguration,
+                   self.contentGeneration == cacheGeneration,
+                   self.refreshGeneration == readGeneration {
+                    self.applyOptimistic(.markUnread, to: item.id)
+                    self.publishEmailState()
+                }
+                return false
+            }
+        }
+        backgroundReadTasks[item.id] = request
+        _ = await request.value
+        if cacheGeneration == contentGeneration { backgroundReadTasks.removeValue(forKey: item.id) }
     }
 
     func startAutoRefresh() {
