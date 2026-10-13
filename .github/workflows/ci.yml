@@ -23,6 +23,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prepare secret-free test configuration
+        run: cp test/fixtures/ci-config.yaml config/config.yaml
+
       - name: Run tests
         run: npm test
 

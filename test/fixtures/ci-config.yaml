@@ -1,0 +1,18 @@
+# Automated-test defaults only. CI copies this into its isolated checkout;
+# never copy it over a configured backend's private config/config.yaml.
+accounts:
+  - email: me@example.com
+  - email: other@example.com
+  - email: work@example.com
+
+slack:
+  enabled: false
+  feed_mode: off
+
+api:
+  host: 127.0.0.1
+  port: 3777
+
+model:
+  classification_name: gemini-3.1-flash-lite
+  assistant_name: gemini-3.5-flash
