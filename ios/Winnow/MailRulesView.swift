@@ -317,6 +317,7 @@ struct MailRuleEditorView: View {
     @State private var isSaving = false
     @State private var showingReview = false
     @State private var localError: String?
+    @State private var senderFocused = false
 
     init(rule: MailRule) {
         self.rule = rule
@@ -418,12 +419,19 @@ struct MailRuleEditorView: View {
                             Text("Domain").tag("domain")
                             Text("List ID").tag("list_id")
                         }
-                        TextField("Value", text: Binding(
-                            get: { draft.matcherValue ?? "" },
-                            set: { draft.matcherValue = $0 }
-                        ))
+                        if (draft.matcherKind ?? "sender") == "sender" {
+                            EmailAddressField(
+                                text: Binding(get: { draft.matcherValue ?? "" }, set: { draft.matcherValue = $0 }),
+                                focused: $senderFocused,
+                                configuration: model.configuration, account: draft.account ?? ""
+                            )
+                        } else {
+                            TextField("Value", text: Binding(
+                                get: { draft.matcherValue ?? "" }, set: { draft.matcherValue = $0 }
+                            ))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                        }
 
                         Toggle("Limit to subject", isOn: Binding(
                             get: { draft.subjectMatchMode != nil },

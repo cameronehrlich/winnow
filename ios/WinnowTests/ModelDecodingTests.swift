@@ -1,9 +1,117 @@
 import Foundation
 import XCTest
 import WebKit
+import SwiftUI
 @testable import Winnow
 
 final class ModelDecodingTests: XCTestCase {
+    @MainActor
+    func testAddressSuggestionsRenderWithNativeFieldInDarkMode() async throws {
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.protocolClasses = [MailRuleURLProtocol.self]
+        let session = URLSession(configuration: sessionConfiguration)
+        var didLookUp = false
+        MailRuleURLProtocol.handler = { _ in
+            didLookUp = true
+            return (200, #"{"candidates":[{"name":"Riley Ehrlich","email":"riley@example.com"},{"name":"Riley Other","email":"riley.other@example.com"}]}"#)
+        }
+        var text = "Ri"
+        var focused = true
+        let view = NavigationStack {
+            Form {
+                Section("To") {
+                    EmailAddressField(
+                        text: Binding(get: { text }, set: { text = $0 }),
+                        focused: Binding(get: { focused }, set: { focused = $0 }),
+                        configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "fixture"),
+                        account: "me@example.com", allowsMultiple: true, suggestionsSession: session
+                    )
+                }
+                Section("Message") { Text("A note for your forward") }
+                Section { Button("Review Forward") {} }
+            }
+            .navigationTitle("Forward")
+            .navigationBarTitleDisplayMode(.inline)
+        }.preferredColorScheme(.dark)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        let controller = UIHostingController(rootView: view)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; MailRuleURLProtocol.handler = nil }
+        for _ in 0..<40 {
+            if didLookUp { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(didLookUp)
+        controller.view.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Forward address suggestions - dark"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testAddressSuggestionsUseScopedAuthenticatedLookup() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let client = APIClient(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test/base", token: "secret"),
+            session: URLSession(configuration: configuration)
+        )
+        MailRuleURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/base/v1/contacts/suggestions")
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            XCTAssertEqual(request.timeoutInterval, 5)
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first { $0.name == "query" }?.value, "Riley + family")
+            XCTAssertEqual(query?.first { $0.name == "account" }?.value, "me@example.com")
+            XCTAssertEqual(query?.first { $0.name == "limit" }?.value, "5")
+            return (200, #"{"candidates":[{"name":"Riley","email":"riley@example.com","score":85,"messageCount":3,"source":"winnow_history"}]}"#)
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+        let candidates = try await client.emailAddressSuggestions(query: "Riley + family", account: "me@example.com")
+        XCTAssertEqual(candidates, [EmailAddressSuggestion(name: "Riley", email: "riley@example.com")])
+    }
+
+    func testAddressCompletionKeepsOtherRecipientsAndWorksAtTheCaret() {
+        let text = "first@example.com, Ri; third@example.com"
+        let caret = (text as NSString).range(of: "Ri").location + 2
+        let entry = EmailAddressEntry(text: text, caret: caret, allowsMultiple: true)
+        XCTAssertEqual(entry.query, "Ri")
+        XCTAssertEqual(entry.otherAddresses, ["first@example.com", "third@example.com"])
+        let completed = entry.completing(with: "riley@example.com")!
+        XCTAssertEqual(completed.text, "first@example.com, riley@example.com; third@example.com")
+        XCTAssertEqual(completed.caret, "first@example.com, riley@example.com".utf16.count)
+        XCTAssertNil(entry.completing(with: "FIRST@example.com"), "Never introduce a duplicate recipient")
+    }
+
+    func testAddressCompletionPreservesQuotedCommaNamesUnicodeAndEmptyNextRecipient() {
+        let text = #""Ríley, 👋" <riley@example.com>, Pa"#
+        let entry = EmailAddressEntry(text: text, caret: text.utf16.count, allowsMultiple: true)
+        XCTAssertEqual(entry.query, "Pa")
+        XCTAssertEqual(entry.completing(with: "paul@example.com")?.text,
+                       #""Ríley, 👋" <riley@example.com>, paul@example.com"#)
+        let empty = "riley@example.com, "
+        let next = EmailAddressEntry(text: empty, caret: empty.utf16.count, allowsMultiple: true)
+        XCTAssertEqual(next.query, "")
+        XCTAssertEqual(next.completing(with: "paul@example.com")?.text, "riley@example.com, paul@example.com")
+    }
+
+    func testSingleSenderCompletionReplacesTheWholeValueAndManualForwardParsingKeepsDisplayNames() {
+        let entry = EmailAddressEntry(text: "Ri", caret: 0, allowsMultiple: false)
+        XCTAssertEqual(entry.completing(with: "riley@example.com")?.text, "riley@example.com")
+        let input = #""Ehrlich, Riley" <riley@example.com>; paul@example.com"#
+        XCTAssertEqual(EmailParticipant.parseHeader(input).map(\.rawValue), [
+            #""Ehrlich, Riley" <riley@example.com>"#, "paul@example.com",
+        ])
+    }
+
     func testMailboxSyncUsesAuthenticatedBoundedPost() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MailRuleURLProtocol.self]
@@ -51,12 +159,15 @@ final class ModelDecodingTests: XCTestCase {
         let response = try JSONDecoder().decode(AccountListResponse.self, from: Data(json.utf8))
         XCTAssertEqual(response.accounts.filter(\.isActive).map(\.email), ["support@example.com"])
         XCTAssertEqual(response.accounts.count, 3, "Retain metadata for historical message links")
+        XCTAssertFalse(response.accounts[0].canModifyEmails, "Retired history must not offer swipe or detail mutations")
+        XCTAssertTrue(response.accounts[2].canModifyEmails)
     }
 
     func testOlderServersAccountsRemainSelectable() throws {
         let json = #"{"email":"me@example.com","scan":{}}"#
         let account = try JSONDecoder().decode(AccountStatus.self, from: Data(json.utf8))
         XCTAssertTrue(account.isActive)
+        XCTAssertTrue(account.canModifyEmails, "Keep actions available while older account metadata loads")
     }
 
     func testDefaultAPIClientWaitsForConnectivity() {

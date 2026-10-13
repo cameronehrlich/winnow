@@ -855,6 +855,7 @@ struct AccountStatus: Decodable, Equatable, Identifiable {
 
     var id: String { email }
     var isActive: Bool { readOnly != true && syncEnabled != false }
+    var canModifyEmails: Bool { readOnly != true }
     var avatarURL: URL? { avatarUrl.flatMap(URL.init(string:)) }
 }
 

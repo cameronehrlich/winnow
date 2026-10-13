@@ -435,7 +435,7 @@ private struct ContactProposalView: View {
     }
 }
 
-private struct ContactEmailPicker: UIViewControllerRepresentable {
+struct ContactEmailPicker: UIViewControllerRepresentable {
     let suggestedName: String
     let selected: (_ name: String, _ email: String) -> Void
     let cancelled: () -> Void

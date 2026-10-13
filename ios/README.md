@@ -6,6 +6,7 @@ A personal, native SwiftUI client for Winnow. V1 keeps the useful, dynamic parts
 
 - Separate Inbox and Archived tabs, each with account filtering and its own search
 - An account-filtered Sent destination on iPhone, iPad, and Mac Catalyst
+- Account-scoped email-history suggestions for Forward and sender-rule address fields, with Apple Contacts selection as a fallback
 - Compact cards with bold unread typography, quieter read messages, and Gmail account-photo badges
 - Swipe right from Inbox to archive; swipe left from Archived to restore
 - One Winnow summary in detail, followed by a compact next-step, deadline, impact, handling, and confidence card

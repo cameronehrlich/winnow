@@ -143,6 +143,15 @@ struct APIClient: AssistantService {
         return response.accounts
     }
 
+    func emailAddressSuggestions(query: String, account: String = "") async throws -> [EmailAddressSuggestion] {
+        var queryItems = [URLQueryItem(name: "query", value: query), URLQueryItem(name: "limit", value: "5")]
+        if !account.isEmpty { queryItems.append(URLQueryItem(name: "account", value: account)) }
+        let response: EmailAddressSuggestionsResponse = try await request(
+            path: "/v1/contacts/suggestions", queryItems: queryItems, timeoutInterval: 5
+        )
+        return response.candidates
+    }
+
     func emails(state: String = "all", account: String = "", limit: Int = 100, cursor: String? = nil) async throws -> EmailListResponse {
         var query = [URLQueryItem(name: "state", value: state), URLQueryItem(name: "limit", value: String(limit))]
         if !account.isEmpty { query.append(URLQueryItem(name: "account", value: account)) }

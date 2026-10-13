@@ -16,6 +16,7 @@ import {
   listUserRuleRecords,
   updateEmailItemState,
   upsertEmailItemFromResult,
+  upsertGmailMessageMetadata,
 } from '../src/store.js';
 import { SemanticPreviewError } from '../src/semantic-rule-preview.js';
 
@@ -181,6 +182,110 @@ afterEach(async () => {
 });
 
 describe('local API', () => {
+  it('keeps retired mailbox history out of active lists and badges while allowing read-only links', async () => {
+    writeFileSync(process.env.WINNOW_CONFIG_PATH, 'accounts:\n  - email: me@example.com\n  - email: retired@example.com\n    read_only: true\n    sync_enabled: false\n');
+    reloadConfig();
+    const retired = upsertEmailItemFromResult({
+      account: 'retired@example.com', messageId: 'retired-inbox', threadId: 'retired-inbox',
+      archive: false, readState: 'unread',
+    });
+    const archived = upsertEmailItemFromResult({
+      account: 'retired@example.com', messageId: 'retired-archive', threadId: 'retired-archive', archive: true,
+    });
+    const headers = { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' };
+    for (const state of ['all', 'inbox', 'archived']) {
+      const response = await fetch(`${baseUrl}/v1/emails?state=${state}`, { headers });
+      const page = await response.json();
+      assert.ok(page.items.every(item => item.account === 'me@example.com'));
+      assert.equal(page.archivedUnseenCount, 0);
+    }
+    assert.equal((await fetch(`${baseUrl}/v1/emails/${retired.id}`, { headers })).status, 200);
+    assert.equal((await fetch(`${baseUrl}/v1/emails/${retired.id}/content`, { headers })).status, 200);
+    for (const action of ['archive', 'move-to-inbox', 'mark-read', 'mark-unread', 'unsubscribe', 'undo-handling']) {
+      const response = await fetch(`${baseUrl}/v1/emails/${retired.id}/${action}`, { method: 'POST', headers });
+      assert.equal(response.status, 409);
+      assert.equal((await response.json()).error, 'account_read_only');
+    }
+    apiDependencies.listSentMailbox = async ({ accounts }) => {
+      assert.deepEqual(accounts, ['me@example.com']);
+      return { items: [] };
+    };
+    assert.equal((await fetch(`${baseUrl}/v1/sent`, { headers })).status, 200);
+    const cleanup = await (await fetch(`${baseUrl}/v1/push/notifications/reconcile`, {
+      method: 'POST', headers, body: JSON.stringify({ notifications: [{
+        emailId: retired.id, account: retired.account, threadId: retired.threadId,
+      }] }),
+    })).json();
+    assert.equal(cleanup.badge, 1);
+    assert.equal(cleanup.clearNotifications[0].emailId, retired.id);
+    assert.equal(getEmailItem(retired.id).mailboxState, 'inbox', 'Do not invent a Gmail archive or delete historical rows');
+    assert.equal(getEmailItem(archived.id).mailboxState, 'archived');
+  });
+
+  it('offers bounded authenticated address suggestions without a Gmail fetch or email content', async () => {
+    upsertGmailMessageMetadata('me@example.com', {
+      id: 'sent-recipient', threadId: 'sent-recipient', labelIds: ['SENT'],
+      to: 'Riley <riley@example.com>', subject: 'Private subject', snippet: 'Private body',
+    });
+    const path = `${baseUrl}/v1/contacts/suggestions`;
+    const headers = { Authorization: 'Bearer test-token' };
+    assert.equal((await fetch(`${path}?query=Ri`)).status, 401);
+    const response = await fetch(`${path}?query=Ri&account=me@example.com&limit=1`, { headers });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].email, 'riley@example.com');
+    assert.doesNotMatch(JSON.stringify(result), /Private subject|Private body/);
+    assert.deepEqual((await (await fetch(`${path}?query=R`, { headers })).json()).candidates, []);
+    assert.equal((await fetch(`${path}?query=Ri&account=removed@example.com`, { headers })).status, 400);
+    assert.equal((await fetch(`${path}?query=${'R'.repeat(201)}`, { headers })).status, 400);
+    assert.equal((await fetch(`${path}?query=Ri&limit=11`, { headers })).status, 400);
+  });
+
+  it('hides removed-account history and clears its notifications without contacting Gmail', async () => {
+    const removed = upsertEmailItemFromResult({
+      account: 'removed@example.com', messageId: 'removed', threadId: 'removed-thread',
+      archive: false, readState: 'unread',
+    });
+    const archived = upsertEmailItemFromResult({
+      account: 'removed@example.com', messageId: 'removed-archive', threadId: 'removed-archive', archive: true,
+    });
+    appendEmailEvent('email.kept', removed);
+    apiDependencies.fetchEmailContent = apiDependencies.archiveEmail = async () => {
+      assert.fail('A removed account must not reach the provider or action handler');
+    };
+    const headers = { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' };
+    const page = await (await fetch(`${baseUrl}/v1/emails?limit=1`, { headers })).json();
+    assert.deepEqual(page.items.map(item => item.account), ['me@example.com']);
+    assert.equal(page.archivedUnseenCount, 0);
+    assert.equal(page.nextCursor, null);
+    assert.equal((await fetch(`${baseUrl}/v1/emails?account=removed@example.com`, { headers })).status, 400);
+    for (const suffix of ['', '/content', '/attachments', '/attachments/file']) {
+      assert.equal((await fetch(`${baseUrl}/v1/emails/${removed.id}${suffix}`, { headers })).status, 404);
+    }
+    for (const action of ['archive', 'move-to-inbox', 'mark-read', 'mark-unread', 'unsubscribe', 'undo-handling']) {
+      assert.equal((await fetch(`${baseUrl}/v1/emails/${removed.id}/${action}`, { method: 'POST', headers })).status, 404);
+    }
+    const seen = await (await fetch(`${baseUrl}/v1/emails/archived-seen`, {
+      method: 'POST', headers, body: JSON.stringify({ emailIds: [archived.id] }),
+    })).json();
+    assert.equal(seen.updated, 0);
+    assert.equal(getEmailItem(archived.id).archivedSeenAt, null);
+    const events = await (await fetch(`${baseUrl}/v1/events`, { headers })).json();
+    assert.ok(events.events.every(event => event.account === 'me@example.com'));
+    const summary = await (await fetch(`${baseUrl}/v1/summaries/lifetime`, { headers })).json();
+    assert.equal(summary.counters.kept, 1);
+    assert.ok(summary.recentActivity.every(event => event.account === 'me@example.com'));
+    const reconciled = await (await fetch(`${baseUrl}/v1/push/notifications/reconcile`, {
+      method: 'POST', headers, body: JSON.stringify({ notifications: [{
+        emailId: removed.id, account: removed.account, threadId: removed.threadId,
+      }] }),
+    })).json();
+    assert.equal(reconciled.badge, 1);
+    assert.equal(reconciled.clearNotifications[0].emailId, removed.id);
+    assert.ok(getEmailItem(removed.id), 'Local history is retained, not deleted');
+  });
+
   it('requires authentication for refresh and returns sync freshness without blocking feed reads', async () => {
     let calls = 0;
     apiDependencies.refreshMailboxes = async () => {

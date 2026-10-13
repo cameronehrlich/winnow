@@ -1,9 +1,10 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { reconcileMailbox } from '../src/reconcile.js';
+import { reloadConfig } from '../src/config.js';
 import {
   closeStoreForTests,
   configureDatabaseForTests,
@@ -17,6 +18,9 @@ let tempDir;
 beforeEach(() => {
   process.env.WINNOW_SKIP_LEGACY_IMPORT = '1';
   tempDir = mkdtempSync(join(tmpdir(), 'winnow-reconcile-'));
+  process.env.WINNOW_CONFIG_PATH = join(tempDir, 'config.yaml');
+  writeFileSync(process.env.WINNOW_CONFIG_PATH, 'accounts:\n  - email: me@example.com\n  - email: retired@example.com\n    sync_enabled: false\n    read_only: true\n');
+  reloadConfig();
   configureDatabaseForTests(join(tempDir, 'winnow.db'));
 });
 
@@ -24,9 +28,27 @@ afterEach(() => {
   closeStoreForTests();
   rmSync(tempDir, { recursive: true, force: true });
   delete process.env.WINNOW_SKIP_LEGACY_IMPORT;
+  delete process.env.WINNOW_CONFIG_PATH;
 });
 
 describe('mailbox reconciliation', () => {
+  it('does not contact removed or retired mailboxes, even when their rows fill the newest page', async () => {
+    upsertEmailItemFromResult({ account: 'me@example.com', messageId: 'active', archive: false }, {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    for (const account of ['removed@example.com', 'retired@example.com']) {
+      upsertEmailItemFromResult({ account, messageId: account, archive: false });
+    }
+    const calls = [];
+    const adapter = { getMailboxState: async account => {
+      calls.push(account);
+      return { mailboxState: 'inbox', unread: false };
+    } };
+    assert.equal((await reconcileMailbox({ limit: 1, adapter })).checked, 1);
+    assert.deepEqual(calls, ['me@example.com']);
+    assert.equal((await reconcileMailbox({ account: 'removed@example.com', adapter })).checked, 0);
+  });
+
   it('carries a Gmail archive into Winnow even when the tracked item is old', async () => {
     const item = upsertEmailItemFromResult({
       account: 'me@example.com',

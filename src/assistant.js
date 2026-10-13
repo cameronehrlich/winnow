@@ -234,7 +234,7 @@ export function createConversation({ scope, account = '', emailItemId = '', titl
     const item = getEmailItem(emailItemId);
     if (!item) throw new AssistantError(404, 'email_not_found');
     if (account && account !== item.account) throw new AssistantError(400, 'account_scope_mismatch');
-    account = item.account;
+    account = requireConfiguredAccount(item.account);
     title = title || item.subject;
   } else if (emailItemId) {
     throw new AssistantError(400, 'invalid_email_item', 'emailItemId is only valid for email conversations');
@@ -252,6 +252,7 @@ export function createConversation({ scope, account = '', emailItemId = '', titl
 export function getConversation(id) {
   const envelope = getAssistantConversationEnvelope(id);
   if (!envelope) throw new AssistantError(404, 'conversation_not_found');
+  if (envelope.conversation.account) requireConfiguredAccount(envelope.conversation.account);
   return envelope;
 }
 
@@ -315,17 +316,23 @@ function safeModelDiagnostic(err) {
   const diagnostic = err?.diagnostic;
   if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)) return null;
   const result = {};
-  for (const key of ['candidateCount', 'responseCharacters', 'elapsedMs']) {
+  for (const key of [
+    'candidateCount', 'responseCharacters', 'elapsedMs', 'inputCharacters',
+    'toolCount', 'chatMessageCount', 'contextMessageCount', 'attachmentCount', 'attachmentBytes',
+  ]) {
     const value = Number(diagnostic[key]);
     if (Number.isSafeInteger(value) && value >= 0) result[key] = value;
   }
-  for (const key of ['hasContent', 'responseTruncated']) {
+  for (const key of ['hasContent', 'responseTruncated', 'latencyRecovery']) {
     if (typeof diagnostic[key] === 'boolean') result[key] = diagnostic[key];
   }
   if (typeof diagnostic.finishReason === 'string') {
     result.finishReason = diagnostic.finishReason.slice(0, 80);
   } else if (diagnostic.finishReason === null) {
     result.finishReason = null;
+  }
+  for (const key of ['modelName', 'thinkingLevel']) {
+    if (typeof diagnostic[key] === 'string') result[key] = diagnostic[key].slice(0, 80);
   }
   return Object.keys(result).length ? result : null;
 }
@@ -402,15 +409,23 @@ function startAssistantRunHeartbeat(run) {
 }
 
 async function boundedModelResponse(model, input) {
-  const request = async (timeoutMs = assistantModelTimeoutMs) => {
+  const request = async (timeoutMs = assistantModelTimeoutMs, latencyRecovery = false) => {
     let timeout;
     const controller = new AbortController();
     const startedAt = Date.now();
-    const providerResponse = Promise.resolve().then(() => model.respond(input, { signal: controller.signal }));
+    const providerResponse = Promise.resolve().then(() => model.respond(input, {
+      signal: controller.signal, latencyRecovery,
+    }));
     const deadline = new Promise((resolve, reject) => {
       timeout = setTimeout(() => {
         const failure = new AssistantError(504, 'assistant_model_timeout', 'The assistant model did not respond in time');
-        failure.diagnostic = { elapsedMs: Date.now() - startedAt };
+        failure.diagnostic = {
+          elapsedMs: Date.now() - startedAt,
+          toolCount: input.availableTools?.length || 0,
+          chatMessageCount: input.chatMessages?.length || 0,
+          contextMessageCount: input.contextualEmail?.messages?.length || 0,
+          latencyRecovery,
+        };
         reject(failure);
         controller.abort();
       }, timeoutMs);
@@ -438,7 +453,10 @@ async function boundedModelResponse(model, input) {
       });
     }
     try {
-      return await request(isTimeout ? Math.min(assistantModelTimeoutMs, 30_000) : assistantModelTimeoutMs);
+      return await request(
+        isTimeout ? Math.min(assistantModelTimeoutMs, 30_000) : assistantModelTimeoutMs,
+        isTimeout,
+      );
     } catch (retryErr) {
       if (isInvalidModelResponse(retryErr)) {
         const failure = new AssistantError(
@@ -507,6 +525,7 @@ async function resolveExistingAssistantRun(run, requestFingerprint, leaseToken, 
 export function validateAssistantMessageRequest(conversationId, { text, idempotencyKey = '' }) {
   const conversation = getAssistantConversation(conversationId);
   if (!conversation) throw new AssistantError(404, 'conversation_not_found');
+  if (conversation.account) requireConfiguredAccount(conversation.account);
   if (typeof text !== 'string' || !text.trim() || text.length > 4000) {
     throw new AssistantError(400, 'invalid_text', 'text must be between 1 and 4000 characters');
   }
@@ -565,6 +584,7 @@ export async function proposeAssistantDraftSend(
 ) {
   const conversation = getAssistantConversation(conversationId);
   if (!conversation) throw new AssistantError(404, 'conversation_not_found');
+  if (conversation.account) requireConfiguredAccount(conversation.account);
   if (conversation.scope !== 'email') {
     throw new AssistantError(400, 'email_scope_required', 'Open an email before sending a draft');
   }
@@ -593,6 +613,7 @@ export async function proposeAssistantDraftSend(
 export async function proposeAssistantForward(conversationId, { to, note = '', idempotencyKey }) {
   const conversation = getAssistantConversation(conversationId);
   if (!conversation) throw new AssistantError(404, 'conversation_not_found');
+  if (conversation.account) requireConfiguredAccount(conversation.account);
   if (conversation.scope !== 'email') throw new AssistantError(400, 'email_scope_required');
   if (typeof idempotencyKey !== 'string' || !idempotencyKey || idempotencyKey.length > 200) {
     throw new AssistantError(400, 'invalid_idempotency_key');
@@ -978,6 +999,10 @@ export async function confirmAssistantProposal(id, confirmationDigest) {
     throw new AssistantError(400, 'confirmation_digest_required');
   }
   const existing = getAssistantProposal(id);
+  if (existing) {
+    getConversation(existing.conversationId);
+    if (existing.arguments.account) requireConfiguredAccount(existing.arguments.account);
+  }
   if (existing && CLIENT_ASSISTANT_TOOLS.has(existing.tool)) {
     throw new AssistantError(400, 'proposal_requires_ios_completion');
   }
@@ -1019,6 +1044,7 @@ export function completeAssistantClientProposal(id, confirmationDigest) {
   }
   const existing = getAssistantProposal(id);
   if (!existing) throw new AssistantError(404, 'proposal_not_found');
+  getConversation(existing.conversationId);
   if (!CLIENT_ASSISTANT_TOOLS.has(existing.tool)) {
     throw new AssistantError(400, 'proposal_not_client_action');
   }

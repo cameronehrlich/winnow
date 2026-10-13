@@ -14,6 +14,7 @@ import {
   getMailboxCounts,
   getRuleActivity,
   listEmailItems,
+  listEvents,
   listRecentTrackedEmailItems,
   listPushDevices,
   listDeliveryRecords,
@@ -40,6 +41,35 @@ afterEach(() => {
 });
 
 describe('daily action summary', () => {
+  it('scopes feeds, pagination, counts, events, and summaries without deleting removed-account history', () => {
+    const retained = upsertEmailItemFromResult({
+      account: 'me@example.com', messageId: 'active', threadId: 'active', archive: false, readState: 'unread',
+    }, { timestamp: '2026-07-13T10:00:00.000Z' });
+    const removed = upsertEmailItemFromResult({
+      account: 'removed@example.com', messageId: 'removed', threadId: 'removed', archive: false, readState: 'unread',
+    }, { timestamp: '2026-07-13T11:00:00.000Z' });
+    upsertEmailItemFromResult({
+      account: 'removed@example.com', messageId: 'removed-archive', threadId: 'removed-archive', archive: true,
+    });
+    appendEmailEvent('email.kept', removed);
+    const retainedEvent = appendEmailEvent('email.kept', retained);
+    const accounts = ['me@example.com'];
+
+    assert.deepEqual(listEmailItems({ accounts, limit: 1 }).items.map(item => item.id), [retained.id]);
+    assert.equal(listEmailItems({ accounts, limit: 1 }).nextCursor, null);
+    assert.deepEqual(getMailboxCounts({ accounts }), { inbox: 1, archived: 0, archivedUnseen: 0 });
+    assert.deepEqual(listEvents({ accounts, limit: 1 }).map(event => event.id), [retainedEvent.id]);
+    assert.equal(getDailyActionSummary({ accounts, date: '' }).counters.kept, 1);
+    assert.equal(getLifetimeActionSummary({ accounts }).counters.kept, 1);
+    assert.deepEqual(listRecentTrackedEmailItems({ accounts }).map(item => item.id), [retained.id]);
+    assert.equal(listEmailItems().items.length, 3, 'historical rows remain recoverable');
+    assert.equal(getMailboxCounts().inbox, 2);
+    assert.deepEqual(listEmailItems({ accounts: [] }).items, []);
+    assert.deepEqual(getMailboxCounts({ accounts: [] }), { inbox: 0, archived: 0, archivedUnseen: 0 });
+    assert.deepEqual(listEvents({ accounts: [] }), []);
+    assert.equal(getLifetimeActionSummary({ accounts: [] }).counters.kept, 0);
+  });
+
   it('self-heals a missing unsubscribe link without replacing existing metadata', () => {
     const missing = upsertEmailItemFromResult({
       account: 'me@example.com', messageId: 'm-missing-unsub', threadId: 't-missing-unsub',

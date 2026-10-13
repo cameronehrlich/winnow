@@ -1,5 +1,5 @@
 import { archiveEmail, markEmailRead, markEmailUnread, moveEmailToInbox } from './actions.js';
-import { getAccounts } from './config.js';
+import { getAccounts, getActiveAccounts } from './config.js';
 import { scan } from './scan.js';
 import { findUnsubscribeForEmail, recordUnsubscribe } from './state.js';
 import { executeEmailUnsubscribe } from './unsubscribe.js';
@@ -126,7 +126,7 @@ function toolResult(data) {
 
 function requireEmail(id) {
   const item = getEmailItem(id);
-  if (!item) {
+  if (!item || !getAccounts().some(account => account.email.toLowerCase() === item.account.toLowerCase())) {
     const err = new Error('email_not_found');
     err.code = 'email_not_found';
     throw err;
@@ -165,7 +165,7 @@ function optionalBoolean(args, key, fallback = undefined) {
 }
 
 function validateScanArguments(args = {}) {
-  const configuredAccounts = getAccounts().map(account => account.email);
+  const configuredAccounts = getActiveAccounts().map(account => account.email);
   if (args.account !== undefined && (typeof args.account !== 'string' || !configuredAccounts.includes(args.account))) {
     throw argumentError('account must be one of the configured accounts');
   }
@@ -284,13 +284,13 @@ async function callTool(name, args = {}) {
     case 'winnow_list_accounts':
       return { accounts: listAccountStatus() };
     case 'winnow_list_emails':
-      return listEmailItems(args);
+      return listEmailItems({ ...args, accounts: getActiveAccounts().map(account => account.email) });
     case 'winnow_get_email':
       return { item: requireEmail(args.id) };
     case 'winnow_daily_summary':
-      return getDailyActionSummary({ date: args.date, account: args.account || '' });
+      return getDailyActionSummary({ date: args.date, account: args.account || '', accounts: getAccounts().map(account => account.email) });
     case 'winnow_list_events':
-      return { events: listEvents({ since: args.since || 0, limit: args.limit || 100 }) };
+      return { events: listEvents({ since: args.since || 0, limit: args.limit || 100, accounts: getActiveAccounts().map(account => account.email) }) };
     case 'winnow_scan':
       return runScanTool(args);
     case 'winnow_archive_email':

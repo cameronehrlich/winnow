@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { refreshMailboxes } from './mailbox-sync.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { loadConfig, getAccounts } from './config.js';
+import { loadConfig, getAccounts, getActiveAccounts, assertAccountWritable } from './config.js';
 import { archiveEmail, markEmailRead, markEmailUnread, moveEmailToInbox } from './actions.js';
 import { handlingDecisionKey, handlingUndoAction } from './handling-decisions.js';
 import { scan } from './scan.js';
@@ -11,6 +11,7 @@ import { handleMcpMessage } from './mcp.js';
 import { getRuntimeStatus, listAccountStatus } from './status.js';
 import { getPushCapabilities, sendBadgeSync } from './push.js';
 import { reconcileDeliveredNotifications } from './notification-reconciliation.js';
+import { resolveTrackedContacts } from './contact-resolver.js';
 import {
   fetchEmailAttachment,
   fetchEmailAttachments,
@@ -248,8 +249,8 @@ function queryInteger(url, name, { fallback, min, max }) {
   return value;
 }
 
-function configuredAccountsForQuery(url, { required = false } = {}) {
-  const configured = getAccounts().map(account => account.email);
+function configuredAccountsForQuery(url, { required = false, activeOnly = false } = {}) {
+  const configured = (activeOnly ? getActiveAccounts() : getAccounts()).map(account => account.email);
   const requested = String(url.searchParams.get('account') || '').trim();
   if (!requested) {
     if (required) throw new HttpError(400, 'invalid_account', 'A configured account is required');
@@ -258,6 +259,25 @@ function configuredAccountsForQuery(url, { required = false } = {}) {
   const account = configured.find(value => value.toLowerCase() === requested.toLowerCase());
   if (!account) throw new HttpError(400, 'invalid_account', 'Account is not configured');
   return [account];
+}
+
+function configuredEmailItem(id) {
+  const item = getEmailItem(id);
+  return item && getAccounts().some(account => account.email.toLowerCase() === item.account.toLowerCase())
+    ? item : null;
+}
+
+function configuredMailboxCounts() {
+  return getMailboxCounts({ accounts: getActiveAccounts().map(account => account.email) });
+}
+
+function writableEmailItem(id) {
+  const item = configuredEmailItem(id);
+  if (item) {
+    try { assertAccountWritable(item.account); }
+    catch (err) { throw new HttpError(err.status || 409, err.code || 'account_read_only', err.message); }
+  }
+  return item;
 }
 
 function validatedGmailId(value, name) {
@@ -424,6 +444,16 @@ async function handleAuthed(req, res, url, dependencies = {}) {
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/v1/contacts/suggestions') {
+    const query = String(url.searchParams.get('query') || '').trim();
+    if (query.length > 200) throw new HttpError(400, 'invalid_query');
+    const accounts = configuredAccountsForQuery(url);
+    const account = String(url.searchParams.get('account') || '').trim() ? accounts[0] : '';
+    const limit = queryInteger(url, 'limit', { fallback: 5, min: 1, max: 10 });
+    sendJson(res, 200, { candidates: query.length < 2 ? [] : resolveTrackedContacts(query, { account, limit }) });
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/v1/rules') {
     const account = url.searchParams.get('account') || '';
     sendJson(res, 200, ruleRequest(() => listRulesForApi(account)));
@@ -582,14 +612,14 @@ async function handleAuthed(req, res, url, dependencies = {}) {
   if (req.method === 'GET' && url.pathname === '/v1/emails') {
     const page = listEmailItems({
       state: queryEmailState(url),
-      account: url.searchParams.get('account') || '',
+      accounts: configuredAccountsForQuery(url, { activeOnly: true }),
       cursor: queryCursor(url),
       limit: queryInteger(url, 'limit', { fallback: 50, min: 1, max: 200 }),
     });
     const unsubscribeEntries = getUnsubscribes().entries || [];
     sendJson(res, 200, {
       ...page,
-      archivedUnseenCount: getMailboxCounts().archivedUnseen,
+      archivedUnseenCount: configuredMailboxCounts().archivedUnseen,
       items: page.items.map(item => mobileEmailItem(item, unsubscribeEntries)),
     });
     return;
@@ -609,8 +639,8 @@ async function handleAuthed(req, res, url, dependencies = {}) {
       }
       return value.trim();
     }))];
-    const result = markArchivedEmailItemsSeen(emailIds);
-    const mailboxCounts = getMailboxCounts();
+    const result = markArchivedEmailItemsSeen(emailIds.filter(id => configuredEmailItem(id)));
+    const mailboxCounts = configuredMailboxCounts();
     if (result.updated > 0) {
       const push = dependencies.sendBadgeSync || sendBadgeSync;
       void Promise.resolve()
@@ -628,7 +658,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
   }
 
   if (req.method === 'GET' && url.pathname === '/v1/sent') {
-    const accounts = configuredAccountsForQuery(url);
+    const accounts = configuredAccountsForQuery(url, { activeOnly: true });
     const limit = queryInteger(url, 'limit', { fallback: 50, min: 1, max: 200 });
     try {
       const getSentMailbox = dependencies.listSentMailbox || listSentMailbox;
@@ -664,7 +694,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
 
   const emailMatch = route(url.pathname, '/v1/emails/:id');
   if (req.method === 'GET' && emailMatch) {
-    const item = getEmailItem(emailMatch.id);
+    const item = configuredEmailItem(emailMatch.id);
     if (!item) sendJson(res, 404, { error: 'email_not_found' });
     else sendJson(res, 200, { item: mobileEmailItem(item) });
     return;
@@ -672,7 +702,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
 
   const emailContentMatch = route(url.pathname, '/v1/emails/:id/content');
   if (req.method === 'GET' && emailContentMatch) {
-    const item = getEmailItem(emailContentMatch.id);
+    const item = configuredEmailItem(emailContentMatch.id);
     if (!item) {
       sendJson(res, 404, { error: 'email_not_found' });
       return;
@@ -698,7 +728,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
 
   const emailAttachmentsMatch = route(url.pathname, '/v1/emails/:id/attachments');
   if (req.method === 'GET' && emailAttachmentsMatch) {
-    const item = getEmailItem(emailAttachmentsMatch.id);
+    const item = configuredEmailItem(emailAttachmentsMatch.id);
     if (!item) {
       sendJson(res, 404, { error: 'email_not_found' });
       return;
@@ -717,7 +747,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
 
   const emailAttachmentMatch = route(url.pathname, '/v1/emails/:id/attachments/:attachmentId');
   if (req.method === 'GET' && emailAttachmentMatch) {
-    const item = getEmailItem(emailAttachmentMatch.id);
+    const item = configuredEmailItem(emailAttachmentMatch.id);
     if (!item) {
       sendJson(res, 404, { error: 'email_not_found' });
       return;
@@ -736,7 +766,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
 
   const undoHandlingMatch = route(url.pathname, '/v1/emails/:id/undo-handling');
   if (req.method === 'POST' && undoHandlingMatch) {
-    const item = getEmailItem(undoHandlingMatch.id);
+    const item = writableEmailItem(undoHandlingMatch.id);
     if (!item) {
       sendJson(res, 404, { error: 'email_not_found' });
       return;
@@ -799,7 +829,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
   ]) {
     const match = route(url.pathname, `/v1/emails/:id/${suffix}`);
     if (req.method === 'POST' && match) {
-      const item = getEmailItem(match.id);
+      const item = writableEmailItem(match.id);
       if (!item) {
         sendJson(res, 404, { error: 'email_not_found' });
         return;
@@ -823,7 +853,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
         sendJson(res, 200, {
           ok: true,
           action: suffix,
-          badge: getMailboxCounts().inbox,
+          badge: configuredMailboxCounts().inbox,
           item: mobileEmailItem(getEmailItem(item.id) || updated || item),
         });
       } catch (err) {
@@ -841,7 +871,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
 
   const unsubscribeMatch = route(url.pathname, '/v1/emails/:id/unsubscribe');
   if (req.method === 'POST' && unsubscribeMatch) {
-    const item = getEmailItem(unsubscribeMatch.id);
+    const item = writableEmailItem(unsubscribeMatch.id);
     if (!item) {
       sendJson(res, 404, { error: 'email_not_found' });
     } else {
@@ -917,7 +947,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
   if (req.method === 'POST' && url.pathname === '/v1/scans') {
     const body = await readJsonObject(req);
     const dryRun = bodyBoolean(body, 'dryRun', true);
-    const configuredAccounts = getAccounts().map(account => account.email);
+    const configuredAccounts = getActiveAccounts().map(account => account.email);
     if (body.account !== undefined && (typeof body.account !== 'string' || !configuredAccounts.includes(body.account))) {
       throw new HttpError(400, 'invalid_account');
     }
@@ -945,6 +975,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
   if (req.method === 'GET' && url.pathname === '/v1/events') {
     sendJson(res, 200, {
       events: listEvents({
+        accounts: configuredAccountsForQuery(url, { activeOnly: true }),
         since: queryInteger(url, 'since', { fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER }),
         limit: queryInteger(url, 'limit', { fallback: 100, min: 1, max: 500 }),
       }),
@@ -954,14 +985,17 @@ async function handleAuthed(req, res, url, dependencies = {}) {
 
   if (req.method === 'GET' && url.pathname === '/v1/events/stream') {
     const since = queryInteger(url, 'since', { fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER });
+    const accounts = configuredAccountsForQuery(url, { activeOnly: true });
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Content-Type-Options': 'nosniff',
     });
-    const send = (event) => res.write(`event: event\ndata: ${JSON.stringify(event)}\n\n`);
-    for (const event of listEvents({ since, limit: 500 })) send(event);
+    const send = (event) => {
+      if (accounts.includes(event.account)) res.write(`event: event\ndata: ${JSON.stringify(event)}\n\n`);
+    };
+    for (const event of listEvents({ since, accounts, limit: 500 })) send(event);
     storeEvents.on('event', send);
     req.on('close', () => storeEvents.off('event', send));
     return;
@@ -969,6 +1003,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
 
   if (req.method === 'GET' && url.pathname === '/v1/summaries/daily') {
     sendJson(res, 200, getDailyActionSummary({
+      accounts: configuredAccountsForQuery(url),
       date: queryDate(url),
       account: url.searchParams.get('account') || '',
     }));
@@ -977,6 +1012,7 @@ async function handleAuthed(req, res, url, dependencies = {}) {
 
   if (req.method === 'GET' && url.pathname === '/v1/summaries/lifetime') {
     sendJson(res, 200, getLifetimeActionSummary({
+      accounts: configuredAccountsForQuery(url),
       account: url.searchParams.get('account') || '',
       recentLimit: queryInteger(url, 'recentLimit', { fallback: 25, min: 1, max: 100 }),
     }));

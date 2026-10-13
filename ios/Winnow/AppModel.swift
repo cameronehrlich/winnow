@@ -74,7 +74,8 @@ final class AppModel: ObservableObject {
 
     var isConfigured: Bool { configuration.isComplete }
     var isOnline: Bool { status?.ok == true }
-    var inboxBadgeCount: Int { emails.lazy.filter { !$0.isArchived && $0.isUnread }.count }
+    var inboxBadgeCount: Int { emails.lazy.filter { self.isOperationalEmail($0) && !$0.isArchived && $0.isUnread }.count }
+    private var operationalEmails: [EmailItem] { emails.filter(isOperationalEmail) }
 
     func cachedEmailContent(emailID: String) -> EmailContentEnvelope? {
         contentCache[emailID]?.response
@@ -214,7 +215,7 @@ final class AppModel: ObservableObject {
             lastRefresh = Date()
             if visibleMailbox == .inbox { markMailboxSeen(.inbox) }
             updateArchivedUnseenCount()
-            WidgetSnapshotStore.save(emails: emails)
+            WidgetSnapshotStore.save(emails: operationalEmails)
             PushNotificationManager.shared.setAppIconBadge(inboxBadgeCount)
             if !resolvedNotificationContexts.isEmpty {
                 await PushNotificationManager.shared.removeDeliveredNotifications(
@@ -315,7 +316,10 @@ final class AppModel: ObservableObject {
             if let dailySummary { self.summary = dailySummary }
             if let lifetime { self.lifetimeSummary = lifetime }
             if let runtimeStatus { self.status = runtimeStatus }
-            if let accountList { self.accounts = accountList }
+            if let accountList {
+                self.accounts = accountList
+                self.publishEmailState()
+            }
             self.supplementalRefreshTask = nil
         }
     }
@@ -417,7 +421,7 @@ final class AppModel: ObservableObject {
         transientRetryCount: Int = 0,
         optimisticDelay: Duration = .zero
     ) async -> Bool {
-        guard !performingEmailIDs.contains(item.id) else { return false }
+        guard canModifyEmail(item), !performingEmailIDs.contains(item.id) else { return false }
         let originalItem = email(id: item.id) ?? item
         let wasAlreadySeenInArchive = archivedSeenItemIDs.contains(item.id)
         let appliesOptimistically = action.supportsOptimisticUpdate
@@ -526,7 +530,7 @@ final class AppModel: ObservableObject {
     }
 
     func markReadWhenOpened(_ item: EmailItem) async {
-        guard account(email: item.account)?.readOnly != true else { return }
+        guard canModifyEmail(item) else { return }
         guard item.isUnread, backgroundReadTasks[item.id] == nil,
               !performingEmailIDs.contains(item.id) else { return }
         let client = APIClient(configuration: configuration, session: apiSession)
@@ -904,7 +908,7 @@ final class AppModel: ObservableObject {
                 archivedVisitUnseenItemIDs?.formUnion(persistedUnseenArchivedItemIDs())
             }
             let pendingServerUnseenCount = emails.lazy.filter { item in
-                item.isArchived && item.archivedSeenAt == nil && self.archivedSeenItemIDs.contains(item.id)
+                self.isOperationalEmail(item) && item.isArchived && item.archivedSeenAt == nil && self.archivedSeenItemIDs.contains(item.id)
             }.count
             unseenArchivedItemCount = max(0, authoritativeArchivedUnseenCount - pendingServerUnseenCount)
             return
@@ -918,7 +922,7 @@ final class AppModel: ObservableObject {
             archivedVisitUnseenItemIDs?.formUnion(persistedUnseenArchivedItemIDs())
         }
         unseenArchivedItemCount = Self.itemCount(
-            in: emails,
+            in: operationalEmails,
             mailbox: .archived,
             newerThan: cutoff,
             excluding: archivedSeenItemIDs
@@ -1033,9 +1037,17 @@ final class AppModel: ObservableObject {
         emails[index].applyOptimistic(action)
     }
 
+    func canModifyEmail(_ item: EmailItem) -> Bool {
+        accounts.isEmpty || account(email: item.account)?.canModifyEmails == true
+    }
+
+    func isOperationalEmail(_ item: EmailItem) -> Bool {
+        accounts.isEmpty || account(email: item.account)?.isActive == true
+    }
+
     private func publishEmailState() {
         updateArchivedUnseenCount()
-        WidgetSnapshotStore.save(emails: emails)
+        WidgetSnapshotStore.save(emails: operationalEmails)
         PushNotificationManager.shared.setAppIconBadge(inboxBadgeCount)
     }
 

@@ -1,3 +1,4 @@
+import { getActiveAccounts } from './config.js';
 import {
   findEmailItemByGmail,
   getEmailItem,
@@ -15,16 +16,19 @@ function trackedItemFor(context) {
 }
 
 export function reconcileDeliveredNotifications(contexts) {
+  const accounts = getActiveAccounts().map(account => account.email);
+  const configured = new Set(accounts.map(account => account.toLowerCase()));
   const clearNotifications = [];
   for (const context of contexts) {
     const item = trackedItemFor(context);
-    if (!item || item.mailboxState !== 'inbox' || item.readState === 'read') {
+    if (!item || !configured.has(item.account.toLowerCase())
+        || item.mailboxState !== 'inbox' || item.readState === 'read') {
       clearNotifications.push(context);
     }
   }
   return {
     checked: contexts.length,
-    badge: getMailboxCounts().inbox,
+    badge: getMailboxCounts({ accounts }).inbox,
     clearNotifications,
   };
 }

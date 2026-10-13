@@ -184,6 +184,25 @@ afterEach(async () => {
 });
 
 describe('assistant API', () => {
+  it('rejects new and existing conversations for removed accounts before invoking a model or sending', async () => {
+    const removedItem = upsertEmailItemFromResult({
+      account: 'removed@example.com', messageId: 'removed', threadId: 'removed', archive: false,
+    });
+    const response = await post('/v1/assistant/conversations', { scope: 'email', emailItemId: removedItem.id });
+    assert.equal(response.status, 400);
+    const existing = insertAssistantConversation({
+      id: 'removed-conversation', scope: 'email', account: removedItem.account, emailItemId: removedItem.id,
+    });
+    const path = `/v1/assistant/conversations/${existing.id}`;
+    assert.equal((await fetch(`${baseUrl}${path}`, { headers: authHeaders })).status, 400);
+    assert.equal((await post(`${path}/messages`, { text: 'Reply to this', idempotencyKey: 'removed-message' })).status, 400);
+    assert.equal((await post(`${path}/draft-send-proposal`, { messageId: 'old-draft', idempotencyKey: 'removed-draft' })).status, 400);
+    assert.equal((await post(`${path}/forward-proposal`, { to: ['person@example.com'], idempotencyKey: 'removed-forward' })).status, 400);
+    assert.equal(calls.model, 0);
+    assert.equal(calls.reply, 0);
+    assert.equal(calls.forward || 0, 0);
+  });
+
   it('prepares quick forwards without the model, requires confirmation, and replays sends once', async () => {
     const created = await createConversation({ scope: 'email', emailItemId: item.id });
     const path = `/v1/assistant/conversations/${created.conversation.id}/forward-proposal`;
@@ -806,9 +825,11 @@ describe('assistant API', () => {
   it('aborts one timed-out model request, recovers once and never executes its late tool call', async () => {
     setAssistantModelTimeoutForTests(20);
     const signals = [];
+    const attempts = [];
     setAssistantModelFactoryForTests(() => ({
-      respond(request, { signal }) {
+      respond(request, { signal, latencyRecovery }) {
         signals.push(signal);
+        attempts.push({ request, latencyRecovery });
         if (signals.length === 1) return new Promise(resolve => setTimeout(() => resolve({
           text: 'Late result', toolCalls: [{ name: 'mail.archive', arguments: { account: 'me@example.com', threadId: 't1' } }],
         }), 80));
@@ -823,6 +844,9 @@ describe('assistant API', () => {
     })).json();
     assert.equal(signals.length, 2);
     assert.equal(signals[0].aborted, true);
+    assert.deepEqual(attempts.map(attempt => attempt.latencyRecovery), [false, true]);
+    assert.deepEqual(attempts[1].request, attempts[0].request);
+    assert.equal(attempts[1].request.chatMessages.at(-1).text, 'Draft a reply');
     assert.deepEqual(envelope.messages.at(-1).draft.to, ['sender@example.com']);
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(calls.archive, 0);
@@ -831,6 +855,27 @@ describe('assistant API', () => {
     assert.equal(inspector.prepare('SELECT status FROM assistant_runs').get().status, 'completed');
     assert.equal(inspector.prepare('SELECT COUNT(*) AS count FROM assistant_proposals').get().count, 0);
     inspector.close();
+  });
+
+  it('does not reduce reasoning effort when retrying a transient provider error', async () => {
+    const recoveryModes = [];
+    setAssistantModelFactoryForTests(() => ({
+      async respond(request, { latencyRecovery }) {
+        recoveryModes.push(latencyRecovery);
+        if (recoveryModes.length === 1) {
+          const error = new Error('temporarily unavailable');
+          error.status = 503;
+          throw error;
+        }
+        return { text: 'Here is your answer.', toolCalls: [], draft: null };
+      },
+    }));
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const envelope = await (await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+      text: 'What is the key takeaway?', idempotencyKey: 'transient-keeps-reasoning',
+    })).json();
+    assert.deepEqual(recoveryModes, [false, false]);
+    assert.equal(envelope.messages.at(-1).text, 'Here is your answer.');
   });
 
   it('replays matching idempotent streams and rejects mismatched text', async () => {

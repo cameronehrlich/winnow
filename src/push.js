@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { connect } from 'node:http2';
 import { createHash, createPrivateKey, randomUUID, sign } from 'node:crypto';
-import { getAccounts } from './config.js';
+import { getAccounts, getActiveAccounts } from './config.js';
 import {
   disablePushDevice,
   getMailboxCounts,
@@ -234,7 +234,7 @@ export async function maybeSendPushForEmail(item, opts = {}) {
   if (!devices.length) return { sent: false, reason: 'no_registered_devices' };
 
   const archived = Boolean(item.archive || item.mailboxState === 'archived');
-  const mailboxCounts = opts.mailboxCounts || getMailboxCounts();
+  const mailboxCounts = opts.mailboxCounts || getMailboxCounts({ accounts: getActiveAccounts().map(account => account.email) });
   const badge = mailboxCounts.inbox;
   const payload = notificationPayload(item, badge, {
     silent: archived,
@@ -256,7 +256,7 @@ export async function sendBadgeSync(opts = {}) {
   }
   const devices = opts.devices || listPushDevices();
   if (!devices.length) return { sent: false, reason: 'no_registered_devices' };
-  const mailboxCounts = opts.mailboxCounts || getMailboxCounts();
+  const mailboxCounts = opts.mailboxCounts || getMailboxCounts({ accounts: getActiveAccounts().map(account => account.email) });
   const badge = mailboxCounts.inbox;
   const clearNotifications = Array.from(new Map(
     (Array.isArray(opts.clearNotifications) ? opts.clearNotifications : [])

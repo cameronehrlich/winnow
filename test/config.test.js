@@ -43,6 +43,11 @@ slack:
 });
 
 describe('AI model routing', () => {
+  it('rejects writes to an account removed from configuration', () => {
+    assert.throws(() => assertAccountWritable('removed@example.com'), { code: 'invalid_account', status: 400 });
+    assert.doesNotThrow(() => assertAccountWritable('ME@example.com'));
+  });
+
   it('preserves historical account IDs while routing read-only access to renamed credentials', async () => {
     writeFileSync(process.env.WINNOW_CONFIG_PATH, `accounts:\n  - email: old@example.com\n    auth_account: legacy@example.com\n    read_only: true\n    sync_enabled: false\n  - email: support@example.com\n`);
     reloadConfig();

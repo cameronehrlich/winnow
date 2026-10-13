@@ -561,7 +561,7 @@ export async function prepareAssistantTool({ name, rawArguments, conversation, l
   if (name === 'contacts.resolve') {
     return {
       kind: 'result', risk: definition.risk,
-      result: { query: args.query, candidates: resolveTrackedContacts(args.query, { limit: args.limit }) },
+      result: { query: args.query, candidates: resolveTrackedContacts(args.query, { account: conversation.account || '', limit: args.limit }) },
       evidence: [],
     };
   }

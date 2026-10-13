@@ -1,8 +1,33 @@
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { reloadConfig } from '../src/config.js';
 import { executeEmailUnsubscribe } from '../src/unsubscribe.js';
 
+let tempDir;
+beforeEach(() => {
+  tempDir = mkdtempSync(join(tmpdir(), 'winnow-unsubscribe-'));
+  process.env.WINNOW_CONFIG_PATH = join(tempDir, 'config.yaml');
+  writeFileSync(process.env.WINNOW_CONFIG_PATH, 'accounts:\n  - person@example.com\n');
+  reloadConfig();
+});
+afterEach(() => {
+  rmSync(tempDir, { recursive: true, force: true });
+  delete process.env.WINNOW_CONFIG_PATH;
+});
+
 describe('email unsubscribe execution', () => {
+  it('does not contact a removed mailbox or unsubscribe endpoint', async () => {
+    await assert.rejects(() => executeEmailUnsubscribe({
+      account: 'removed@example.com', messageId: 'message-1', unsubscribeLink: 'https://sender.example/unsubscribe',
+    }, {
+      async getMessage() { assert.fail('Must not contact Gmail'); },
+      async follow() { assert.fail('Must not unsubscribe'); },
+    }), { code: 'invalid_account' });
+  });
+
   it('discovers and executes a body link when no method was stored during scanning', async () => {
     const attempts = [];
     const result = await executeEmailUnsubscribe({

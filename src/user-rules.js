@@ -422,7 +422,9 @@ export function listRulesForApi(account) {
       email,
       getSyncState(`${IMPORT_STATE_PREFIX}${email}`, '') !== 'complete',
     ]));
-    const userRules = listUserRuleRecords().map(rule => withActivity(toApiRule(rule)));
+    const userRules = listUserRuleRecords()
+      .filter(rule => !rule.account || accounts.includes(rule.account))
+      .map(rule => withActivity(toApiRule(rule)));
     const baseline = listBaselineRules().map(rule => ({
       ...toApiRule({ ...rule, id: `baseline:${rule.id}`, account: null, description: '', enabled: true }, 'baseline'),
       baselineRuleId: rule.id,

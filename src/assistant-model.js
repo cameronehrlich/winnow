@@ -384,23 +384,53 @@ export function inlineAttachmentParts(input) {
 }
 
 export class GeminiAssistantModel {
-  async respond(input, { signal } = {}) {
+  constructor(client = null) {
+    this.client = client;
+  }
+
+  async respond(input, { signal, latencyRecovery = false } = {}) {
     const config = loadConfig();
+    const modelName = getAssistantModelName(config);
     const serialized = serializeAssistantModelInput(input);
     const attachments = inlineAttachmentParts(input);
-    const response = await getGeminiClient().models.generateContent({
-      model: getAssistantModelName(config),
-      contents: attachments.length ? [...attachments, { text: serialized }] : serialized,
-      config: {
-        abortSignal: signal,
-        systemInstruction: ASSISTANT_SYSTEM_PROMPT,
-        responseMimeType: 'application/json',
-        responseSchema: assistantResponseSchema(input.availableTools),
-        ...(getAssistantModelName(config).startsWith('gemini-3')
-          ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
-          : {}),
-      },
-    });
+    // A stalled generation gets one speed-oriented retry, not another copy of
+    // the same reasoning workload. Keep all context, tools and safety rules.
+    // MINIMAL is supported by Gemini 3 Flash, but not every Gemini 3 model.
+    const thinkingLevel = latencyRecovery && modelName.startsWith('gemini-3') && modelName.includes('flash')
+      ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW;
+    const startedAt = Date.now();
+    let response;
+    try {
+      response = await (this.client || getGeminiClient()).models.generateContent({
+        model: modelName,
+        contents: attachments.length ? [...attachments, { text: serialized }] : serialized,
+        config: {
+          abortSignal: signal,
+          // The durable run owns the sole retry and its deadline.
+          httpOptions: { retryOptions: { attempts: 1 } },
+          systemInstruction: ASSISTANT_SYSTEM_PROMPT,
+          responseMimeType: 'application/json',
+          responseSchema: assistantResponseSchema(input.availableTools),
+          ...(modelName.startsWith('gemini-3')
+            ? { thinkingConfig: { thinkingLevel } }
+            : {}),
+        },
+      });
+    } catch (error) {
+      // Provider failures should be diagnosable without logging private mail,
+      // prompts, attachment bytes, credentials or raw provider error bodies.
+      error.diagnostic = {
+        elapsedMs: Date.now() - startedAt,
+        modelName,
+        thinkingLevel: modelName.startsWith('gemini-3') ? thinkingLevel : 'default',
+        inputCharacters: serialized.length,
+        toolCount: input.availableTools?.length || 0,
+        attachmentCount: attachments.length,
+        attachmentBytes: attachments.reduce((total, part) => total + Buffer.byteLength(part.inlineData.data, 'base64'), 0),
+        latencyRecovery,
+      };
+      throw error;
+    }
     const candidate = response.candidates?.[0];
     let responseText;
     try {

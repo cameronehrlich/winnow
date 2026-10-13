@@ -250,7 +250,7 @@ struct EmailDetailView: View {
                 )
             }
             .tint(item.isArchived ? WinnowDesign.mint : WinnowDesign.amber)
-            .disabled(model.performingEmailIDs.contains(item.id) || model.account(email: item.account)?.readOnly == true)
+            .disabled(model.performingEmailIDs.contains(item.id) || !model.canModifyEmail(item))
 
             Button {
                 Task { _ = await model.perform(item.isUnread ? .markRead : .markUnread, on: item) }
@@ -261,7 +261,7 @@ struct EmailDetailView: View {
                 )
             }
             .tint(WinnowDesign.accent)
-            .disabled(model.performingEmailIDs.contains(item.id) || model.account(email: item.account)?.readOnly == true)
+            .disabled(model.performingEmailIDs.contains(item.id) || !model.canModifyEmail(item))
 
             if item.canUnsubscribe {
                 Button {
@@ -270,7 +270,7 @@ struct EmailDetailView: View {
                     Label("Unsubscribe", systemImage: "person.crop.circle.badge.minus")
                 }
                 .tint(WinnowDesign.rose)
-                .disabled(model.performingEmailIDs.contains(item.id) || model.account(email: item.account)?.readOnly == true)
+                .disabled(model.performingEmailIDs.contains(item.id) || !model.canModifyEmail(item))
                 .confirmationDialog(
                     "Unsubscribe from this sender?",
                     isPresented: $confirmUnsubscribe,
@@ -291,7 +291,7 @@ struct EmailDetailView: View {
                 Label("Forward", systemImage: "arrowshape.turn.up.right")
             }
             .tint(WinnowDesign.accent)
-            .disabled(model.account(email: item.account)?.readOnly == true)
+            .disabled(!model.canModifyEmail(item))
 
             Menu {
                 Button {
@@ -877,17 +877,16 @@ private struct EmailForwardSheet: View {
     @State private var proposal: AssistantProposal?
     @State private var isWorking = false
     @State private var errorMessage: String?
-    @FocusState private var recipientFocused: Bool
+    @State private var recipientFocused = false
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("To") {
-                    TextField("Email address", text: $recipient)
-                        .keyboardType(.emailAddress)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .focused($recipientFocused)
+                    EmailAddressField(
+                        text: $recipient, focused: $recipientFocused,
+                        configuration: configuration, account: item.account, allowsMultiple: true
+                    )
                 }
                 Section("Message") {
                     TextField("Add a note (optional)", text: $note, axis: .vertical)
@@ -956,8 +955,7 @@ private struct EmailForwardSheet: View {
                     id = conversation.conversation.id
                     conversationID = id
                 }
-                let recipients = recipient.split(whereSeparator: { $0 == "," || $0 == ";" })
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                let recipients = EmailParticipant.parseHeader(recipient).map(\.rawValue)
                 let response = try await client.proposeForward(
                     conversationID: id, to: recipients, note: note, idempotencyKey: idempotencyKey
                 )

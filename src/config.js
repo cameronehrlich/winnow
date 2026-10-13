@@ -82,7 +82,13 @@ export function getActiveAccounts() {
 }
 
 export function assertAccountWritable(email) {
-  if (getAccountConfig(email).read_only) {
+  const account = getAccountConfig(email);
+  if (!account.email) {
+    throw Object.assign(new Error('This account is no longer configured in Winnow.'), {
+      code: 'invalid_account', status: 400,
+    });
+  }
+  if (account.read_only) {
     throw Object.assign(new Error('This is retired mailbox history. Open the email in the replacement mailbox to act on it.'), {
       code: 'account_read_only', status: 409,
     });

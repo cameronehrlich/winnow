@@ -829,6 +829,32 @@ export function deleteGmailMessageMetadata(account, messageId) {
   `).run(String(account || '').trim().toLowerCase(), String(messageId || '')).changes === 1;
 }
 
+export function listCorrespondentMessages({ accounts = [], limit = 10000 } = {}) {
+  const params = { limit: Math.max(1, Math.min(10000, Number(limit) || 10000)) };
+  const scope = accountScopeSql(accounts, params);
+  return getDb().prepare(`
+    SELECT * FROM (
+      SELECT account, gmail_message_id AS messageId, from_header AS fromHeader,
+        to_header AS toHeader, cc_header AS ccHeader, bcc_header AS bccHeader,
+        '' AS fromName, '' AS fromEmail, direction, timestamp
+      FROM gmail_message_index
+      WHERE ${scope}
+        AND label_ids_json NOT LIKE '%"TRASH"%'
+        AND label_ids_json NOT LIKE '%"SPAM"%'
+        AND label_ids_json NOT LIKE '%"DRAFT"%'
+      UNION ALL
+      SELECT account, gmail_message_id AS messageId, '' AS fromHeader,
+        '' AS toHeader, '' AS ccHeader, '' AS bccHeader,
+        from_name AS fromName, from_email AS fromEmail, 'received' AS direction,
+        processed_at AS timestamp
+      FROM email_items
+      WHERE ${scope}
+    )
+    ORDER BY timestamp DESC, account, messageId
+    LIMIT @limit
+  `).all(params);
+}
+
 export function listSentThreadRepresentatives({ accounts = [], limit = 50 } = {}) {
   const normalizedAccounts = Array.from(new Set(accounts
     .map(account => String(account || '').trim().toLowerCase())
@@ -1099,11 +1125,27 @@ export function finishHandlingUndo(emailItemId, decisionId, claimToken, { comple
   return getEmailItem(emailItemId);
 }
 
-export function listEmailItems({ state = 'all', account = '', cursor = '', limit = 50 } = {}) {
+// Optional scopes keep operational/API views limited to configured mailboxes
+// without deleting historical rows or coupling the store to runtime config.
+function accountScopeSql(accounts, params, column = 'account') {
+  if (accounts === undefined) return '';
+  const unique = [...new Set(accounts)];
+  if (!unique.length) return '0';
+  const placeholders = unique.map((account, index) => {
+    const key = `scopedAccount${index}`;
+    params[key] = account;
+    return `@${key}`;
+  });
+  return `${column} IN (${placeholders.join(', ')})`;
+}
+
+export function listEmailItems({ state = 'all', account = '', accounts, cursor = '', limit = 50 } = {}) {
   const boundedLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const sourceFilters = [];
   const pageFilters = ['thread_rank = 1'];
   const params = {};
+  const scope = accountScopeSql(accounts, params);
+  if (scope) sourceFilters.push(scope);
 
   if (account) {
     sourceFilters.push('account = @account');
@@ -1161,10 +1203,11 @@ export function listEmailItems({ state = 'all', account = '', cursor = '', limit
   };
 }
 
-export function listRecentTrackedEmailItems({ account = '', days = 7, limit = 100 } = {}) {
+export function listRecentTrackedEmailItems({ account = '', accounts, days = 7, limit = 100 } = {}) {
   const cutoff = new Date(Date.now() - days * 86400000).toISOString();
   const params = { cutoff, limit };
   const accountSql = account ? 'AND account = @account' : '';
+  const scope = accountScopeSql(accounts, params);
   if (account) params.account = account;
   return getDb().prepare(`
     SELECT * FROM email_items
@@ -1172,6 +1215,7 @@ export function listRecentTrackedEmailItems({ account = '', days = 7, limit = 10
       AND gmail_message_id IS NOT NULL
       AND gmail_message_id != ''
       ${accountSql}
+      ${scope ? `AND ${scope}` : ''}
     -- Inbox rows must be reconciled regardless of age so archiving directly in
     -- Gmail cannot leave a stale actionable card in Winnow. Recent archived
     -- rows still fill the remaining batch for restore/read-state detection.
@@ -1354,16 +1398,19 @@ export function getEvent(id) {
   return rowToEvent(row);
 }
 
-export function listEvents({ since = 0, limit = 100 } = {}) {
+export function listEvents({ since = 0, accounts, limit = 100 } = {}) {
   const boundedLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  const params = { since: Number(since) || 0, limit: boundedLimit };
+  const scope = accountScopeSql(accounts, params, 'e.account');
   return getDb().prepare(`
     SELECT ${EVENT_JOIN_SELECT}
     FROM events e
     LEFT JOIN email_items i ON i.id = e.email_item_id
     WHERE e.id > @since
+      ${scope ? `AND ${scope}` : ''}
     ORDER BY e.id ASC
     LIMIT @limit
-  `).all({ since: Number(since) || 0, limit: boundedLimit }).map(rowToEvent);
+  `).all(params).map(rowToEvent);
 }
 
 export function getLatestEventsByAccount({ accounts = [], eventTypes = [] } = {}) {
@@ -1532,7 +1579,9 @@ export function listPushDevices() {
   }));
 }
 
-export function getMailboxCounts() {
+export function getMailboxCounts({ accounts } = {}) {
+  const params = {};
+  const scope = accountScopeSql(accounts, params);
   const rows = getDb().prepare(`
     WITH ranked_threads AS (
       SELECT mailbox_state, read_state, archived_seen_at,
@@ -1545,6 +1594,7 @@ export function getMailboxCounts() {
           ORDER BY processed_at DESC, id DESC
         ) AS thread_rank
       FROM email_items
+      ${scope ? `WHERE ${scope}` : ''}
     )
     SELECT
       SUM(CASE WHEN mailbox_state = 'inbox' AND read_state = 'unread' THEN 1 ELSE 0 END) AS inbox,
@@ -1552,7 +1602,7 @@ export function getMailboxCounts() {
       SUM(CASE WHEN mailbox_state = 'archived' AND archived_seen_at IS NULL THEN 1 ELSE 0 END) AS archived_unseen
     FROM ranked_threads
     WHERE thread_rank = 1
-  `).get();
+  `).get(params);
   return {
     inbox: Number(rows?.inbox) || 0,
     archived: Number(rows?.archived) || 0,
@@ -1603,13 +1653,16 @@ function summaryItem(event) {
   };
 }
 
-function listActionSummaryEvents({ account = '', date = '', timeZone = LA_TIME_ZONE } = {}) {
+function listActionSummaryEvents({ account = '', accounts, date = '', timeZone = LA_TIME_ZONE } = {}) {
+  const params = {};
+  const scope = accountScopeSql(accounts, params, 'e.account');
   return getDb().prepare(`
     SELECT ${EVENT_JOIN_SELECT}
     FROM events e
     LEFT JOIN email_items i ON i.id = e.email_item_id
+    ${scope ? `WHERE ${scope}` : ''}
     ORDER BY e.id ASC
-  `).all().map(rowToEvent).filter(event => {
+  `).all(params).map(rowToEvent).filter(event => {
     if (account && event.account !== account) return false;
     return !date || localDateString(event.timestamp, timeZone) === date;
   });
@@ -1685,14 +1738,14 @@ function summarizeActionEvents(events, { date, account, timeZone }) {
   return summary;
 }
 
-export function getDailyActionSummary({ date = localDateString(Date.now()), account = '', timeZone = LA_TIME_ZONE } = {}) {
-  const events = listActionSummaryEvents({ account, date, timeZone });
+export function getDailyActionSummary({ date = localDateString(Date.now()), account = '', accounts, timeZone = LA_TIME_ZONE } = {}) {
+  const events = listActionSummaryEvents({ account, accounts, date, timeZone });
   return summarizeActionEvents(events, { date, account, timeZone });
 }
 
-export function getLifetimeActionSummary({ account = '', timeZone = LA_TIME_ZONE, recentLimit = 25 } = {}) {
+export function getLifetimeActionSummary({ account = '', accounts, timeZone = LA_TIME_ZONE, recentLimit = 25 } = {}) {
   const boundedRecentLimit = Math.min(Math.max(Number(recentLimit) || 25, 1), 100);
-  const events = listActionSummaryEvents({ account, timeZone });
+  const events = listActionSummaryEvents({ account, accounts, timeZone });
   const summary = summarizeActionEvents(events, { date: 'lifetime', account, timeZone });
   const recentActivityTypes = new Set([
     'email.kept',

@@ -1,12 +1,98 @@
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   ASSISTANT_SYSTEM_PROMPT,
+  GeminiAssistantModel,
   assistantResponseSchema,
   inlineAttachmentParts,
   serializeAssistantModelInput,
 } from '../src/assistant-model.js';
 import { ASSISTANT_TOOL_DEFINITIONS } from '../src/assistant-tools.js';
+import { reloadConfig } from '../src/config.js';
+
+describe('assistant generation recovery', () => {
+  let tempDir;
+  let originalConfigPath;
+  beforeEach(() => {
+    originalConfigPath = process.env.WINNOW_CONFIG_PATH;
+    tempDir = mkdtempSync(join(tmpdir(), 'winnow-model-recovery-'));
+    process.env.WINNOW_CONFIG_PATH = join(tempDir, 'config.yaml');
+    writeFileSync(process.env.WINNOW_CONFIG_PATH, 'model:\n  assistant_name: gemini-3.5-flash\n');
+    reloadConfig();
+  });
+  afterEach(() => {
+    if (originalConfigPath === undefined) delete process.env.WINNOW_CONFIG_PATH;
+    else process.env.WINNOW_CONFIG_PATH = originalConfigPath;
+    reloadConfig();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('uses minimal thinking only for latency recovery without changing the request or permissions', async () => {
+    const requests = [];
+    const model = new GeminiAssistantModel({ models: {
+      async generateContent(request) {
+        requests.push(request);
+        return { text: JSON.stringify({ text: 'Draft ready.', toolCalls: [], draft: null }) };
+      },
+    } });
+    const input = {
+      chatMessages: [{ role: 'user', text: 'Please draft a polite reply with all these details.' }],
+      availableTools: ASSISTANT_TOOL_DEFINITIONS.slice(0, 2),
+    };
+    const controller = new AbortController();
+    await model.respond(input, { signal: controller.signal });
+    await model.respond(input, { signal: controller.signal, latencyRecovery: true });
+    assert.equal(requests[0].config.thinkingConfig.thinkingLevel, 'LOW');
+    assert.equal(requests[1].config.thinkingConfig.thinkingLevel, 'MINIMAL');
+    assert.equal(requests[1].contents, requests[0].contents);
+    assert.deepEqual(requests[1].config.responseSchema, requests[0].config.responseSchema);
+    assert.equal(requests[1].config.systemInstruction, ASSISTANT_SYSTEM_PROMPT);
+    assert.equal(requests[1].config.abortSignal, controller.signal);
+    assert.deepEqual(requests[1].config.httpOptions.retryOptions, { attempts: 1 });
+  });
+
+  it('does not request unsupported minimal thinking from a Pro model', async () => {
+    writeFileSync(process.env.WINNOW_CONFIG_PATH, 'model:\n  assistant_name: gemini-3.1-pro-preview\n');
+    reloadConfig();
+    let request;
+    const model = new GeminiAssistantModel({ models: {
+      async generateContent(value) {
+        request = value;
+        return { text: '{"text":"Answer","toolCalls":[],"draft":null}' };
+      },
+    } });
+    await model.respond({ availableTools: [] }, { latencyRecovery: true });
+    assert.equal(request.config.thinkingConfig.thinkingLevel, 'LOW');
+  });
+
+  it('retains provider status and records safe metadata without email or attachment contents', async () => {
+    const failure = new Error('provider unavailable');
+    failure.status = 503;
+    const model = new GeminiAssistantModel({ models: {
+      async generateContent() { throw failure; },
+    } });
+    await assert.rejects(model.respond({
+      chatMessages: [{ role: 'user', text: 'PRIVATE REQUEST' }],
+      availableTools: [],
+      toolResults: [{ tool: 'mail.read_attachment', privateAttachments: [{
+        mimeType: 'application/pdf', data: Buffer.from('PRIVATE PDF'),
+      }] }],
+    }, { latencyRecovery: true }), error => {
+      assert.equal(error, failure);
+      assert.equal(error.status, 503);
+      assert.equal(error.diagnostic.modelName, 'gemini-3.5-flash');
+      assert.equal(error.diagnostic.latencyRecovery, true);
+      assert.equal(error.diagnostic.attachmentCount, 1);
+      assert.equal(error.diagnostic.attachmentBytes, 11);
+      assert.ok(error.diagnostic.inputCharacters > 0);
+      assert.doesNotMatch(JSON.stringify(error.diagnostic), /PRIVATE|UFJJVkFUR/);
+      return true;
+    });
+  });
+});
 
 describe('assistant model context', () => {
   it('requires rule deduplication and preview before a future-mail proposal', () => {

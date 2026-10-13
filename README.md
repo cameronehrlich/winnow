@@ -209,7 +209,7 @@ The private API also supports conversational email work for the native iOS app:
 - Unsubscribe, future-mail rules, replies, and forwards are stored as expiring proposals. The client must return the exact server-issued confirmation digest before Winnow executes one proposal once.
 - Drafting never sends. Incoming email and tool output are marked as untrusted model data and cannot authorize an action.
 - Chat drafts and quick forwards share strict recipient validation. Named mailboxes are normalized to exact email addresses, duplicate recipients are removed, and invalid drafts show a correction message instead of an enabled Send button. Stored drafts and selected-contact forwards prepare confirmation directly without regenerating content through the model.
-- Model generation retries once after a transient failure, incomplete response, or 75-second deadline; a deadline retry is capped at 30 seconds. Late results cannot execute tools. Outbound sends are never automatically retried; confirmation and durable proposal identity still control execution.
+- Model generation retries once after a transient failure, incomplete response, or 75-second deadline; a deadline retry is capped at 30 seconds and uses Gemini 3 Flash's minimal thinking setting while preserving the same request, context, and tools. The run owns retries; SDK retries are disabled. Private mail is excluded from diagnostic logs. Late results cannot execute tools. Outbound sends are never automatically retried; confirmation and durable proposal identity still control execution.
 
 Assistant conversations, bounded evidence, proposals, and audit metadata are stored in SQLite. Raw incoming Gmail bodies and search-result bodies are not written to the assistant tables. Exact outgoing drafts are stored when needed for review and confirmation.
 
@@ -544,6 +544,7 @@ GET  /v1/emails/:id
 GET  /v1/emails/:id/content
 GET  /v1/threads/:threadId?account=<email>&focusMessageId=<messageId>
 GET  /v1/sent[?account=<email>&limit=50]
+GET  /v1/contacts/suggestions?query=<name-or-address>[&account=<email>&limit=5]
 POST /v1/emails/:id/archive
 POST /v1/emails/:id/move-to-inbox
 POST /v1/emails/:id/mark-read
@@ -553,7 +554,11 @@ POST /v1/emails/:id/unsubscribe
 POST /v1/emails/:id/undo-handling
 ```
 
+Mailbox lists, Sent, operational events, and notification badges include only active configured accounts. Retired read-only mailboxes remain available through historical message/thread links, but never contribute actionable inbox rows. Mutation routes reject their actions with `409 account_read_only` before contacting Gmail; the native list and detail controls share the same read-only policy.
+
 `GET /v1/sent` groups recent provider-labeled `SENT` messages by Gmail account and thread. Winnow stores only bounded list metadata in a separate index; message bodies and attachment bytes remain in Gmail and are fetched on demand by the account-scoped thread route. Sent indexing never creates triage items or changes inbox/archive badges, rules, stats, notifications, widgets, or Slack behavior.
+
+Address suggestions use cached From/To/Cc/Bcc history and older tracked senders, scoped to active configured accounts. The endpoint requires authentication, at least two query characters, and returns at most ten deduplicated candidates without message content. A bounded 30-second in-memory history cache keeps typing responsive; no Gmail or model calls run per keystroke. Forward recipients and exact-sender rules share a native address field with debounced suggestions and an explicit Apple Contacts picker fallback. Choosing a suggestion only fills the field; outbound mail still requires review and confirmation.
 
 Successful actions return `{ ok, action, item }`, with the refreshed item included so clients do not need to guess local state. Newly processed items can include a typed `handlingDecision` and a server-computed `undoAction`; undo returns `409 handling_not_undoable` after the original scan state has changed. Items also expose `unsubscribeState` (`available`, `succeeded`, `attempted`, `failed`, or `unavailable`). Unsubscribe responses add `outcome` and `requiresManualAction`; mailto links are reported as attempted/manual rather than falsely reported as complete, and repeated completed attempts are deduplicated across the API and Slack. `GET /v1/summaries/lifetime` returns all-time action counters plus bounded recent activity for the Stats tab. `GET /v1/bootstrap` returns the configured accounts, defaults, and server capabilities. APNs device registration is scaffolded, but push delivery remains disabled until credentials and dispatch are deliberately enabled; the V1 app should refresh or poll.
 

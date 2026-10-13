@@ -349,7 +349,7 @@ struct MailboxListView: View {
 
         for item in model.emails {
             let matchesAccount = account.isEmpty || item.account == account
-            guard mailbox.includes(item), matchesAccount else { continue }
+            guard model.isOperationalEmail(item), mailbox.includes(item), matchesAccount else { continue }
             guard query.isEmpty || item.matchesMailboxSearch(query) else { continue }
             items.append(item)
         }
@@ -406,12 +406,14 @@ struct MailboxListView: View {
                         }
                     )
                     .swipeActions(edge: mailbox.swipeEdge, allowsFullSwipe: true) {
-                        Button {
-                            perform(mailbox.primaryAction, on: item)
-                        } label: {
-                            Label(mailbox.primaryAction.label, systemImage: mailbox.primaryAction.systemImage)
+                        if model.canModifyEmail(item) {
+                            Button {
+                                perform(mailbox.primaryAction, on: item)
+                            } label: {
+                                Label(mailbox.primaryAction.label, systemImage: mailbox.primaryAction.systemImage)
+                            }
+                            .tint(mailbox == .inbox ? WinnowDesign.amber : WinnowDesign.accent)
                         }
-                        .tint(mailbox == .inbox ? WinnowDesign.amber : WinnowDesign.accent)
                     }
                 }
                 if mailbox == .archived, model.archivedNextCursor != nil {

@@ -28,6 +28,7 @@ import {
   listEvents,
   listUserRuleRecords,
   upsertEmailItemFromResult,
+  upsertUserRuleRecord,
 } from '../src/store.js';
 import {
   disableUserRule,
@@ -87,6 +88,16 @@ afterEach(() => {
 });
 
 describe('unified user rules', () => {
+  it('omits removed-account rules from the all-accounts settings list while preserving their records', () => {
+    const removed = upsertUserRuleRecord({
+      id: 'removed-rule', account: 'removed@example.com', description: 'Former mailbox rule',
+      type: 'semantic', effect: 'keep', match: 'Keep customer requests', conflictKey: 'removed-keep',
+      source: 'api', enabled: true,
+    });
+    assert.ok(!listRulesForApi().rules.some(rule => rule.id === removed.id));
+    assert.ok(getUserRuleRecord(removed.id));
+  });
+
   it('dry-runs and imports ordinary YAML semantics while keeping hooks operator-only', () => {
     const before = loadAllRules('me@example.com').rules;
     assert.equal(before.find(rule => rule.id === 'baseline-news').archive, false);
