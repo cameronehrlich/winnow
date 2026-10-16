@@ -105,6 +105,11 @@ scan:
 
 Winnow keeps its high-volume classification/summarization path separate from the conversational assistant.
 `classification_name` controls scan-time triage; `assistant_name` controls mailbox questions and agentic tools.
+Assistant generations have a 20-second deadline and one recovery attempt using
+`gemini-3.1-flash-lite` (override with `model.assistant_fallback_name`). The fallback
+keeps the same context, typed tools, validation, and confirmation requirements;
+it never retries an executed tool or sends email without approval.
+After failover, the remaining tool rounds stay on the fallback for that request.
 The legacy shared `model.name` key remains supported as a fallback for existing installations; setting the two
 specific keys is recommended so each workload can be tuned independently.
 

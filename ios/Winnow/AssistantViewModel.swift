@@ -342,6 +342,10 @@ final class AssistantViewModel: ObservableObject {
 
     private func reconcileOptimisticMessage(from oldID: String, to serverID: String) {
         guard let index = messages.firstIndex(where: { $0.id == oldID }) else { return }
+        if oldID != serverID, messages.contains(where: { $0.id == serverID }) {
+            messages.remove(at: index)
+            return
+        }
         let optimistic = messages[index]
         messages[index] = AssistantMessage(
             id: serverID,

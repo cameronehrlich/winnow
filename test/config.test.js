@@ -7,6 +7,7 @@ import {
   DEFAULT_ASSISTANT_MODEL,
   DEFAULT_CLASSIFICATION_MODEL,
   getAssistantModelName,
+  getAssistantFallbackModelName,
   getClassificationModelName,
   getSlackActionRoutings,
   getSlackRoutingForAccount,
@@ -65,6 +66,7 @@ describe('AI model routing', () => {
     assert.equal(DEFAULT_ASSISTANT_MODEL, 'gemini-3.5-flash');
     assert.equal(getClassificationModelName({}), 'gemini-3.1-flash-lite');
     assert.equal(getAssistantModelName({}), 'gemini-3.5-flash');
+    assert.equal(getAssistantFallbackModelName({}), 'gemini-3.1-flash-lite');
   });
 
   it('allows each model path to be overridden independently', () => {
@@ -72,10 +74,13 @@ describe('AI model routing', () => {
       model: {
         classification_name: 'classification-test-model',
         assistant_name: 'assistant-test-model',
+        assistant_fallback_name: 'fallback-test-model',
       },
     };
     assert.equal(getClassificationModelName(config), 'classification-test-model');
     assert.equal(getAssistantModelName(config), 'assistant-test-model');
+    assert.equal(getAssistantFallbackModelName(config), 'fallback-test-model');
+    assert.equal(getAssistantFallbackModelName({ model: { name: 'legacy-shared-model' } }), 'gemini-3.1-flash-lite');
   });
 
   it('supports the legacy shared name as a backwards-compatible fallback', () => {

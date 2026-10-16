@@ -68,6 +68,32 @@ describe('assistant generation recovery', () => {
     assert.equal(request.config.thinkingConfig.thinkingLevel, 'LOW');
   });
 
+  it('uses an independent configurable fallback with identical context, schema and security instructions', async () => {
+    const requests = [];
+    const model = new GeminiAssistantModel({ models: {
+      async generateContent(request) {
+        requests.push(request);
+        return { text: '{"text":"Draft ready.","toolCalls":[],"draft":null}' };
+      },
+    } });
+    const input = { chatMessages: [{ role: 'user', text: 'Reply saying thanks.' }], availableTools: ASSISTANT_TOOL_DEFINITIONS };
+    await model.respond(input);
+    await model.respond(input, { useFallback: true });
+    assert.equal(requests[0].model, 'gemini-3.5-flash');
+    assert.equal(requests[1].model, 'gemini-3.1-flash-lite');
+    assert.equal(requests[1].config.thinkingConfig.thinkingLevel, 'MINIMAL');
+    assert.equal(requests[1].contents, requests[0].contents);
+    assert.deepEqual(requests[1].config.responseSchema, requests[0].config.responseSchema);
+    assert.equal(requests[1].config.systemInstruction, requests[0].config.systemInstruction);
+    assert.equal(requests[1].config.maxOutputTokens, 8192);
+
+    writeFileSync(process.env.WINNOW_CONFIG_PATH, 'model:\n  assistant_fallback_name: gemini-3.1-pro-preview\n');
+    reloadConfig();
+    await model.respond(input, { useFallback: true });
+    assert.equal(requests[2].model, 'gemini-3.1-pro-preview');
+    assert.equal(requests[2].config.thinkingConfig.thinkingLevel, 'LOW');
+  });
+
   it('retains provider status and records safe metadata without email or attachment contents', async () => {
     const failure = new Error('provider unavailable');
     failure.status = 503;

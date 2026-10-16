@@ -331,6 +331,13 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_assistant_runs_conversation
       ON assistant_runs(conversation_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS assistant_run_aliases (
+      conversation_id TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      run_id TEXT NOT NULL REFERENCES assistant_runs(id) ON DELETE CASCADE,
+      PRIMARY KEY (conversation_id, idempotency_key)
+    );
+
     CREATE TABLE IF NOT EXISTS assistant_proposals (
       id TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL,
@@ -2065,6 +2072,31 @@ export function createAssistantRunWithUserMessage({
         return existing;
       }
     }
+    // Reopening chat can generate a new client key while the first request is
+    // still running. Coalesce only the identical, actively leased request;
+    // completed requests and different user intentions remain independent.
+    const pending = idempotencyKey && database.prepare(`
+      SELECT idempotency_key FROM assistant_runs
+      WHERE conversation_id = ? AND request_fingerprint = ? AND status = 'running'
+        AND idempotency_key IS NOT NULL
+        AND COALESCE(lease_updated_at, created_at) > ?
+        AND user_message_id = (
+          SELECT id FROM assistant_messages WHERE conversation_id = ? AND role = 'user'
+          ORDER BY created_at DESC, rowid DESC LIMIT 1
+        )
+      ORDER BY created_at DESC LIMIT 1
+    `).get(conversationId, requestFingerprint, new Date(Date.now() - 2 * 60 * 1000).toISOString(), conversationId);
+    if (pending) {
+      const existing = getAssistantRunByIdempotencyKey(conversationId, pending.idempotency_key);
+      // Remember the new key too: a disconnected second device must still
+      // retrieve this run after it completes, not silently start another one.
+      database.prepare(`
+        INSERT INTO assistant_run_aliases (conversation_id, idempotency_key, run_id)
+        VALUES (?, ?, ?)
+      `).run(conversationId, idempotencyKey, existing.id);
+      database.exec('COMMIT');
+      return existing;
+    }
     database.prepare(`
       INSERT INTO assistant_runs (
         id, conversation_id, user_message_id, status, idempotency_key,
@@ -2108,8 +2140,12 @@ export function createAssistantRunWithUserMessage({
 
 export function getAssistantRunByIdempotencyKey(conversationId, idempotencyKey) {
   const row = getDb().prepare(`
-    SELECT * FROM assistant_runs WHERE conversation_id = ? AND idempotency_key = ?
-  `).get(conversationId, idempotencyKey);
+    SELECT * FROM assistant_runs WHERE conversation_id = ? AND (
+      idempotency_key = ? OR id = (
+        SELECT run_id FROM assistant_run_aliases WHERE conversation_id = ? AND idempotency_key = ?
+      )
+    )
+  `).get(conversationId, idempotencyKey, conversationId, idempotencyKey);
   if (!row) return null;
   return {
     id: row.id,

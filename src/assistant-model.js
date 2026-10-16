@@ -1,5 +1,5 @@
 import { ThinkingLevel, Type as SchemaType } from '@google/genai';
-import { getAssistantModelName, loadConfig } from './config.js';
+import { getAssistantFallbackModelName, getAssistantModelName, loadConfig } from './config.js';
 import { getGeminiClient } from './gemini-client.js';
 import {
   MAX_ASSISTANT_ATTACHMENT_BYTES,
@@ -388,15 +388,15 @@ export class GeminiAssistantModel {
     this.client = client;
   }
 
-  async respond(input, { signal, latencyRecovery = false } = {}) {
+  async respond(input, { signal, latencyRecovery = false, useFallback = false } = {}) {
     const config = loadConfig();
-    const modelName = getAssistantModelName(config);
+    const modelName = useFallback ? getAssistantFallbackModelName(config) : getAssistantModelName(config);
     const serialized = serializeAssistantModelInput(input);
     const attachments = inlineAttachmentParts(input);
-    // A stalled generation gets one speed-oriented retry, not another copy of
-    // the same reasoning workload. Keep all context, tools and safety rules.
+    // Recovery changes models, not permissions or context. Repeating the same
+    // stalled model has failed even for short, tool-free reply requests.
     // MINIMAL is supported by Gemini 3 Flash, but not every Gemini 3 model.
-    const thinkingLevel = latencyRecovery && modelName.startsWith('gemini-3') && modelName.includes('flash')
+    const thinkingLevel = (latencyRecovery || useFallback) && modelName.startsWith('gemini-3') && modelName.includes('flash')
       ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW;
     const startedAt = Date.now();
     let response;
@@ -408,6 +408,7 @@ export class GeminiAssistantModel {
           abortSignal: signal,
           // The durable run owns the sole retry and its deadline.
           httpOptions: { retryOptions: { attempts: 1 } },
+          maxOutputTokens: 8192,
           systemInstruction: ASSISTANT_SYSTEM_PROMPT,
           responseMimeType: 'application/json',
           responseSchema: assistantResponseSchema(input.availableTools),
@@ -428,6 +429,7 @@ export class GeminiAssistantModel {
         attachmentCount: attachments.length,
         attachmentBytes: attachments.reduce((total, part) => total + Buffer.byteLength(part.inlineData.data, 'base64'), 0),
         latencyRecovery,
+        useFallback,
       };
       throw error;
     }

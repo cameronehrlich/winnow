@@ -1521,6 +1521,30 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     @MainActor
+    func testAssistantViewModelCoalescesRetryIntoExistingCanonicalUserMessage() async {
+        let service = AssistantServiceStub()
+        let existing = AssistantMessage(id: "existing-user", role: "user", text: "Reply saying thanks.")
+        service.initialMessages = [existing]
+        let model = AssistantViewModel(
+            configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
+            scope: .mailbox, service: service
+        )
+        await model.startIfNeeded()
+        let send = Task { await model.send("Reply saying thanks.") }
+        await waitUntil { service.continuation != nil }
+        service.continuation?.yield(.accepted(AssistantStreamAccepted(runId: "existing-run", userMessageId: existing.id)))
+        await waitUntil { model.messages.count == 1 }
+        XCTAssertEqual(model.messages.map(\.id), [existing.id])
+        service.continuation?.yield(.complete(service.envelope(messages: [
+            existing, AssistantMessage(id: "draft", role: "assistant", text: "Draft ready."),
+        ])))
+        service.continuation?.finish()
+        let succeeded = await send.value
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(model.messages.filter { $0.role == "user" }.count, 1)
+    }
+
+    @MainActor
     func testAssistantViewModelDoesNotTreatDraftWithoutProposalAsWorking() {
         let model = AssistantViewModel(
             configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "secret"),
@@ -1839,6 +1863,7 @@ private final class AssistantServiceStub: AssistantService {
     var forwardRecipients: [[String]] = []
     var forwardIdempotencyKeys: [String] = []
     var confirmationCount = 0
+    var initialMessages: [AssistantMessage] = []
 
     private let conversation = AssistantConversation(id: "conversation-1", scope: .mailbox)
 
@@ -1851,7 +1876,7 @@ private final class AssistantServiceStub: AssistantService {
         account: String?,
         emailItemID: String?
     ) async throws -> AssistantConversationEnvelope {
-        envelope(messages: [])
+        envelope(messages: initialMessages)
     }
 
     func sendAssistantMessageStream(

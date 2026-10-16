@@ -827,9 +827,9 @@ describe('assistant API', () => {
     const signals = [];
     const attempts = [];
     setAssistantModelFactoryForTests(() => ({
-      respond(request, { signal, latencyRecovery }) {
+      respond(request, { signal, latencyRecovery, useFallback }) {
         signals.push(signal);
-        attempts.push({ request, latencyRecovery });
+        attempts.push({ request, latencyRecovery, useFallback });
         if (signals.length === 1) return new Promise(resolve => setTimeout(() => resolve({
           text: 'Late result', toolCalls: [{ name: 'mail.archive', arguments: { account: 'me@example.com', threadId: 't1' } }],
         }), 80));
@@ -845,6 +845,7 @@ describe('assistant API', () => {
     assert.equal(signals.length, 2);
     assert.equal(signals[0].aborted, true);
     assert.deepEqual(attempts.map(attempt => attempt.latencyRecovery), [false, true]);
+    assert.deepEqual(attempts.map(attempt => attempt.useFallback), [false, true]);
     assert.deepEqual(attempts[1].request, attempts[0].request);
     assert.equal(attempts[1].request.chatMessages.at(-1).text, 'Draft a reply');
     assert.deepEqual(envelope.messages.at(-1).draft.to, ['sender@example.com']);
@@ -857,11 +858,11 @@ describe('assistant API', () => {
     inspector.close();
   });
 
-  it('does not reduce reasoning effort when retrying a transient provider error', async () => {
+  it('switches models once on transient provider errors and emits truthful recovery progress', async () => {
     const recoveryModes = [];
     setAssistantModelFactoryForTests(() => ({
-      async respond(request, { latencyRecovery }) {
-        recoveryModes.push(latencyRecovery);
+      async respond(request, { latencyRecovery, useFallback }) {
+        recoveryModes.push({ latencyRecovery, useFallback });
         if (recoveryModes.length === 1) {
           const error = new Error('temporarily unavailable');
           error.status = 503;
@@ -871,11 +872,50 @@ describe('assistant API', () => {
       },
     }));
     const created = await createConversation({ scope: 'email', emailItemId: item.id });
-    const envelope = await (await post(`/v1/assistant/conversations/${created.conversation.id}/messages`, {
+    const { events } = await postStream(created.conversation.id, {
       text: 'What is the key takeaway?', idempotencyKey: 'transient-keeps-reasoning',
-    })).json();
-    assert.deepEqual(recoveryModes, [false, false]);
+    });
+    const envelope = events.at(-1).data;
+    assert.deepEqual(recoveryModes, [
+      { latencyRecovery: false, useFallback: false },
+      { latencyRecovery: false, useFallback: true },
+    ]);
+    assert.ok(events.some(event => event.data.stage === ASSISTANT_PROGRESS_STAGES.modelRecovery));
     assert.equal(envelope.messages.at(-1).text, 'Here is your answer.');
+  });
+
+  it('stays on the fallback through tool rounds rather than returning to the stalled model', async () => {
+    const attempts = [];
+    setAssistantModelFactoryForTests(() => ({
+      async respond(input, { useFallback }) {
+        attempts.push(useFallback);
+        if (!useFallback) throw Object.assign(new Error('provider busy'), { status: 503 });
+        return input.toolResults.length
+          ? { text: 'Found it.', toolCalls: [], draft: null }
+          : { text: '', toolCalls: [{ name: 'mail.search', arguments: { query: 'from:dentist' } }], draft: null };
+      },
+    }));
+    const created = await createConversation({ scope: 'mailbox', account: 'me@example.com' });
+    const envelope = await submitAssistantMessage(created.conversation.id, {
+      text: 'Find an email from my dentist', idempotencyKey: 'fallback-tool-rounds',
+    });
+    assert.deepEqual(attempts, [false, true, true]);
+    assert.equal(calls.search, 1);
+    assert.equal(envelope.messages.at(-1).text, 'Found it.');
+  });
+
+  it('does not retry authentication or permission failures with another model', async () => {
+    let attempts = 0;
+    setAssistantModelFactoryForTests(() => ({
+      async respond() {
+        attempts += 1;
+        throw Object.assign(new Error('forbidden'), { status: 403 });
+      },
+    }));
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    await submitAssistantMessage(created.conversation.id, { text: 'Draft a reply', idempotencyKey: 'no-permission-retry' });
+    assert.equal(attempts, 1);
+    assert.equal(calls.reply, 0);
   });
 
   it('replays matching idempotent streams and rejects mismatched text', async () => {
@@ -914,6 +954,73 @@ describe('assistant API', () => {
     assert.equal([first, second].some(result => result.events.some(event => (
       event.event === 'progress' && event.data.stage === ASSISTANT_PROGRESS_STAGES.waiting
     ))), true);
+  });
+
+  it('coalesces identical active requests with different device keys and durably replays both keys', async () => {
+    responses.push({ text: 'One draft.', toolCalls: [], draft: null, delay: 60 });
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const path = `/v1/assistant/conversations/${created.conversation.id}/messages`;
+    const firstRequest = { text: 'Reply saying thanks.', idempotencyKey: 'phone-key' };
+    const secondRequest = { ...firstRequest, idempotencyKey: 'ipad-key' };
+    const [first, second] = await Promise.all([
+      postStream(created.conversation.id, firstRequest),
+      postStream(created.conversation.id, secondRequest),
+    ]);
+    assert.equal(calls.model, 1);
+    assert.equal(first.events[0].data.runId, second.events[0].data.runId);
+    assert.equal(first.events.at(-1).data.messages.filter(message => message.role === 'user').length, 1);
+    const replay = await (await post(path, secondRequest)).json();
+    assert.equal(replay.messages.at(-1).text, 'One draft.');
+    assert.equal(calls.model, 1);
+    assert.equal((await post(path, { ...secondRequest, text: 'Actually archive this.' })).status, 409);
+    const inspector = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(inspector.prepare('SELECT count(*) count FROM assistant_runs').get().count, 1);
+    assert.equal(inspector.prepare('SELECT count(*) count FROM assistant_run_aliases').get().count, 1);
+    inspector.close();
+  });
+
+  it('keeps each run bound to its own user message during concurrent requests', async () => {
+    const inputs = [];
+    let releaseFirst;
+    const firstResponse = new Promise(resolve => { releaseFirst = resolve; });
+    setAssistantModelFactoryForTests(() => ({
+      async respond(input) {
+        inputs.push(input);
+        if (inputs.length === 1) return firstResponse;
+        return { text: 'Second answer.', toolCalls: [], draft: null };
+      },
+    }));
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const first = submitAssistantMessage(created.conversation.id, { text: 'Mark this email read', idempotencyKey: 'first-context' });
+    while (!inputs.length) await new Promise(resolve => setTimeout(resolve, 1));
+    await submitAssistantMessage(created.conversation.id, { text: 'Different request', idempotencyKey: 'second-context' });
+    releaseFirst({ text: '', toolCalls: [{ name: 'mail.mark_read', arguments: { account: item.account, threadId: item.threadId } }], draft: null });
+    await first;
+    assert.equal(inputs[1].chatMessages.at(-1).text, 'Different request');
+    assert.equal(inputs[2].chatMessages.at(-1).text, 'Mark this email read');
+    assert.ok(!inputs[2].chatMessages.some(message => message.text === 'Different request'));
+  });
+
+  it('does not coalesce a repeated instruction across an intervening user intent', async () => {
+    let attempts = 0;
+    let releaseFirst;
+    const firstResult = new Promise(resolve => { releaseFirst = resolve; });
+    setAssistantModelFactoryForTests(() => ({
+      async respond() {
+        attempts += 1;
+        if (attempts === 1) return firstResult;
+        return { text: 'New answer.', toolCalls: [], draft: null };
+      },
+    }));
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const first = submitAssistantMessage(created.conversation.id, { text: 'Reply saying yes', idempotencyKey: 'repeat-first' });
+    while (!attempts) await new Promise(resolve => setTimeout(resolve, 1));
+    await submitAssistantMessage(created.conversation.id, { text: 'Actually say no', idempotencyKey: 'intervening-intent' });
+    await submitAssistantMessage(created.conversation.id, { text: 'Reply saying yes', idempotencyKey: 'repeat-new-intent' });
+    releaseFirst({ text: 'Original answer.', toolCalls: [], draft: null });
+    const result = await first;
+    assert.equal(attempts, 3);
+    assert.equal(result.messages.filter(message => message.role === 'user').length, 3);
   });
 
   it('resumes a stale run after restart without duplicating the user message', async () => {

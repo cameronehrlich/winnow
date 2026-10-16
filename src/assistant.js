@@ -11,7 +11,7 @@ import {
   prepareAssistantTool,
   validateAssistantToolCall,
 } from './assistant-tools.js';
-import { getAccounts } from './config.js';
+import { getAccounts, getAssistantFallbackModelName, getAssistantModelName } from './config.js';
 import { emailBodyToText } from './message-content.js';
 import { normalizeAssistantDraft } from './assistant-drafts.js';
 import {
@@ -43,7 +43,7 @@ const PROPOSAL_TTL_MS = 15 * 60 * 1000;
 const MAX_TOOL_ROUNDS = 3;
 const ASSISTANT_RUN_LEASE_MS = 2 * 60 * 1000;
 const ASSISTANT_RUN_HEARTBEAT_MS = 30 * 1000;
-const DEFAULT_ASSISTANT_MODEL_TIMEOUT_MS = 75 * 1000;
+const DEFAULT_ASSISTANT_MODEL_TIMEOUT_MS = 20 * 1000;
 const CLIENT_ASSISTANT_TOOLS = new Set([
   'device.create_reminder',
   'device.create_calendar_event',
@@ -57,6 +57,7 @@ export const ASSISTANT_PROGRESS_STAGES = Object.freeze({
   waiting: 'waiting',
   context: 'context',
   model: 'model',
+  modelRecovery: 'model_recovery',
   modelComplete: 'model_complete',
   tool: 'tool',
   toolComplete: 'tool_complete',
@@ -70,6 +71,7 @@ export const ASSISTANT_PROGRESS_LABELS = Object.freeze({
   [ASSISTANT_PROGRESS_STAGES.waiting]: 'Waiting for the existing request',
   [ASSISTANT_PROGRESS_STAGES.context]: 'Reading the relevant context',
   [ASSISTANT_PROGRESS_STAGES.model]: 'Thinking it through',
+  [ASSISTANT_PROGRESS_STAGES.modelRecovery]: 'Trying a backup model',
   [ASSISTANT_PROGRESS_STAGES.modelComplete]: 'The answer is taking shape',
   [ASSISTANT_PROGRESS_STAGES.tool]: 'Checking your mailbox',
   [ASSISTANT_PROGRESS_STAGES.toolComplete]: 'Mailbox check complete',
@@ -323,7 +325,7 @@ function safeModelDiagnostic(err) {
     const value = Number(diagnostic[key]);
     if (Number.isSafeInteger(value) && value >= 0) result[key] = value;
   }
-  for (const key of ['hasContent', 'responseTruncated', 'latencyRecovery']) {
+  for (const key of ['hasContent', 'responseTruncated', 'latencyRecovery', 'useFallback']) {
     if (typeof diagnostic[key] === 'boolean') result[key] = diagnostic[key];
   }
   if (typeof diagnostic.finishReason === 'string') {
@@ -408,27 +410,42 @@ function startAssistantRunHeartbeat(run) {
   return () => clearInterval(timer);
 }
 
-async function boundedModelResponse(model, input) {
-  const request = async (timeoutMs = assistantModelTimeoutMs, latencyRecovery = false) => {
+function terminalModelFailure(error) {
+  if (isInvalidModelResponse(error)) {
+    const failure = new AssistantError(502, 'assistant_model_invalid_response', 'The assistant model returned an incomplete response');
+    failure.diagnostic = error.diagnostic;
+    return failure;
+  }
+  if (!isTransientModelProviderError(error)) return error;
+  const failure = new AssistantError(503, 'assistant_model_unavailable', 'The assistant model is temporarily unavailable');
+  failure.providerStatus = Number(error?.status || error?.statusCode || error?.response?.status || 0) || null;
+  failure.diagnostic = error.diagnostic;
+  return failure;
+}
+
+async function boundedModelResponse(model, input, onProgress, recoveryState) {
+  const request = async ({ useFallback = false, latencyRecovery = false } = {}) => {
     let timeout;
     const controller = new AbortController();
     const startedAt = Date.now();
     const providerResponse = Promise.resolve().then(() => model.respond(input, {
-      signal: controller.signal, latencyRecovery,
+      signal: controller.signal, latencyRecovery, useFallback,
     }));
     const deadline = new Promise((resolve, reject) => {
       timeout = setTimeout(() => {
         const failure = new AssistantError(504, 'assistant_model_timeout', 'The assistant model did not respond in time');
         failure.diagnostic = {
           elapsedMs: Date.now() - startedAt,
+          modelName: useFallback ? getAssistantFallbackModelName() : getAssistantModelName(),
           toolCount: input.availableTools?.length || 0,
           chatMessageCount: input.chatMessages?.length || 0,
           contextMessageCount: input.contextualEmail?.messages?.length || 0,
           latencyRecovery,
+          useFallback,
         };
         reject(failure);
         controller.abort();
-      }, timeoutMs);
+      }, assistantModelTimeoutMs);
       timeout.unref?.();
     });
     try {
@@ -439,10 +456,11 @@ async function boundedModelResponse(model, input) {
   };
 
   try {
-    return await request();
+    return await request({ useFallback: recoveryState.useFallback });
   } catch (err) {
-    // Recover once from a deadline, transient provider failure or incomplete
-    // structured response. Only retry generation, never an executed tool/send.
+    if (recoveryState.useFallback) throw terminalModelFailure(err);
+    // Recover once using an independent model, not another request to the same
+    // stalled model. Only retry generation, never an executed tool/send.
     // Abort timed-out client requests and fence late results before retrying once.
     const isTimeout = err instanceof AssistantError && err.code === 'assistant_model_timeout';
     if (!isTransientModelProviderError(err) && !isInvalidModelResponse(err) && !isTimeout) throw err;
@@ -452,29 +470,13 @@ async function boundedModelResponse(model, input) {
         ...(safeModelDiagnostic(err) || {}),
       });
     }
+    // Stay on the healthy fallback for the rest of this run's tool rounds.
+    recoveryState.useFallback = true;
+    await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.modelRecovery));
     try {
-      return await request(
-        isTimeout ? Math.min(assistantModelTimeoutMs, 30_000) : assistantModelTimeoutMs,
-        isTimeout,
-      );
+      return await request({ useFallback: true, latencyRecovery: isTimeout });
     } catch (retryErr) {
-      if (isInvalidModelResponse(retryErr)) {
-        const failure = new AssistantError(
-          502,
-          'assistant_model_invalid_response',
-          'The assistant model returned an incomplete response',
-        );
-        failure.diagnostic = retryErr.diagnostic;
-        throw failure;
-      }
-      if (!isTransientModelProviderError(retryErr)) throw retryErr;
-      const failure = new AssistantError(
-        503,
-        'assistant_model_unavailable',
-        'The assistant model is temporarily unavailable',
-      );
-      failure.providerStatus = Number(retryErr?.status || retryErr?.statusCode || retryErr?.response?.status || 0) || null;
-      throw failure;
+      throw terminalModelFailure(retryErr);
     }
   }
 }
@@ -777,6 +779,13 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
     requireAssistantRunLease(run);
     const dependencies = dependenciesFactory();
     const model = createAssistantModel();
+    const recoveryState = { useFallback: false };
+    // A second device can submit while this run is awaiting Gmail or Gemini.
+    // Never let that newer user's text authorize or influence this run.
+    const history = listAssistantMessages(conversationId);
+    const userIndex = history.findIndex(message => message.id === run.userMessageId);
+    if (userIndex < 0) throw new AssistantError(404, 'assistant_message_not_found');
+    const chatMessages = modelMessages(history.slice(0, userIndex + 1));
     await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.context));
     const context = await contextualEmail(conversation, dependencies);
     const requestTools = availableToolsForRequest(conversation, text);
@@ -793,7 +802,7 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
         contextualReference: context?.reference || null,
         finalAnswerRequired,
       },
-      chatMessages: modelMessages(listAssistantMessages(conversationId)),
+      chatMessages,
       contextualEmail: context,
       toolResults,
       availableTools: finalAnswerRequired ? [] : requestTools,
@@ -825,7 +834,7 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
     let response = null;
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
       await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.model));
-      response = await boundedModelResponse(model, modelInput(false));
+      response = await boundedModelResponse(model, modelInput(false), onProgress, recoveryState);
       requireAssistantRunLease(run);
       await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.modelComplete));
       const calls = Array.isArray(response?.toolCalls) ? response.toolCalls.slice(0, 3) : [];
@@ -967,7 +976,7 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
     // error. Remove all tools for one final model turn so it must answer from
     // the selected email and the evidence already gathered.
     await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.model));
-    response = await boundedModelResponse(model, modelInput(true));
+    response = await boundedModelResponse(model, modelInput(true), onProgress, recoveryState);
     requireAssistantRunLease(run);
     await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.modelComplete));
     finishWithResponse(response);

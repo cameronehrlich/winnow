@@ -197,6 +197,10 @@ export function getAssistantModelName(config = loadConfig()) {
   );
 }
 
+export function getAssistantFallbackModelName(config = loadConfig()) {
+  return configuredModelName(config.model?.assistant_fallback_name, DEFAULT_CLASSIFICATION_MODEL);
+}
+
 export function getChannelForAccount(email) {
   return getSlackRoutingForAccount(email).channelId;
 }
