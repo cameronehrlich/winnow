@@ -69,54 +69,49 @@ function responseSchemaFromToolValue(schema) {
   }
 }
 
-export function assistantResponseSchema(availableTools = []) {
-  const toolCalls = availableTools.filter(tool => tool?.name && tool?.inputSchema).map(tool => ({
-    type: SchemaType.OBJECT,
-    properties: {
-      name: { type: SchemaType.STRING, enum: [tool.name] },
-      arguments: responseSchemaFromToolValue(tool.inputSchema),
-    },
-    required: ['name', 'arguments'],
-  }));
-  const placeholderArguments = {
-    type: SchemaType.OBJECT,
-    // Gemini requires object schemas to declare at least one property. This
-    // placeholder is unreachable when no tools are available because the
-    // system prompt requires an empty toolCalls array.
-    properties: { unused: { type: SchemaType.STRING, nullable: true } },
-  };
+const DRAFT_FUNCTION = 'assistant_prepare_draft';
+
+function draftSchema() {
   return {
     type: SchemaType.OBJECT,
     properties: {
-      text: { type: SchemaType.STRING },
-      toolCalls: {
-        type: SchemaType.ARRAY,
-        maxItems: toolCalls.length ? 3 : 0,
-        items: toolCalls.length ? { anyOf: toolCalls } : {
-          type: SchemaType.OBJECT,
-          properties: {
-            name: { type: SchemaType.STRING },
-            arguments: placeholderArguments,
-          },
-          required: ['name', 'arguments'],
-        },
-      },
-      draft: {
-        type: SchemaType.OBJECT,
-        nullable: true,
-        properties: {
-          kind: { type: SchemaType.STRING, format: 'enum', enum: ['reply', 'forward'] },
-          to: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING }, description: 'Exact bare email addresses, without display names. Never guess.' },
-          cc: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-          bcc: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-          subject: { type: SchemaType.STRING },
-          body: { type: SchemaType.STRING },
-        },
-        required: ['kind', 'to', 'cc', 'bcc', 'subject', 'body'],
-      },
+      kind: { type: SchemaType.STRING, format: 'enum', enum: ['reply', 'forward'] },
+      to: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING }, description: 'Exact bare email addresses, without display names. Never guess.' },
+      cc: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+      bcc: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+      subject: { type: SchemaType.STRING },
+      body: { type: SchemaType.STRING },
     },
-    required: ['text', 'toolCalls', 'draft'],
+    required: ['kind', 'to', 'cc', 'bcc', 'subject', 'body'],
   };
+}
+
+function nativeToolName(name) {
+  return name.replaceAll('.', '_');
+}
+
+export function assistantFunctionDeclarations(availableTools = []) {
+  const names = new Set([DRAFT_FUNCTION]);
+  const declarations = availableTools.map(tool => {
+    const name = typeof tool?.name === 'string' ? nativeToolName(tool.name) : '';
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(name) || names.has(name) || !tool.inputSchema) {
+      throw codedModelError('assistant_tool_definition_invalid');
+    }
+    names.add(name);
+    return {
+      name,
+      description: `${tool.name}: ${tool.description || ''}`.trim(),
+      parameters: responseSchemaFromToolValue(tool.inputSchema),
+    };
+  });
+  // This function formats an editable draft; it never executes a mail action.
+  // Keep it available during final synthesis, when all action tools are removed.
+  declarations.push({
+    name: DRAFT_FUNCTION,
+    description: 'Prepare a complete editable reply or forward draft. Does not send mail or authorize sending.',
+    parameters: draftSchema(),
+  });
+  return declarations;
 }
 
 export const ASSISTANT_SYSTEM_PROMPT = `You are Winnow, a private email assistant.
@@ -181,34 +176,18 @@ When the conversation already contains a reply or forward draft and the newest u
 return one complete replacement draft with the requested changes. Preserve recipients, subject, and unchanged body
 details unless the user asks to change them. Do not send or propose sending a draft unless the newest user message
 explicitly asks to send it. Requests such as "reply saying...", "respond that...", or "write a reply..." ask for
-an editable draft, not a send proposal. Return those in the top-level draft field with no mail.send_reply tool call.
+an editable draft, not a send proposal. Use assistant_prepare_draft with no mail.send_reply tool call.
 
-Return only JSON:
-{"text":"short response","toolCalls":[{"name":"tool.name","arguments":{}}],"draft":null}
-
-Use only tools listed in availableTools and at most 3 tool calls. If tool results are present, answer from them
+Answer directly in concise Markdown, or call the supplied native functions. Function names replace periods in
+the canonical tool names with underscores (for example mail.search becomes mail_search).
+Use only tools listed in availableTools and at most 3 action-tool calls, plus at most one assistant_prepare_draft.
+If tool results are present, answer from them
 with precise evidence and do not repeat or slightly rephrase a search that already ran. When
-conversation.finalAnswerRequired is true, make no tool calls and provide the best supported answer from the
-context and existing tool results. For a reply or forward draft, return draft as
-an object whose To/Cc/Bcc entries are exact bare email addresses without display names; never guess an address.
-{"kind":"reply|forward","to":["email"],"cc":[],"bcc":[],"subject":"","body":""}.
+conversation.finalAnswerRequired is true, make no action-tool calls and provide the best supported answer from the
+context and existing tool results. For a reply or forward draft, use assistant_prepare_draft with the complete
+kind, to, cc, bcc, subject, and body. To/Cc/Bcc entries must be exact bare email addresses without display names;
+never guess an address. Use empty arrays for absent Cc/Bcc. Never claim to have sent a draft merely by preparing it.
 Do not put incoming raw email bodies in the answer.`;
-
-function parseModelJson(text) {
-  const raw = String(text || '').slice(0, MAX_OUTPUT_CHARS).trim();
-  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) throw codedModelError('assistant_model_invalid_json');
-    try {
-      return JSON.parse(match[0]);
-    } catch {
-      throw codedModelError('assistant_model_invalid_json');
-    }
-  }
-}
 
 function codedModelError(code, diagnostic = null) {
   const error = new Error(code);
@@ -217,22 +196,45 @@ function codedModelError(code, diagnostic = null) {
   return error;
 }
 
-function normalizeResponse(value) {
-  const object = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  return {
-    text: typeof object.text === 'string' ? object.text.slice(0, 12000) : '',
-    toolCalls: Array.isArray(object.toolCalls)
-      ? object.toolCalls.slice(0, 3).map(call => ({
-        name: typeof call?.name === 'string' ? call.name : '',
-        arguments: call?.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments)
-          ? call.arguments
-          : {},
-      })).filter(call => call.name)
-      : [],
-    draft: object.draft && typeof object.draft === 'object' && !Array.isArray(object.draft)
-      ? object.draft
-      : null,
-  };
+function nativeResponse(response, availableTools) {
+  const candidate = response?.candidates?.[0];
+  // Never execute a partial call from a truncated or safety-blocked generation.
+  if (candidate?.finishReason && candidate.finishReason !== 'STOP') {
+    throw codedModelError('assistant_model_invalid_response');
+  }
+  const allowedNames = new Map(availableTools.map(tool => [nativeToolName(tool.name), tool.name]));
+  const toolCalls = [];
+  const texts = [];
+  let draft = null;
+  for (const part of candidate?.content?.parts || []) {
+    if (part.thought === true) continue;
+    if (typeof part.text === 'string') texts.push(part.text);
+    if (!part.functionCall) continue;
+    const { name, args } = part.functionCall;
+    if (!args || typeof args !== 'object' || Array.isArray(args)
+      || JSON.stringify(args).length > MAX_OUTPUT_CHARS) {
+      throw codedModelError('assistant_model_invalid_response');
+    }
+    if (name === DRAFT_FUNCTION) {
+      if (draft || !['reply', 'forward'].includes(args.kind)
+        || !['to', 'cc', 'bcc'].every(key => Array.isArray(args[key]) && args[key].every(value => typeof value === 'string'))
+        || typeof args.subject !== 'string' || typeof args.body !== 'string'
+        || Object.keys(args).some(key => !['kind', 'to', 'cc', 'bcc', 'subject', 'body'].includes(key))) {
+        throw codedModelError('assistant_model_invalid_response');
+      }
+      draft = args;
+    } else {
+      if (!allowedNames.has(name) || toolCalls.length >= 3) {
+        throw codedModelError('assistant_model_invalid_response');
+      }
+      // Decoding is not execution. Canonical server validation, authorization,
+      // deduplication, and confirmation remain the sole action gate.
+      toolCalls.push({ name: allowedNames.get(name), arguments: args });
+    }
+  }
+  const text = texts.join('\n').trim().slice(0, MAX_OUTPUT_CHARS);
+  if (!text && !toolCalls.length && !draft) throw codedModelError('assistant_model_empty_response');
+  return { text: text || (draft ? 'Here’s your draft.' : ''), toolCalls, draft };
 }
 
 function boundedValue(value, maxChars) {
@@ -393,6 +395,8 @@ export class GeminiAssistantModel {
     const modelName = useFallback ? getAssistantFallbackModelName(config) : getAssistantModelName(config);
     const serialized = serializeAssistantModelInput(input);
     const attachments = inlineAttachmentParts(input);
+    const availableTools = input.availableTools || [];
+    const functionDeclarations = assistantFunctionDeclarations(availableTools);
     // Recovery changes models, not permissions or context. Repeating the same
     // stalled model has failed even for short, tool-free reply requests.
     // MINIMAL is supported by Gemini 3 Flash, but not every Gemini 3 model.
@@ -410,8 +414,10 @@ export class GeminiAssistantModel {
           httpOptions: { retryOptions: { attempts: 1 } },
           maxOutputTokens: 8192,
           systemInstruction: ASSISTANT_SYSTEM_PROMPT,
-          responseMimeType: 'application/json',
-          responseSchema: assistantResponseSchema(input.availableTools),
+          // A large anyOf response schema caused repeatable provider stalls.
+          // Native functions retain per-tool types without constrained decoding
+          // of a synthetic response envelope. No SDK-side tool execution occurs.
+          tools: [{ functionDeclarations }],
           ...(modelName.startsWith('gemini-3')
             ? { thinkingConfig: { thinkingLevel } }
             : {}),
@@ -433,26 +439,14 @@ export class GeminiAssistantModel {
       };
       throw error;
     }
-    const candidate = response.candidates?.[0];
-    let responseText;
+    const candidate = response?.candidates?.[0];
     try {
-      responseText = response.text;
-      if (!responseText) throw codedModelError('assistant_model_empty_response');
+      return nativeResponse(response, availableTools);
     } catch (error) {
       error.diagnostic = {
-        candidateCount: response.candidates?.length || 0,
+        candidateCount: response?.candidates?.length || 0,
         finishReason: String(candidate?.finishReason || '').slice(0, 80) || null,
         hasContent: Boolean(candidate?.content?.parts?.length),
-      };
-      throw error;
-    }
-    try {
-      return normalizeResponse(parseModelJson(responseText));
-    } catch (error) {
-      error.diagnostic = {
-        responseCharacters: responseText.length,
-        responseTruncated: responseText.length > MAX_OUTPUT_CHARS,
-        finishReason: String(candidate?.finishReason || '').slice(0, 80) || null,
       };
       throw error;
     }

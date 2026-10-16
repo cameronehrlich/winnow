@@ -449,7 +449,17 @@ async function boundedModelResponse(model, input, onProgress, recoveryState) {
       timeout.unref?.();
     });
     try {
-      return await Promise.race([providerResponse, deadline]);
+      const response = await Promise.race([providerResponse, deadline]);
+      if (process.env.NODE_ENV !== 'test' && !process.env.NODE_TEST_CONTEXT) {
+        console.info('[assistant] model generation completed', {
+          elapsedMs: Date.now() - startedAt,
+          modelName: useFallback ? getAssistantFallbackModelName() : getAssistantModelName(),
+          useFallback,
+          toolCallCount: response?.toolCalls?.length || 0,
+          hasDraft: Boolean(response?.draft),
+        });
+      }
+      return response;
     } finally {
       clearTimeout(timeout);
     }
@@ -483,6 +493,7 @@ async function boundedModelResponse(model, input, onProgress, recoveryState) {
 
 function isInvalidModelResponse(err) {
   return err?.code === 'assistant_model_invalid_json'
+    || err?.code === 'assistant_model_invalid_response'
     || err?.code === 'assistant_model_empty_response'
     || String(err?.message || '') === 'assistant_model_invalid_json'
     || /GoogleGenerativeAIResponseError/i.test(String(err?.name || ''));

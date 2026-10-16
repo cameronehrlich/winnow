@@ -715,14 +715,14 @@ describe('assistant API', () => {
     assert.equal(envelope.messages.at(-1).proposal.status, 'pending');
   });
 
-  it('retries one incomplete model response before returning an answer', async () => {
+  it('retries one malformed native function response before returning an answer', async () => {
     let attempts = 0;
     setAssistantModelFactoryForTests(() => ({
       async respond() {
         attempts += 1;
         if (attempts === 1) {
-          const error = new Error('assistant_model_invalid_json');
-          error.code = 'assistant_model_invalid_json';
+          const error = new Error('assistant_model_invalid_response');
+          error.code = 'assistant_model_invalid_response';
           throw error;
         }
         return { text: 'The key takeaway is available.', toolCalls: [], draft: null };

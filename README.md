@@ -105,6 +105,8 @@ scan:
 
 Winnow keeps its high-volume classification/summarization path separate from the conversational assistant.
 `classification_name` controls scan-time triage; `assistant_name` controls mailbox questions and agentic tools.
+Chat uses native typed Gemini function calls for actions and editable drafts, and plain text for answers.
+The server validates and authorizes every action; generating a function call does not execute or send it.
 Assistant generations have a 20-second deadline and one recovery attempt using
 `gemini-3.1-flash-lite` (override with `model.assistant_fallback_name`). The fallback
 keeps the same context, typed tools, validation, and confirmation requirements;
