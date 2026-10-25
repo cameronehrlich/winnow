@@ -216,7 +216,30 @@ The private API also supports conversational email work for the native iOS app:
 - Unsubscribe, future-mail rules, replies, and forwards are stored as expiring proposals. The client must return the exact server-issued confirmation digest before Winnow executes one proposal once.
 - Drafting never sends. Incoming email and tool output are marked as untrusted model data and cannot authorize an action.
 - Chat drafts and quick forwards share strict recipient validation. Named mailboxes are normalized to exact email addresses, duplicate recipients are removed, and invalid drafts show a correction message instead of an enabled Send button. Stored drafts and selected-contact forwards prepare confirmation directly without regenerating content through the model.
-- Model generation retries once after a transient failure, incomplete response, or 75-second deadline; a deadline retry is capped at 30 seconds and uses Gemini 3 Flash's minimal thinking setting while preserving the same request, context, and tools. The run owns retries; SDK retries are disabled. Private mail is excluded from diagnostic logs. Late results cannot execute tools. Outbound sends are never automatically retried; confirmation and durable proposal identity still control execution.
+- Model generation has a 20-second deadline and one independent-model recovery attempt, preserving context and permissions. The run owns retries; SDK retries are disabled. Private mail is excluded from diagnostic logs. Late results cannot execute tools. Outbound sends are never automatically retried; confirmation and durable proposal identity still control execution.
+
+### Saved Gmail drafts
+
+Drafts is an account-filtered destination on iPhone, iPad, and Mac Catalyst. Gmail is authoritative: rows use `(account, draftId)`, never the replaceable underlying message ID. Opening, foregrounding, pull-to-refresh, and 30-second foreground mailbox checks read Gmail directly. Pages disclose unavailable accounts rather than presenting partial results as complete.
+
+The shared reader shows exact From/To/Cc/Bcc, safe HTML or text, inline CID images, and attachment previews. Send requires an explicit confirmation, a fresh matching content revision, a verified sending identity, and a durable send-once claim. Sending uses `gmail drafts send`, not reconstructed text, so existing MIME/attachments are preserved. Ambiguous provider outcomes are fenced across restarts; the UI directs the user to check Gmail Sent rather than risking another send. Revision checks are optimistic; they do not lock Gmail against a last-moment edit from another client.
+
+Email-scoped Winnow reply drafts offer **Save Draft**. Saving is explicit and idempotent, preserves the receiving alias and original reply message, and links the chat card to the Gmail copy. Existing history is not bulk-converted. Once saved, the older chat snapshot cannot be sent through the legacy draft-send path; review the current Gmail copy in Drafts instead. Chat forward drafts keep their existing reviewed-send flow.
+
+Native editing is deliberately limited to plain-text Winnow-saved replies with known original-message context and no attachments. The installed gog compose/update implementation can rewrite reply headers for unrelated drafts. Rich, attached, and other Gmail drafts therefore offer **Edit in Gmail**, followed by Reload, and can always be sent unchanged in Winnow. Saving edits is explicit; there is no silent overwrite/autosave.
+
+Authenticated routes (individual draft routes require `?account=<active mailbox>`):
+
+```text
+GET  /v1/drafts?account=<optional>&cursor=<optional>
+GET  /v1/drafts/:draftId
+POST /v1/drafts
+PUT  /v1/drafts/:draftId
+POST /v1/drafts/:draftId/send
+GET  /v1/drafts/:draftId/attachments/:attachmentId
+```
+
+Create accepts `sourceMessageId` and a stable `idempotencyKey` for a canonical chat reply, or exact `fields` for API clients. Update accepts `revision` and `fields`. Send accepts `revision`, `idempotencyKey`, and `confirmed: true`. No draft read or save sends email.
 
 Assistant conversations, bounded evidence, proposals, and audit metadata are stored in SQLite. Raw incoming Gmail bodies and search-result bodies are not written to the assistant tables. Exact outgoing drafts are stored when needed for review and confirmation.
 

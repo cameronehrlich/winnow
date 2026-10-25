@@ -10,6 +10,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var lifetimeSummary: LifetimeSummary = .empty
     @Published private(set) var status: RuntimeStatus?
     @Published private(set) var accounts: [AccountStatus] = []
+    // Navigation can replace a detail column while an editor is open. Keep
+    // unsaved text in this app session; never silently write it over Gmail.
+    var draftEditBuffers: [GmailDraftReference: GmailDraftEditBuffer] = [:]
     // Keep retired metadata for historical message links, not account selection.
     var activeAccounts: [AccountStatus] { accounts.filter(\.isActive) }
     @Published private(set) var mailRules: [MailRule] = []
@@ -340,6 +343,7 @@ final class AppModel: ObservableObject {
             try ConfigurationStore.save(candidate)
             refreshGeneration &+= 1
             clearEmailContentCache()
+            draftEditBuffers.removeAll()
             configuration = candidate
             status = verifiedStatus
             hasLoaded = true
@@ -379,6 +383,7 @@ final class AppModel: ObservableObject {
             try ConfigurationStore.clear()
             refreshGeneration &+= 1
             clearEmailContentCache()
+            draftEditBuffers.removeAll()
             configuration = ServerConfiguration(serverURL: "", token: "")
             emails = []
             archivedNextCursor = nil

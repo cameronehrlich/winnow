@@ -33,6 +33,7 @@ import {
   getAssistantProposal,
   getAssistantRunByIdempotencyKey,
   getEmailItem,
+  getGmailDraftOperation,
   listAssistantMessages,
   recordAssistantToolCall,
   touchAssistantRunLease,
@@ -450,6 +451,12 @@ async function boundedModelResponse(model, input, onProgress, recoveryState) {
     });
     try {
       const response = await Promise.race([providerResponse, deadline]);
+      // A blocked event loop can resolve provider microtasks before an already
+      // overdue timer callback. Wall-clock expiry still fences every late call.
+      if (controller.signal.aborted || Date.now() - startedAt >= assistantModelTimeoutMs) {
+        controller.abort();
+        throw new AssistantError(504, 'assistant_model_timeout', 'The assistant model did not respond in time');
+      }
       if (process.env.NODE_ENV !== 'test' && !process.env.NODE_TEST_CONTEXT) {
         console.info('[assistant] model generation completed', {
           elapsedMs: Date.now() - startedAt,
@@ -609,6 +616,9 @@ export async function proposeAssistantDraftSend(
   }
 
   const sourceMessage = getAssistantMessage(messageId);
+  if (sourceMessage?.savedDraft || getGmailDraftOperation('create', conversation.account, `assistant:${messageId}`)) {
+    throw new AssistantError(409, 'draft_saved_in_gmail', 'This draft is saved or being saved in Gmail. Open it from Drafts to review the latest version and send it.');
+  }
   const draft = normalizeAssistantDraft(sourceMessage?.draft);
   if (!sourceMessage || sourceMessage.conversationId !== conversationId || sourceMessage.role !== 'assistant' || !draft) {
     throw new AssistantError(404, 'draft_not_found', 'This draft is no longer available');
@@ -796,6 +806,20 @@ async function executeAssistantRun(run, conversation, text, onProgress) {
     const history = listAssistantMessages(conversationId);
     const userIndex = history.findIndex(message => message.id === run.userMessageId);
     if (userIndex < 0) throw new AssistantError(404, 'assistant_message_not_found');
+    const latestDraftMessage = history.slice(0, userIndex).findLast(message => message.draft);
+    const hasGmailCopy = latestDraftMessage && (latestDraftMessage.savedDraft
+      || getGmailDraftOperation('create', conversation.account, `assistant:${latestDraftMessage.id}`));
+    if (hasGmailCopy && explicitlyRequestsImmediateSend(text)) {
+      finishAssistantRunWithMessage({
+        runId: run.id, leaseToken: run.leaseToken,
+        message: {
+          id: randomUUID(), conversationId, role: 'assistant',
+          text: 'This draft is saved in Gmail. Open it from Drafts to review and send the latest version; I won’t send an older chat copy.',
+        },
+      });
+      await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.finalizing));
+      return getAssistantConversationEnvelope(conversationId);
+    }
     const chatMessages = modelMessages(history.slice(0, userIndex + 1));
     await emitAssistantProgress(onProgress, progressEvent(ASSISTANT_PROGRESS_STAGES.context));
     const context = await contextualEmail(conversation, dependencies);

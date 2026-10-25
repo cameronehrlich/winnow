@@ -285,8 +285,9 @@ private struct AssistantConversationLayout<LeadingContent: View>: View {
                                 AssistantMessageView(
                                     message: message,
                                     accountStatus: accountStatus,
+                                    draftAccount: viewModel.scope == .email ? viewModel.account : nil,
                                     showsDraft: message.id == latestDraftMessageID,
-                                    isProposalWorking: viewModel.isProposalWorking(message.proposal),
+                                    isProposalWorking: viewModel.isWorking || viewModel.isProposalWorking(message.proposal),
                                     reviewProposal: { reviewedProposal = $0 },
                                     cancelProposal: cancel,
                                     sendDraft: { sendDraft(message) }
@@ -765,13 +766,19 @@ private struct AssistantComposerFieldStyle: ViewModifier {
 }
 
 private struct AssistantMessageView: View {
+    @EnvironmentObject private var model: AppModel
     let message: AssistantMessage
     let accountStatus: AccountStatus?
+    let draftAccount: String?
     let showsDraft: Bool
     let isProposalWorking: Bool
     let reviewProposal: (AssistantProposal) -> Void
     let cancelProposal: (AssistantProposal) -> Void
     let sendDraft: () -> Void
+    @State private var savedReference: GmailDraftReference?
+    @State private var draftToOpen: GmailDraftReference?
+    @State private var savingDraft = false
+    @State private var saveError: String?
 
     private var isUser: Bool { message.role == "user" }
     private var isResult: Bool { message.kind == "result" || message.role == "tool" }
@@ -797,8 +804,12 @@ private struct AssistantMessageView: View {
                     draft: draft,
                     isWorking: isProposalWorking,
                     allowsSend: message.proposal?.status != "pending" && message.proposal?.status != "completed",
-                    send: sendDraft
+                    send: savedReference == nil && message.savedDraft == nil ? sendDraft : openSavedDraft,
+                    save: draft.kind == "reply" && draftAccount != nil && message.proposal == nil ? saveToDrafts : nil,
+                    isSaving: savingDraft,
+                    isSaved: savedReference != nil || message.savedDraft != nil
                 )
+                if let saveError { Text(saveError).font(.caption).foregroundStyle(WinnowDesign.amber) }
             }
 
             if let proposal = message.proposal {
@@ -811,6 +822,34 @@ private struct AssistantMessageView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+        .sheet(item: $draftToOpen) { reference in
+            NavigationStack {
+                DraftDetailView(reference: reference, showsCloseButton: true)
+            }
+            .presentationDetents([.large])
+        }
+    }
+
+    private func openSavedDraft() {
+        draftToOpen = savedReference ?? message.savedDraft
+    }
+
+    private func saveToDrafts() {
+        if savedReference != nil || message.savedDraft != nil { openSavedDraft(); return }
+        guard let account = draftAccount, !savingDraft else { return }
+        savingDraft = true
+        Task { @MainActor in
+            defer { savingDraft = false }
+            do {
+                let draft = try await APIClient(configuration: model.configuration).saveAssistantDraft(
+                    messageID: message.id, account: account, idempotencyKey: "save-assistant-\(message.id)"
+                )
+                savedReference = draft.reference
+                draftToOpen = draft.reference
+                saveError = nil
+                NotificationCenter.default.post(name: .winnowDraftsChanged, object: nil)
+            } catch { saveError = error.localizedDescription }
+        }
     }
 
     private var messageBubble: some View {
@@ -906,6 +945,9 @@ private struct AssistantDraftCard: View {
     let isWorking: Bool
     let allowsSend: Bool
     let send: () -> Void
+    var save: (() -> Void)? = nil
+    var isSaving = false
+    var isSaved = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -913,7 +955,7 @@ private struct AssistantDraftCard: View {
                 Label(draft.kind.capitalized + " draft", systemImage: "square.and.pencil")
                     .font(.subheadline.weight(.bold))
                 Spacer()
-                CapsuleLabel("Not sent", symbol: "lock.fill", color: WinnowDesign.amber)
+                CapsuleLabel(isSaved ? "Gmail draft" : "Not sent", symbol: isSaved ? "envelope" : "lock.fill", color: isSaved ? WinnowDesign.accent : WinnowDesign.amber)
             }
             if !draft.to.isEmpty { draftRow("To", draft.to.joined(separator: ", ")) }
             if !draft.cc.isEmpty { draftRow("Cc", draft.cc.joined(separator: ", ")) }
@@ -933,18 +975,26 @@ private struct AssistantDraftCard: View {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
                 .buttonStyle(.bordered)
+                if let save, !isSaved {
+                    Button(action: save) {
+                        if isSaving { ProgressView() }
+                        else { Label("Save Draft", systemImage: "square.and.arrow.down") }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isSaving || isWorking)
+                }
                 Spacer()
-                if allowsSend {
+                if allowsSend || isSaved {
                     Button(action: send) {
                         if isWorking {
                             ProgressView()
                         } else {
-                            Label("Send", systemImage: "paperplane.fill")
+                            Label(isSaved ? "Open Draft" : "Send", systemImage: "paperplane.fill")
                         }
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(WinnowDesign.indigo)
-                    .disabled(isWorking || !draft.canSend)
+                    .disabled(isWorking || isSaving || (!isSaved && !draft.canSend))
                 }
             }
             .font(.caption.weight(.semibold))

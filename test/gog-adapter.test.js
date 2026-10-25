@@ -17,6 +17,27 @@ function fakeAdapter(responses) {
 }
 
 describe('GogAdapter assistant primitives', () => {
+  it('uses native Gmail draft commands and binds all composed text to flags', async () => {
+    const { adapter, calls } = fakeAdapter([
+      { drafts: [{ id: 'r-1', messageId: 'm1' }], nextPageToken: 'next' },
+      { draft: { id: 'r-1', message: { id: 'm1', payload: {} } } },
+      { draftId: 'r-1' },
+      { messageId: 'sent-1', threadId: 'thread-1' },
+    ]);
+    assert.equal((await adapter.listDrafts('me@example.com', { limit: 20, pageToken: '-opaque-token' })).nextPageToken, 'next');
+    assert.equal((await adapter.getDraft('me@example.com', 'r-1')).id, 'r-1');
+    await adapter.saveDraft('me@example.com', { from: 'alias@example.com', to: [], cc: [], bcc: [], subject: '--subject-looking text', body: '--body-looking text' }, { draftId: 'r-1', replyMessageId: 'original-1' });
+    assert.deepEqual(await adapter.sendDraft('me@example.com', 'r-1'), { messageId: 'sent-1', threadId: 'thread-1' });
+    assert.ok(calls[0].args.includes('--page=-opaque-token'));
+    assert.ok(calls[2].args.includes('--subject=--subject-looking text'));
+    assert.ok(calls[2].args.includes('--body=--body-looking text'));
+    assert.ok(calls[2].args.includes('--to=')); assert.ok(calls[2].args.includes('--cc=')); assert.ok(calls[2].args.includes('--bcc='));
+    assert.ok(calls[2].args.includes('--reply-to-message-id'));
+    assert.deepEqual(calls[3].args, ['gmail', 'drafts', 'send', 'r-1', '--account', 'me@example.com', '--json', '--no-input']);
+    await assert.rejects(adapter.getDraft('me@example.com', '--flag'), /draftId/);
+    assert.equal(calls.length, 4);
+  });
+
   it('normalizes bounded mailbox search results without fetching bodies', async () => {
     const { adapter, calls } = fakeAdapter([{
       messages: [{

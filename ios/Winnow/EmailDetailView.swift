@@ -402,7 +402,7 @@ struct EmailDetailView: View {
 
 }
 
-private enum AttachmentPreviewFile {
+enum AttachmentPreviewFile {
     static func write(_ data: Data, filename: String, mimeType: String) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("WinnowAttachmentPreviews", isDirectory: true)
@@ -2269,7 +2269,7 @@ enum SafeEmailHTML {
     }
 }
 
-private struct SafeEmailHTMLView: UIViewRepresentable {
+struct SafeEmailHTMLView: UIViewRepresentable {
     @Environment(\.openURL) private var openURL
     let html: String
     @Binding var contentHeight: CGFloat

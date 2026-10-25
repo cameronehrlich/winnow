@@ -72,9 +72,10 @@ struct AssistantMessage: Decodable, Identifiable {
     let evidence: [AssistantEvidence]
     let draft: AssistantDraft?
     let proposal: AssistantProposal?
+    let savedDraft: GmailDraftReference?
 
     private enum CodingKeys: String, CodingKey {
-        case id, conversationId, runId, role, text, kind, createdAt, evidence, draft, proposal
+        case id, conversationId, runId, role, text, kind, createdAt, evidence, draft, proposal, savedDraft
     }
 
     init(
@@ -87,7 +88,8 @@ struct AssistantMessage: Decodable, Identifiable {
         createdAt: String? = nil,
         evidence: [AssistantEvidence] = [],
         draft: AssistantDraft? = nil,
-        proposal: AssistantProposal? = nil
+        proposal: AssistantProposal? = nil,
+        savedDraft: GmailDraftReference? = nil
     ) {
         self.id = id
         self.conversationId = conversationId
@@ -99,6 +101,7 @@ struct AssistantMessage: Decodable, Identifiable {
         self.evidence = evidence
         self.draft = draft
         self.proposal = proposal
+        self.savedDraft = savedDraft
     }
 
     init(from decoder: Decoder) throws {
@@ -113,6 +116,7 @@ struct AssistantMessage: Decodable, Identifiable {
         evidence = try values.decodeIfPresent([AssistantEvidence].self, forKey: .evidence) ?? []
         draft = try values.decodeIfPresent(AssistantDraft.self, forKey: .draft)
         proposal = try values.decodeIfPresent(AssistantProposal.self, forKey: .proposal)
+        savedDraft = try values.decodeIfPresent(GmailDraftReference.self, forKey: .savedDraft)
     }
 }
 

@@ -5,6 +5,114 @@ import SwiftUI
 @testable import Winnow
 
 final class ModelDecodingTests: XCTestCase {
+    private func draftFixture() throws -> String {
+        let value: [String: Any] = [
+            "account": "me@example.com", "draftId": "r-stable-1", "messageId": "message-1", "threadId": "thread-1",
+            "from": "Me <me@example.com>", "to": "Friend <friend@example.com>", "cc": "colleague@example.com", "bcc": "private@example.com",
+            "subject": "Following up on our conversation", "snippet": "Thanks for your help. Here are the details we discussed.",
+            "date": "2026-10-24T12:00:00Z", "internalDate": "1792843200000",
+            "body": "Hi Friend,\n\nThanks for your help. Here are the details we discussed.\n\nBest,\nCam", "htmlBody": "",
+            "attachments": [], "revision": "revision-1", "editable": true, "sendable": true,
+        ]
+        return String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
+    }
+
+    func testDraftIdentityUsesAccountAndStableDraftIDNotMutableMessageID() throws {
+        let raw = try draftFixture()
+        let first = try JSONDecoder().decode(GmailDraft.self, from: Data(raw.utf8))
+        let second = try JSONDecoder().decode(GmailDraft.self, from: Data(raw.replacingOccurrences(of: "message-1", with: "replacement-message").utf8))
+        XCTAssertEqual(first.id, second.id)
+        XCTAssertEqual(first.reference, second.reference)
+        XCTAssertEqual(first.fields.bcc, ["private@example.com"])
+        XCTAssertEqual(first.recipientSummary, "Friend +2")
+        XCTAssertTrue(first.editable)
+        XCTAssertTrue(first.sendable)
+        XCTAssertNotEqual(first.id, GmailDraftReference(account: "other@example.com", draftId: first.draftId).id)
+    }
+
+    func testDraftRecipientEntryPreservesQuotedNamesAndInvalidInputForValidation() {
+        XCTAssertEqual(GmailDraft.recipientEntries("\"Doe, Jane\" <jane@example.com>; bob@example.com, invalid input"),
+                       ["\"Doe, Jane\" <jane@example.com>", "bob@example.com", "invalid input"])
+        XCTAssertEqual(GmailDraft.recipientEntries(" ; , "), [])
+    }
+
+    func testSavedChatDraftReferenceIsAdditiveToExistingEnvelopes() throws {
+        let message = try JSONDecoder().decode(AssistantMessage.self, from: Data(#"{"id":"message-1","role":"assistant","text":"Draft ready","savedDraft":{"account":"me@example.com","draftId":"r-1"}}"#.utf8))
+        XCTAssertEqual(message.savedDraft?.draftId, "r-1")
+        let legacy = try JSONDecoder().decode(AssistantMessage.self, from: Data(#"{"id":"old-message","role":"assistant","text":"Old message"}"#.utf8))
+        XCTAssertNil(legacy.savedDraft)
+    }
+
+    func testDraftAPIUsesStableIDsAccountScopeRevisionAndExplicitSendConfirmation() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = APIClient(configuration: ServerConfiguration(serverURL: "https://winnow.test/base", token: "fixture-token"), session: session)
+        let raw = try draftFixture()
+        var requests = 0
+        MailRuleURLProtocol.handler = { request in
+            requests += 1
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-token")
+            XCTAssertEqual(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "account" })?.value, "me@example.com")
+            if request.url!.path.hasSuffix("/send") {
+                XCTAssertEqual(request.httpMethod, "POST")
+                let body = try JSONSerialization.jsonObject(with: MailRuleURLProtocol.bodyData(from: request) ?? Data()) as! [String: Any]
+                XCTAssertEqual(body["confirmed"] as? Bool, true)
+                XCTAssertEqual(body["revision"] as? String, "revision-1")
+                XCTAssertEqual(body["idempotencyKey"] as? String, "send-once")
+                return (200, #"{"ok":true,"messageId":"sent-1"}"#)
+            }
+            if request.url!.path == "/base/v1/drafts" && request.httpMethod == "GET" {
+                return (200, "{\"items\":[\(raw)],\"nextCursor\":null,\"unavailableAccounts\":[]}")
+            }
+            if request.httpMethod == "PUT" {
+                let body = try JSONSerialization.jsonObject(with: MailRuleURLProtocol.bodyData(from: request) ?? Data()) as! [String: Any]
+                XCTAssertEqual(body["revision"] as? String, "revision-1")
+                XCTAssertEqual((body["fields"] as? [String: Any])?["bcc"] as? [String], ["private@example.com"])
+            }
+            return (200, "{\"draft\":\(raw)}")
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+        let list = try await client.drafts(account: "me@example.com")
+        let draft = try XCTUnwrap(list.items.first)
+        _ = try await client.draft(draft.reference)
+        _ = try await client.saveDraft(draft.reference, revision: draft.revision, fields: draft.fields)
+        _ = try await client.sendDraft(draft.reference, revision: draft.revision, idempotencyKey: "send-once")
+        _ = try await client.saveAssistantDraft(messageID: "chat-1", account: "me@example.com", idempotencyKey: "save-chat-1")
+        XCTAssertEqual(requests, 5)
+    }
+
+    @MainActor
+    func testDraftReaderLayoutOnPhoneAndTablet() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let raw = try draftFixture()
+        var loads = 0
+        MailRuleURLProtocol.handler = { _ in loads += 1; return (200, "{\"draft\":\(raw)}") }
+        defer { MailRuleURLProtocol.handler = nil }
+        let model = AppModel(configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "fixture"), session: session)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        for size in [CGSize(width: 393, height: 852), CGSize(width: 1024, height: 1366)] {
+            let window = UIWindow(windowScene: scene)
+            window.frame = CGRect(origin: .zero, size: size)
+            let controller = UIHostingController(rootView: NavigationStack {
+                DraftDetailView(reference: .init(account: "me@example.com", draftId: "r-stable-1"), session: session)
+            }.environmentObject(model).preferredColorScheme(.dark))
+            window.rootViewController = controller
+            window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(700))
+            controller.view.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "Draft reader \(Int(size.width))pt - dark"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            window.isHidden = true
+        }
+        XCTAssertGreaterThanOrEqual(loads, 2)
+    }
+
     @MainActor
     func testAddressSuggestionsRenderWithNativeFieldInDarkMode() async throws {
         let sessionConfiguration = URLSessionConfiguration.ephemeral

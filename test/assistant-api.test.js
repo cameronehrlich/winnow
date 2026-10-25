@@ -792,6 +792,24 @@ describe('assistant API', () => {
     assert.equal(run.error_code, 'assistant_model_unavailable');
   });
 
+  it('fences overdue model results even when synchronous work blocks the deadline timer', async () => {
+    setAssistantModelTimeoutForTests(10);
+    setAssistantModelFactoryForTests(() => ({
+      respond() {
+        const started = Date.now();
+        while (Date.now() - started < 35) { /* deliberately block timer callbacks */ }
+        return {
+          text: 'Overdue archive result.',
+          toolCalls: [{ name: 'mail.archive', arguments: { account: 'me@example.com', messageId: 'm1', threadId: 't1' } }],
+        };
+      },
+    }));
+    const created = await createConversation({ scope: 'email', emailItemId: item.id });
+    const { events } = await postStream(created.conversation.id, { text: 'Archive this email', idempotencyKey: 'blocked-deadline' });
+    assert.match(events.at(-1).data.messages.at(-1).text, /took too long/i);
+    assert.equal(calls.archive, 0);
+  });
+
   it('times out a provider response before lease recovery and fences its late tool calls', async () => {
     setAssistantModelTimeoutForTests(20);
     setAssistantModelFactoryForTests(() => ({

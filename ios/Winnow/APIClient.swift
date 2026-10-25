@@ -182,6 +182,55 @@ struct APIClient: AssistantService {
         return try await request(path: "/v1/sent", queryItems: query, timeoutInterval: 20)
     }
 
+    func drafts(account: String = "", cursor: String? = nil) async throws -> GmailDraftListResponse {
+        var query = [URLQueryItem(name: "limit", value: "20")]
+        if !account.isEmpty { query.append(URLQueryItem(name: "account", value: account)) }
+        if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        return try await request(path: "/v1/drafts", queryItems: query, timeoutInterval: 45)
+    }
+
+    func draft(_ reference: GmailDraftReference) async throws -> GmailDraft {
+        let response: GmailDraftEnvelope = try await request(
+            path: "/v1/drafts/\(Self.encodedPathSegment(reference.draftId))",
+            queryItems: [URLQueryItem(name: "account", value: reference.account)]
+        )
+        return response.draft
+    }
+
+    func saveDraft(_ reference: GmailDraftReference, revision: String, fields: GmailDraftFields) async throws -> GmailDraft {
+        let response: GmailDraftEnvelope = try await request(
+            path: "/v1/drafts/\(Self.encodedPathSegment(reference.draftId))",
+            queryItems: [URLQueryItem(name: "account", value: reference.account)], method: "PUT",
+            body: try JSONEncoder().encode(GmailDraftUpdate(revision: revision, fields: fields)), timeoutInterval: 45
+        )
+        return response.draft
+    }
+
+    func saveAssistantDraft(messageID: String, account: String, idempotencyKey: String) async throws -> GmailDraft {
+        let body = try JSONSerialization.data(withJSONObject: ["sourceMessageId": messageID, "idempotencyKey": idempotencyKey])
+        let response: GmailDraftEnvelope = try await request(
+            path: "/v1/drafts", queryItems: [URLQueryItem(name: "account", value: account)],
+            method: "POST", body: body, timeoutInterval: 45
+        )
+        return response.draft
+    }
+
+    func sendDraft(_ reference: GmailDraftReference, revision: String, idempotencyKey: String) async throws -> GmailDraftSendResponse {
+        try await request(
+            path: "/v1/drafts/\(Self.encodedPathSegment(reference.draftId))/send",
+            queryItems: [URLQueryItem(name: "account", value: reference.account)], method: "POST",
+            body: try JSONEncoder().encode(GmailDraftSend(revision: revision, idempotencyKey: idempotencyKey, confirmed: true)),
+            timeoutInterval: 45
+        )
+    }
+
+    func draftAttachmentData(_ reference: GmailDraftReference, attachmentID: String) async throws -> Data {
+        try await responseData(
+            path: "/v1/drafts/\(Self.encodedPathSegment(reference.draftId))/attachments/\(Self.encodedPathSegment(attachmentID))",
+            queryItems: [URLQueryItem(name: "account", value: reference.account)], accept: "*/*", timeoutInterval: 45
+        )
+    }
+
     func threadContent(
         threadID: String,
         account: String,

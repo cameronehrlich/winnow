@@ -74,6 +74,10 @@ function validateAttachmentId(value) {
   return requireString(value, 'attachmentId', 2048, { pattern: /^[A-Za-z0-9_-]+$/ });
 }
 
+function validateDraftId(value) {
+  return requireString(value, 'draftId', 256, { pattern: /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ });
+}
+
 function normalizeRecipientList(value, name, { required = false } = {}) {
   const input = value == null ? [] : (Array.isArray(value) ? value : [value]);
   if (required && input.length === 0) throw new TypeError(`${name} requires at least one recipient`);
@@ -395,14 +399,58 @@ export class GogAdapter extends GmailAdapter {
     }
   }
 
-  async listSendAs(account) {
-    const result = await this.#runJson(['gmail', 'settings', 'sendas', 'list', '--account', validateAccount(account)]);
+  async listSendAs(account, { signal } = {}) {
+    const result = await this.#runJson(['gmail', 'settings', 'sendas', 'list', '--account', validateAccount(account)], { signal });
     if (!Array.isArray(result?.sendAs)) throw new Error('Could not verify Gmail sending addresses. Please try again.');
     return result.sendAs.map(alias => ({
       sendAsEmail: alias.sendAsEmail,
       isPrimary: alias.isPrimary === true,
       verificationStatus: alias.verificationStatus,
     }));
+  }
+
+  async listDrafts(account, { limit = 20, pageToken = '', signal } = {}) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RangeError('Invalid draft limit');
+    const args = ['gmail', 'drafts', 'list', '--max', String(limit), '--account', validateAccount(account)];
+    if (pageToken) args.push(`--page=${requireString(pageToken, 'pageToken', 4096)}`);
+    const result = await this.#runJson(args, { signal });
+    if (!result || !Array.isArray(result.drafts)) throw new Error('Invalid Gmail draft list');
+    return { drafts: result.drafts, nextPageToken: String(result.nextPageToken || '') };
+  }
+
+  async getDraft(account, draftId, { signal } = {}) {
+    const result = await this.#runJson(['gmail', 'drafts', 'get', validateDraftId(draftId),
+      '--account', validateAccount(account)], { signal });
+    if (!result?.draft?.message || result.draft.id !== draftId) throw new Error('Invalid Gmail draft');
+    return result.draft;
+  }
+
+  async saveDraft(account, draft, { draftId = '', replyMessageId = '' } = {}) {
+    const args = ['gmail', 'drafts', draftId ? 'update' : 'create'];
+    if (draftId) args.push(validateDraftId(draftId));
+    args.push('--account', validateAccount(account), '--from', validateAccount(draft.from),
+      `--subject=${requireString(draft.subject, 'subject', 500, { allowEmpty: true, preserve: true })}`,
+      `--body=${requireString(draft.body, 'body', 20000, { allowEmpty: true, preserve: true })}`);
+    for (const field of ['to', 'cc', 'bcc']) {
+      args.push(`--${field}=${normalizeRecipientList(draft[field], field).join(',')}`);
+    }
+    if (replyMessageId) args.push('--reply-to-message-id', validateGmailId(replyMessageId, 'messageId'));
+    const result = await this.#runJson(args);
+    const id = result?.draftId || result?.draft?.id || result?.id;
+    if (!id) throw new Error('Gmail did not confirm the saved draft');
+    return { draftId: id };
+  }
+
+  async sendDraft(account, draftId) {
+    try {
+      const result = await this.#runJson(['gmail', 'drafts', 'send', validateDraftId(draftId),
+        '--account', validateAccount(account)]);
+      const messageId = result?.messageId || result?.id || result?.message?.id;
+      if (!messageId) throw new Error('Gmail did not confirm sending');
+      return { messageId, threadId: result.threadId || result.message?.threadId || '' };
+    } catch (error) {
+      throw new GmailCommandError(error);
+    }
   }
 
   async reply(account, reference, draft) {

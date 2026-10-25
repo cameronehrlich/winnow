@@ -34,6 +34,7 @@
 		A00000000000000000000019 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000001B /* NotificationService.swift */; };
 		A0000000000000000000001A /* WinnowNotificationService.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* WinnowNotificationService.appex */; platformFilter = ios; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A0000000000000000000001B /* EmailAddressField.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000001E /* EmailAddressField.swift */; };
+		A0000000000000000000001C /* DraftsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000001F /* DraftsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -89,6 +90,7 @@
 		B0000000000000000000001A /* DeviceActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceActions.swift; sourceTree = "<group>"; };
 		B0000000000000000000001B /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		B0000000000000000000001E /* EmailAddressField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailAddressField.swift; sourceTree = "<group>"; };
+		B0000000000000000000001F /* DraftsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DraftsView.swift; sourceTree = "<group>"; };
 		B0000000000000000000001C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B0000000000000000000001D /* WinnowCatalyst.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WinnowCatalyst.entitlements; sourceTree = "<group>"; };
 		B10000000000000000000001 /* Winnow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Winnow.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -167,6 +169,7 @@
 				B00000000000000000000019 /* MailRulesView.swift */,
 				B0000000000000000000001A /* DeviceActions.swift */,
 				B0000000000000000000001E /* EmailAddressField.swift */,
+				B0000000000000000000001F /* DraftsView.swift */,
 			);
 			path = Winnow;
 			sourceTree = "<group>";
@@ -400,6 +403,7 @@
 				A00000000000000000000017 /* MailRulesView.swift in Sources */,
 				A00000000000000000000018 /* DeviceActions.swift in Sources */,
 				A0000000000000000000001B /* EmailAddressField.swift in Sources */,
+				A0000000000000000000001C /* DraftsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

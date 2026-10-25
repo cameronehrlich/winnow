@@ -13,6 +13,9 @@ import { getPushCapabilities, sendBadgeSync } from './push.js';
 import { reconcileDeliveredNotifications } from './notification-reconciliation.js';
 import { resolveTrackedContacts } from './contact-resolver.js';
 import {
+  MailDraftError, listMailDrafts, getMailDraft, createMailDraft, updateMailDraft, sendMailDraft, mailDraftAttachment,
+} from './mail-drafts.js';
+import {
   fetchEmailAttachment,
   fetchEmailAttachments,
   fetchEmailContent,
@@ -657,6 +660,52 @@ async function handleAuthed(req, res, url, dependencies = {}) {
     return;
   }
 
+  if (url.pathname === '/v1/drafts' || url.pathname.startsWith('/v1/drafts/')) {
+    const options = dependencies.mailDraftOptions || {};
+    try {
+      if (url.pathname === '/v1/drafts' && req.method === 'GET') {
+        const accounts = configuredAccountsForQuery(url, { activeOnly: true });
+        const limit = queryInteger(url, 'limit', { fallback: 20, min: 1, max: 100 });
+        sendJson(res, 200, await listMailDrafts({ accounts, limit, cursor: url.searchParams.get('cursor') || '' }, options));
+        return;
+      }
+      const [account] = configuredAccountsForQuery(url, { required: true, activeOnly: true });
+      const attachment = route(url.pathname, '/v1/drafts/:draftId/attachments/:attachmentId');
+      if (attachment && req.method === 'GET') {
+        sendAttachment(res, await mailDraftAttachment({ account, ...attachment }, options));
+        return;
+      }
+      const send = route(url.pathname, '/v1/drafts/:draftId/send');
+      const draft = route(url.pathname, '/v1/drafts/:draftId');
+      if (draft && req.method === 'GET') {
+        sendJson(res, 200, { draft: await getMailDraft({ account, draftId: draft.draftId }, { ...options, includeInlineImages: true }) });
+        return;
+      }
+      if (req.method === 'POST' || (draft && req.method === 'PUT')) {
+        const body = await readJsonObject(req);
+        const allowed = send ? ['revision', 'idempotencyKey', 'confirmed']
+          : draft ? ['revision', 'fields'] : ['fields', 'idempotencyKey', 'sourceMessageId'];
+        if (Object.keys(body).some(key => !allowed.includes(key))) throw new HttpError(400, 'invalid_draft_request');
+        if (send) {
+          sendJson(res, 200, await sendMailDraft({ account, draftId: send.draftId, ...body }, options));
+          return;
+        }
+        if (draft && req.method === 'PUT') {
+          sendJson(res, 200, { draft: await updateMailDraft({ account, draftId: draft.draftId, ...body }, options) });
+          return;
+        }
+        if (url.pathname === '/v1/drafts' && req.method === 'POST') {
+          sendJson(res, 200, { draft: await createMailDraft({ account, ...body }, options) });
+          return;
+        }
+      }
+      throw new HttpError(404, 'not_found');
+    } catch (error) {
+      if (error instanceof MailDraftError || error instanceof HttpError) throw error;
+      throw new MailDraftError(502, 'drafts_unavailable', 'Gmail could not complete this draft request. Please refresh before trying again.');
+    }
+  }
+
   if (req.method === 'GET' && url.pathname === '/v1/sent') {
     const accounts = configuredAccountsForQuery(url, { activeOnly: true });
     const limit = queryInteger(url, 'limit', { fallback: 50, min: 1, max: 200 });
@@ -1142,7 +1191,7 @@ export function createApiServer(dependencies = {}) {
       if (!requireAuth(req, res)) return;
       await handleAuthed(req, res, url, dependencies);
     } catch (err) {
-      if (err instanceof HttpError || err instanceof AssistantError) {
+      if (err instanceof HttpError || err instanceof AssistantError || err instanceof MailDraftError) {
         sendJson(res, err.status, { error: err.code, message: err.message, ...(err.details || {}) });
         return;
       }

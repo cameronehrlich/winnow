@@ -119,6 +119,18 @@ export function closeStoreForTests() {
 function migrate() {
   const database = db;
   database.exec(`
+    CREATE TABLE IF NOT EXISTS gmail_draft_operations (
+      operation_key TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      account TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      result_json TEXT,
+      updated_at TEXT NOT NULL,
+      UNIQUE(kind, account, target_id)
+    );
+
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -1836,7 +1848,15 @@ function rowToAssistantMessage(row) {
   const evidence = parseJson(row.evidence_json, []);
   if (evidence.length) message.evidence = evidence;
   const draft = parseJson(row.draft_json, null);
-  if (draft) message.draft = draft;
+  if (draft) {
+    message.draft = draft;
+    const savedDraft = getDb().prepare("SELECT * FROM gmail_draft_operations WHERE kind = 'create' AND target_id = ? AND status = 'succeeded'")
+      .get(`assistant:${row.id}`);
+    if (savedDraft?.status === 'succeeded') {
+      const result = parseJson(savedDraft.result_json, null);
+      if (result?.draftId) message.savedDraft = { account: savedDraft.account, draftId: result.draftId };
+    }
+  }
   if (row.proposal_id) {
     message.proposal = row.proposal_tool ? rowToAssistantProposal({
       id: row.proposal_id,
@@ -2711,4 +2731,47 @@ function importLegacyStateOnce() {
 export function ensureStore() {
   getDb();
   return { ok: true, path: dbPath };
+}
+
+// Durable fences survive client disconnects and backend restarts. An uncertain
+// outbound operation is never automatically retried with a new client key.
+export function getGmailDraftOperation(kind, account, targetId) {
+  return getDb().prepare('SELECT * FROM gmail_draft_operations WHERE kind = ? AND account = ? AND target_id = ?')
+    .get(kind, account, targetId) || null;
+}
+
+export function claimGmailDraftOperation({ key, kind, account, targetId, digest }) {
+  return runImmediateTransaction(() => {
+    const existing = getDb().prepare(`SELECT * FROM gmail_draft_operations
+      WHERE operation_key = ? OR (kind = ? AND account = ? AND target_id = ?)`)
+      .get(key, kind, account, targetId);
+    if (existing) return { claimed: false, operation: existing };
+    getDb().prepare(`INSERT INTO gmail_draft_operations
+      (operation_key,kind,account,target_id,digest,status,updated_at) VALUES (?,?,?,?,?,'pending',?)`)
+      .run(key, kind, account, targetId, digest, nowIso());
+    return { claimed: true, operation: getGmailDraftOperation(kind, account, targetId) };
+  });
+}
+
+export function finishGmailDraftOperation(key, status, result = null) {
+  getDb().prepare('UPDATE gmail_draft_operations SET status = ?, result_json = ?, updated_at = ? WHERE operation_key = ?')
+    .run(status, result ? JSON.stringify(result) : null, nowIso(), key);
+}
+
+export function gmailDraftOrigin(account, draftId) {
+  const rows = getDb().prepare("SELECT result_json FROM gmail_draft_operations WHERE kind = 'create' AND account = ? AND status = 'succeeded'").all(account);
+  return rows.map(row => parseJson(row.result_json, null)).find(result => result?.draftId === draftId) || null;
+}
+
+export function assistantDraftSaveBlocked(conversationId, createdAt) {
+  return Boolean(getDb().prepare(`
+    SELECT 1 FROM assistant_proposals
+      WHERE conversation_id = ? AND tool = 'mail.send_reply' AND created_at >= ?
+        AND status NOT IN ('cancelled', 'expired', 'failed')
+        AND (status != 'pending' OR expires_at > ?)
+    UNION ALL
+    SELECT 1 FROM assistant_runs WHERE conversation_id = ? AND status = 'running'
+      AND COALESCE(lease_updated_at, created_at) > ?
+    LIMIT 1
+  `).get(conversationId, createdAt, nowIso(), conversationId, new Date(Date.now() - 120000).toISOString()));
 }

@@ -8,19 +8,21 @@ struct RootView: View {
     @State private var selectedTab: RootTab = .inbox
     @State private var selectedRegularEmailID: String?
     @State private var selectedRegularSentRoute: SentThreadRoute?
+    @State private var selectedRegularDraft: GmailDraftReference?
     @State private var settingsPresented = false
     @State private var statsPresented = false
     @State private var askPresented = false
     @State private var askStatsPresented = false
 
     private enum RootTab: Hashable, CaseIterable {
-        case inbox, archived, sent, ask
+        case inbox, archived, sent, drafts, ask
 
         var title: String {
             switch self {
             case .inbox: "Inbox"
             case .archived: "Archived"
             case .sent: "Sent"
+            case .drafts: "Drafts"
             case .ask: "Ask Winnow"
             }
         }
@@ -30,6 +32,7 @@ struct RootView: View {
             case .inbox: "tray.full"
             case .archived: "archivebox"
             case .sent: "paperplane"
+            case .drafts: "square.and.pencil"
             case .ask: "bubble.left.and.bubble.right.fill"
             }
         }
@@ -65,11 +68,12 @@ struct RootView: View {
         .onChange(of: selectedTab) { oldTab, newTab in
             model.setVisibleMailbox(mailbox(for: newTab))
             if oldTab != newTab {
-                if newTab == .sent {
+                if newTab == .sent || newTab == .drafts {
                     selectedRegularEmailID = nil
                 } else {
                     selectedRegularSentRoute = nil
                 }
+                if newTab != .drafts { selectedRegularDraft = nil }
             }
             if usesRegularLayout,
                oldTab != newTab,
@@ -199,7 +203,11 @@ struct RootView: View {
             } content: {
                 NavigationStack {
                     Group {
-                        if selectedTab == .sent {
+                        if selectedTab == .drafts {
+                            DraftsMailboxListView(showsSettingsButton: false, openSettings: openSettings) { draft in
+                                selectedRegularDraft = draft.reference
+                            }
+                        } else if selectedTab == .sent {
                             SentMailboxListView(
                                 showsSettingsButton: false,
                                 openSettings: openSettings,
@@ -223,7 +231,10 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 330, ideal: 390, max: 480)
             } detail: {
                 NavigationStack {
-                    if selectedTab == .sent, let route = selectedRegularSentRoute {
+                    if selectedTab == .drafts, let reference = selectedRegularDraft {
+                        DraftDetailView(reference: reference) { selectedRegularDraft = nil }
+                            .id(reference)
+                    } else if selectedTab == .sent, let route = selectedRegularSentRoute {
                         ThreadView(
                             threadID: route.threadID,
                             account: route.account,
@@ -231,17 +242,17 @@ struct RootView: View {
                             fallbackSubject: route.subject
                         )
                         .id(route)
-                    } else if selectedTab != .sent, let selectedRegularEmailID {
+                    } else if (selectedTab == .inbox || selectedTab == .archived), let selectedRegularEmailID {
                         EmailDetailView(emailID: selectedRegularEmailID)
                             .id(selectedRegularEmailID)
                     } else {
                         ContentUnavailableView {
                             Label(
-                                selectedTab == .sent ? "Select a Sent Thread" : "Select an Email",
-                                systemImage: selectedTab == .sent ? "paperplane" : "envelope.open"
+                                selectedTab == .drafts ? "Select a Draft" : selectedTab == .sent ? "Select a Sent Thread" : "Select an Email",
+                                systemImage: selectedTab == .drafts ? "square.and.pencil" : selectedTab == .sent ? "paperplane" : "envelope.open"
                             )
                         } description: {
-                            Text(selectedTab == .sent
+                            Text(selectedTab == .drafts ? "Review a saved Gmail draft before sending it." : selectedTab == .sent
                                 ? "Choose a sent message to read its complete thread."
                                 : "Choose a message to read it without losing your place.")
                         }
@@ -301,7 +312,7 @@ struct RootView: View {
         switch tab {
         case .inbox: model.inboxBadgeCount
         case .archived: model.unseenArchivedItemCount
-        case .sent, .ask: nil
+        case .sent, .drafts, .ask: nil
         }
     }
 
@@ -331,6 +342,10 @@ struct RootView: View {
                     openSettings: openSettings,
                     openStats: openStats
                 )
+            }
+
+            Tab("Drafts", systemImage: "square.and.pencil", value: RootTab.drafts) {
+                DraftsMailboxView(openSettings: openSettings)
             }
 
             Tab("Ask", systemImage: "bubble.left.and.bubble.right.fill", value: RootTab.ask, role: .search) {
@@ -365,6 +380,10 @@ struct RootView: View {
             )
                 .tabItem { Label("Sent", systemImage: "paperplane") }
                 .tag(RootTab.sent)
+
+            DraftsMailboxView(openSettings: openSettings)
+                .tabItem { Label("Drafts", systemImage: "square.and.pencil") }
+                .tag(RootTab.drafts)
 
             Color.clear
                 .tabItem { Label("Ask", systemImage: "bubble.left.and.bubble.right.fill") }
@@ -409,7 +428,7 @@ struct RootView: View {
         switch tab {
         case .inbox: .inbox
         case .archived: .archived
-        case .sent, .ask: nil
+        case .sent, .drafts, .ask: nil
         }
     }
 
@@ -421,7 +440,7 @@ struct RootView: View {
             let mailbox = components?.queryItems?.first(where: { $0.name == "mailbox" })?.value ?? "inbox"
             open(emailID: emailID, mailbox: mailbox)
         } else if url.host == "mailbox" {
-            selectedTab = url.pathComponents.contains("archived") ? .archived : .inbox
+            selectedTab = url.pathComponents.contains("drafts") ? .drafts : url.pathComponents.contains("sent") ? .sent : url.pathComponents.contains("archived") ? .archived : .inbox
         }
     }
 
