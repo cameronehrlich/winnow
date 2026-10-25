@@ -192,7 +192,7 @@ struct APIClient: AssistantService {
     func draft(_ reference: GmailDraftReference) async throws -> GmailDraft {
         let response: GmailDraftEnvelope = try await request(
             path: "/v1/drafts/\(Self.encodedPathSegment(reference.draftId))",
-            queryItems: [URLQueryItem(name: "account", value: reference.account)]
+            queryItems: [URLQueryItem(name: "account", value: reference.account)], pathIsPercentEncoded: true
         )
         return response.draft
     }
@@ -201,7 +201,8 @@ struct APIClient: AssistantService {
         let response: GmailDraftEnvelope = try await request(
             path: "/v1/drafts/\(Self.encodedPathSegment(reference.draftId))",
             queryItems: [URLQueryItem(name: "account", value: reference.account)], method: "PUT",
-            body: try JSONEncoder().encode(GmailDraftUpdate(revision: revision, fields: fields)), timeoutInterval: 45
+            body: try JSONEncoder().encode(GmailDraftUpdate(revision: revision, fields: fields)), timeoutInterval: 45,
+            pathIsPercentEncoded: true
         )
         return response.draft
     }
@@ -220,14 +221,15 @@ struct APIClient: AssistantService {
             path: "/v1/drafts/\(Self.encodedPathSegment(reference.draftId))/send",
             queryItems: [URLQueryItem(name: "account", value: reference.account)], method: "POST",
             body: try JSONEncoder().encode(GmailDraftSend(revision: revision, idempotencyKey: idempotencyKey, confirmed: true)),
-            timeoutInterval: 45
+            timeoutInterval: 45, pathIsPercentEncoded: true
         )
     }
 
     func draftAttachmentData(_ reference: GmailDraftReference, attachmentID: String) async throws -> Data {
         try await responseData(
             path: "/v1/drafts/\(Self.encodedPathSegment(reference.draftId))/attachments/\(Self.encodedPathSegment(attachmentID))",
-            queryItems: [URLQueryItem(name: "account", value: reference.account)], accept: "*/*", timeoutInterval: 45
+            queryItems: [URLQueryItem(name: "account", value: reference.account)], accept: "*/*", timeoutInterval: 45,
+            pathIsPercentEncoded: true
         )
     }
 

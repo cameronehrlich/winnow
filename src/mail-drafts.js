@@ -28,7 +28,8 @@ function activeAccount(value) {
   return account.email;
 }
 function identifier(value, name = 'draftId') {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_][A-Za-z0-9_-]{0,255}$/.test(value)) fail(400, 'invalid_draft_request', `Invalid ${name}.`);
+  const pattern = name === 'draftId' ? /^[\x21-\x7e]{1,256}$/ : /^[A-Za-z0-9_-]{1,256}$/;
+  if (typeof value !== 'string' || !pattern.test(value)) fail(400, 'invalid_draft_request', `Invalid ${name}.`);
   return value;
 }
 function requestKey(value) {

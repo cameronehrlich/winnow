@@ -33,9 +33,17 @@ describe('GogAdapter assistant primitives', () => {
     assert.ok(calls[2].args.includes('--body=--body-looking text'));
     assert.ok(calls[2].args.includes('--to=')); assert.ok(calls[2].args.includes('--cc=')); assert.ok(calls[2].args.includes('--bcc='));
     assert.ok(calls[2].args.includes('--reply-to-message-id'));
-    assert.deepEqual(calls[3].args, ['gmail', 'drafts', 'send', 'r-1', '--account', 'me@example.com', '--json', '--no-input']);
-    await assert.rejects(adapter.getDraft('me@example.com', '--flag'), /draftId/);
+    assert.deepEqual(calls[3].args, ['gmail', 'drafts', 'send', '--account', 'me@example.com', '--json', '--no-input', '--', 'r-1']);
+    await assert.rejects(adapter.getDraft('me@example.com', 'bad id'), /draftId/);
     assert.equal(calls.length, 4);
+  });
+
+  it('treats signed legacy Gmail draft IDs as literal arguments, never options', async () => {
+    const { adapter, calls } = fakeAdapter([{ draft: { id: '-123456789', message: { id: 'm1' } } }, { draft: { id: 's:123456789', message: { id: 'm2' } } }]);
+    assert.equal((await adapter.getDraft('me@example.com', '-123456789')).id, '-123456789');
+    assert.deepEqual(calls[0].args.slice(-2), ['--', '-123456789']);
+    assert.ok(calls[0].args.indexOf('--json') < calls[0].args.indexOf('--'));
+    assert.equal((await adapter.getDraft('me@example.com', 's:123456789')).id, 's:123456789');
   });
 
   it('normalizes bounded mailbox search results without fetching bodies', async () => {

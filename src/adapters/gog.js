@@ -75,7 +75,9 @@ function validateAttachmentId(value) {
 }
 
 function validateDraftId(value) {
-  return requireString(value, 'draftId', 256, { pattern: /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ });
+  // Gmail also has legacy IDs such as s:1234. IDs are opaque data, and the
+  // command's -- boundary keeps every printable ID out of option parsing.
+  return requireString(value, 'draftId', 256, { pattern: /^[\x21-\x7e]+$/ });
 }
 
 function normalizeRecipientList(value, name, { required = false } = {}) {
@@ -244,11 +246,18 @@ export class GogAdapter extends GmailAdapter {
     const config = accountIndex >= 0 ? getAccountConfig(args[accountIndex + 1]) : {};
     args = [...args];
     if (config.auth_account) args[accountIndex + 1] = validateAccount(config.auth_account);
-    if (config.read_only) args.push('--readonly');
+    if (config.read_only) {
+      const separator = args.indexOf('--');
+      if (separator < 0) args.push('--readonly'); else args.splice(separator, 0, '--readonly');
+    }
+    const flags = [...GOG_FLAGS, ...(force ? ['--force'] : [])];
+    const separator = args.indexOf('--');
+    const commandArgs = separator < 0 ? [...args, ...flags]
+      : [...args.slice(0, separator), ...flags, ...args.slice(separator)];
     try {
       return await this.#execute(
         this.#command,
-        [...args, ...GOG_FLAGS, ...(force ? ['--force'] : [])],
+        commandArgs,
         signal ? { ...EXEC_OPTIONS, signal } : EXEC_OPTIONS,
       );
     } catch (error) {
@@ -419,15 +428,14 @@ export class GogAdapter extends GmailAdapter {
   }
 
   async getDraft(account, draftId, { signal } = {}) {
-    const result = await this.#runJson(['gmail', 'drafts', 'get', validateDraftId(draftId),
-      '--account', validateAccount(account)], { signal });
+    const result = await this.#runJson(['gmail', 'drafts', 'get', '--account', validateAccount(account),
+      '--', validateDraftId(draftId)], { signal });
     if (!result?.draft?.message || result.draft.id !== draftId) throw new Error('Invalid Gmail draft');
     return result.draft;
   }
 
   async saveDraft(account, draft, { draftId = '', replyMessageId = '' } = {}) {
     const args = ['gmail', 'drafts', draftId ? 'update' : 'create'];
-    if (draftId) args.push(validateDraftId(draftId));
     args.push('--account', validateAccount(account), '--from', validateAccount(draft.from),
       `--subject=${requireString(draft.subject, 'subject', 500, { allowEmpty: true, preserve: true })}`,
       `--body=${requireString(draft.body, 'body', 20000, { allowEmpty: true, preserve: true })}`);
@@ -435,6 +443,7 @@ export class GogAdapter extends GmailAdapter {
       args.push(`--${field}=${normalizeRecipientList(draft[field], field).join(',')}`);
     }
     if (replyMessageId) args.push('--reply-to-message-id', validateGmailId(replyMessageId, 'messageId'));
+    if (draftId) args.push('--', validateDraftId(draftId));
     const result = await this.#runJson(args);
     const id = result?.draftId || result?.draft?.id || result?.id;
     if (!id) throw new Error('Gmail did not confirm the saved draft');
@@ -443,8 +452,8 @@ export class GogAdapter extends GmailAdapter {
 
   async sendDraft(account, draftId) {
     try {
-      const result = await this.#runJson(['gmail', 'drafts', 'send', validateDraftId(draftId),
-        '--account', validateAccount(account)]);
+      const result = await this.#runJson(['gmail', 'drafts', 'send', '--account', validateAccount(account),
+        '--', validateDraftId(draftId)]);
       const messageId = result?.messageId || result?.id || result?.message?.id;
       if (!messageId) throw new Error('Gmail did not confirm sending');
       return { messageId, threadId: result.threadId || result.message?.threadId || '' };

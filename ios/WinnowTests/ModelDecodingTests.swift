@@ -7,7 +7,7 @@ import SwiftUI
 final class ModelDecodingTests: XCTestCase {
     private func draftFixture() throws -> String {
         let value: [String: Any] = [
-            "account": "me@example.com", "draftId": "r-stable-1", "messageId": "message-1", "threadId": "thread-1",
+            "account": "me@example.com", "draftId": "s:stable-1", "messageId": "message-1", "threadId": "thread-1",
             "from": "Me <me@example.com>", "to": "Friend <friend@example.com>", "cc": "colleague@example.com", "bcc": "private@example.com",
             "subject": "Following up on our conversation", "snippet": "Thanks for your help. Here are the details we discussed.",
             "date": "2026-10-24T12:00:00Z", "internalDate": "1792843200000",
@@ -54,6 +54,11 @@ final class ModelDecodingTests: XCTestCase {
             requests += 1
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-token")
             XCTAssertEqual(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "account" })?.value, "me@example.com")
+            if request.url!.path.contains("/drafts/") {
+                let path = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.percentEncodedPath
+                XCTAssertTrue(path.contains("s%3Astable-1"))
+                XCTAssertFalse(path.contains("%253A"), "Draft IDs must be percent-encoded exactly once")
+            }
             if request.url!.path.hasSuffix("/send") {
                 XCTAssertEqual(request.httpMethod, "POST")
                 let body = try JSONSerialization.jsonObject(with: MailRuleURLProtocol.bodyData(from: request) ?? Data()) as! [String: Any]
@@ -97,7 +102,7 @@ final class ModelDecodingTests: XCTestCase {
             let window = UIWindow(windowScene: scene)
             window.frame = CGRect(origin: .zero, size: size)
             let controller = UIHostingController(rootView: NavigationStack {
-                DraftDetailView(reference: .init(account: "me@example.com", draftId: "r-stable-1"), session: session)
+                DraftDetailView(reference: .init(account: "me@example.com", draftId: "s:stable-1"), session: session)
             }.environmentObject(model).preferredColorScheme(.dark))
             window.rootViewController = controller
             window.makeKeyAndVisible()

@@ -100,7 +100,7 @@ describe('Gmail draft lifecycle', () => {
 
   it('rejects inactive accounts, malformed IDs, fields, and stale revisions before writes', async () => {
     await assert.rejects(getMailDraft({ ...ref, account: 'retired@example.com' }, options), { code: 'invalid_account' });
-    await assert.rejects(getMailDraft({ ...ref, draftId: '--danger' }, options), { code: 'invalid_draft_request' });
+    await assert.rejects(getMailDraft({ ...ref, draftId: 'bad id' }, options), { code: 'invalid_draft_request' });
     await assert.rejects(updateMailDraft({ ...ref, revision: 'old', fields }, options), { code: 'draft_changed' });
     const current = await getMailDraft(ref, options);
     await assert.rejects(updateMailDraft({ ...ref, revision: current.revision, fields: { ...fields, bcc: ['bad address'] } }, options), { code: 'invalid_draft' });
