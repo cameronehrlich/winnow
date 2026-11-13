@@ -1,4 +1,5 @@
 import { GogAdapter, normalizeGogMessage } from './adapters/gog.js';
+import { emailBodyCache } from './email-body-cache.js';
 import { getAccountConfig } from './config.js';
 import { scan } from './scan.js';
 import { syncSlackDeliveryForItem } from './reconcile.js';
@@ -189,6 +190,7 @@ export async function fullSyncGmailInbox(account, {
       current = normalizeFetchedMessage(await adapter.getMessage(account, item.messageId), item.messageId);
     } catch (error) {
       if (!isMissingMessageError(error)) throw error;
+      if (adapter instanceof GogAdapter) await emailBodyCache.markMissing(account, item.messageId);
       current = { labelIds: [] };
     }
     const updated = await applyExistingState(item, current, {
@@ -283,6 +285,7 @@ export async function syncGmailMailbox(account, {
   for (const change of historyChanges) {
     const existing = findEmailItemByGmail({ account, messageId: change.id });
     if (change.deleted) {
+      if (adapter instanceof GogAdapter) await emailBodyCache.markMissing(account, change.id);
       deleteGmailMessageMetadata(account, change.id);
       if (existing) {
         const updated = await applyExistingState(existing, {
@@ -299,6 +302,7 @@ export async function syncGmailMailbox(account, {
       full = normalizeFetchedMessage(await adapter.getMessage(account, change.id), change.id);
     } catch (error) {
       if (isMissingMessageError(error)) {
+        if (adapter instanceof GogAdapter) await emailBodyCache.markMissing(account, change.id);
         deleteGmailMessageMetadata(account, change.id);
         if (existing) {
           const updated = await applyExistingState(existing, {
@@ -381,6 +385,7 @@ export async function reconcileTrackedInbox(account, {
         current = normalizeFetchedMessage(await adapter.getMessage(account, item.messageId), item.messageId);
       } catch (error) {
         if (!isMissingMessageError(error)) throw error;
+        if (adapter instanceof GogAdapter) await emailBodyCache.markMissing(account, item.messageId);
         current = { labelIds: [] };
       }
     }

@@ -1,4 +1,18 @@
 import Foundation
+import OSLog
+
+private final class ReaderNetworkMetrics: NSObject, URLSessionTaskDelegate {
+    private let log = Logger(subsystem: "technology.37.winnow", category: "ReaderNetwork")
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        guard task.originalRequest?.url?.path.hasSuffix("/content") == true else { return }
+        let serverWait = metrics.transactionMetrics.reduce(0.0) { value, transaction in
+            guard let start = transaction.requestEndDate, let end = transaction.responseStartDate else { return value }
+            return value + end.timeIntervalSince(start)
+        }
+        // Durations only: no URLs, subjects, addresses, or authorization headers.
+        log.info("Content network total=\(metrics.taskInterval.duration) serverWait=\(serverWait) transactions=\(metrics.transactionMetrics.count)")
+    }
+}
 
 struct ServerConfiguration: Equatable {
     var serverURL: String
@@ -122,7 +136,7 @@ struct APIClient: AssistantService {
         let configuration = URLSessionConfiguration.default
         configuration.waitsForConnectivity = true
         configuration.timeoutIntervalForResource = 60
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration, delegate: ReaderNetworkMetrics(), delegateQueue: nil)
     }()
 
     // Heartbeats keep the request active, but URLSession's resource deadline
@@ -263,11 +277,17 @@ struct APIClient: AssistantService {
         try await request(path: "/v1/sync", method: "POST", timeoutInterval: 8)
     }
 
-    func emailContentEnvelope(emailID: String) async throws -> EmailContentEnvelope {
-        let encodedID = emailID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? emailID
+    func emailContentEnvelope(emailID: String, focused: Bool = false, images: Bool = false, refresh: Bool = false) async throws -> EmailContentEnvelope {
+        let encodedID = Self.encodedPathSegment(emailID)
         return try await request(
             path: "/v1/emails/\(encodedID)/content",
-            timeoutInterval: 30
+            queryItems: focused ? [
+                URLQueryItem(name: "view", value: "message"),
+                URLQueryItem(name: "images", value: images ? "1" : "0"),
+                URLQueryItem(name: "refresh", value: refresh ? "1" : "0")
+            ] : [],
+            timeoutInterval: 30,
+            pathIsPercentEncoded: true
         )
     }
 

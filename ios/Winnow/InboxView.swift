@@ -397,6 +397,8 @@ struct MailboxListView: View {
                     )
                     .equatable()
                     .id(item.id)
+                    .onAppear { model.prefetchEmailContent(item) }
+                    .onDisappear { model.cancelPrefetch(emailID: item.id) }
                     .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)

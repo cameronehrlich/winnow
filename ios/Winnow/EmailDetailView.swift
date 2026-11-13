@@ -2,6 +2,7 @@ import Foundation
 import QuickLook
 import SwiftUI
 import WebKit
+import OSLog
 
 struct EmailDetailView: View {
     @Environment(\.dismiss) private var dismiss
@@ -145,7 +146,14 @@ struct EmailDetailView: View {
 
     @MainActor
     private func loadEmail(_ item: EmailItem, forceRefresh: Bool = false) async {
-        if let cached = model.cachedEmailContent(emailID: item.id) {
+        // iPad reuses the detail column. Never leave the previous message visible
+        // while its replacement is loading, and ignore a cancelled old request.
+        if emailContent?.emailItemId != item.id {
+            emailContent = nil
+            fetchedAttachments = nil
+        }
+        if let cached = await model.restoreCachedEmailContent(emailID: item.id) {
+            guard !Task.isCancelled else { return }
             emailContent = cached.content
             fetchedAttachments = cached.content.attachments
         }
@@ -153,14 +161,35 @@ struct EmailDetailView: View {
         emailLoadError = nil
         do {
             let response = try await model.loadEmailContent(emailID: item.id, forceRefresh: forceRefresh)
+            guard !Task.isCancelled else { return }
             emailContent = response.content
             fetchedAttachments = response.content.attachments
             if let updatedItem = response.item {
                 model.applyUnsubscribeCapability(from: updatedItem)
             }
+            isLoadingEmail = false
+            // Text is already readable. Resolve MIME pictures independently;
+            // never block the initial body on image downloads or thread history.
+            if !response.content.inlineImagesLoaded {
+                do {
+                    let illustrated = try await model.loadEmailContent(emailID: item.id, images: true)
+                    guard !Task.isCancelled else { return }
+                    emailContent = illustrated.content
+                    fetchedAttachments = illustrated.content.attachments
+                } catch {
+                    // Missing mail is authoritative even if text was cached;
+                    // ordinary picture/network failures leave the text readable.
+                    if case APIClientError.server(let status, _) = error, status == 404 || status == 410 { throw error }
+                }
+            }
         } catch {
+            guard !Task.isCancelled else { return }
+            if case APIClientError.server(let status, _) = error, status == 404 || status == 410 {
+                emailContent = nil
+            }
             emailLoadError = error.localizedDescription
         }
+        guard !Task.isCancelled else { return }
         isLoadingEmail = false
     }
 
@@ -1118,14 +1147,14 @@ private struct InlineEmailReader: View {
                 .padding(.horizontal, 16)
             }
 
-            if let content, content.messages.count > 1, !content.threadId.isEmpty {
+            if let content, (content.readerMode == "message" || content.messages.count > 1), !content.threadId.isEmpty {
                 NavigationLink {
                     ThreadView(
                         threadID: content.threadId,
                         account: resolvedAccount,
                         focusMessageID: content.focusedMessageId ?? focusedMessage?.id ?? "",
                         fallbackSubject: fallbackSubject,
-                        initialContent: content
+                        initialContent: content.readerMode == "message" ? nil : content
                     )
                 } label: {
                     HStack(spacing: 10) {
@@ -1134,9 +1163,11 @@ private struct InlineEmailReader: View {
                         Text("View Thread")
                             .font(.subheadline.weight(.semibold))
                         Spacer()
-                        Text("\(content.messages.count) messages")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                        if content.readerMode != "message" {
+                            Text("\(content.messages.count) messages")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
                         Image(systemName: "chevron.right")
                             .font(.caption.weight(.bold))
                             .foregroundStyle(.tertiary)
@@ -2310,6 +2341,7 @@ struct SafeEmailHTMLView: UIViewRepresentable {
         }
         guard context.coordinator.loadedHTML != html else { return }
         context.coordinator.loadedHTML = html
+        context.coordinator.loadStarted = Date()
         context.coordinator.lastReportedHeight = 0
         webView.loadHTMLString(SafeEmailHTML.document(for: html), baseURL: nil)
     }
@@ -2317,12 +2349,18 @@ struct SafeEmailHTMLView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate {
         @Binding private var contentHeight: CGFloat
         var loadedHTML = ""
+        var loadStarted = Date()
         var lastReportedHeight: CGFloat = 0
         var openURL: ((URL) -> Void)?
         private var contentSizeObservation: NSKeyValueObservation?
 
         init(contentHeight: Binding<CGFloat>) {
             _contentHeight = contentHeight
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            Logger(subsystem: "technology.37.winnow", category: "EmailReader")
+                .info("HTML layout completed elapsed=\(Date().timeIntervalSince(self.loadStarted))")
         }
 
         func observeContentSize(of webView: WKWebView) {

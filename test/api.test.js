@@ -472,6 +472,34 @@ describe('local API', () => {
     )).status, 400);
   });
 
+  it('serves progressive bodies without applying stale provider labels to mailbox state', async () => {
+    const headers = { Authorization: 'Bearer test-token' };
+    const emails = await fetch(`${baseUrl}/v1/emails`, { headers }).then(response => response.json());
+    const item = emails.items[0];
+    const before = getEmailItem(item.id);
+    let options;
+    apiDependencies.fetchReaderContent = async (selected, requested) => {
+      options = requested;
+      return {
+        emailItemId: selected.id, account: selected.account, threadId: selected.threadId,
+        focusedMessageId: selected.messageId, readerMode: 'message', inlineImagesLoaded: false,
+        messages: [{ id: selected.messageId, labelIds: ['TRASH'], body: 'Cached body' }], attachments: [],
+      };
+    };
+    const path = `/v1/emails/${encodeURIComponent(item.id)}/content?view=message&images=0&refresh=1`;
+    const response = await fetch(baseUrl + path, { headers });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('server-timing'), /content;dur=/);
+    const body = await response.json();
+    assert.equal(body.content.readerMode, 'message');
+    assert.deepEqual(options, { images: false, refresh: true });
+    assert.equal(getEmailItem(item.id).mailboxState, before.mailboxState);
+    assert.equal(getEmailItem(item.id).readState, before.readState);
+    assert.equal((await fetch(baseUrl + path)).status, 401);
+    apiDependencies.fetchReaderContent = async () => { throw Object.assign(Error('Email not found'), { status: 404 }); };
+    assert.equal((await fetch(baseUrl + path, { headers })).status, 404);
+  });
+
   it('maps a missing provider thread to a scoped 404', async () => {
     apiDependencies.fetchThreadContent = async () => { throw new Error('HTTP 404: thread not found'); };
     const response = await fetch(

@@ -1,5 +1,79 @@
 import Foundation
 import SwiftUI
+import CryptoKit
+import OSLog
+
+// App-owned, protected and disposable. Store bodies only, never cached mailbox
+// state. All disk I/O is actor-isolated away from the UI's synchronous tap path.
+actor EmailBodyDiskCache {
+    private let root: URL
+    private let maxBytes: Int
+    private let maxEntries: Int
+    private let lifetime: TimeInterval
+    private struct Entry: Codable { let savedAt: Date; let content: EmailContent }
+
+    init(root: URL? = nil, maxBytes: Int = 64 * 1024 * 1024, maxEntries: Int = 128,
+         lifetime: TimeInterval = 7 * 24 * 60 * 60) {
+        self.root = root ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("WinnowEmailBodies-v1", isDirectory: true)
+        self.maxBytes = maxBytes
+        self.maxEntries = maxEntries
+        self.lifetime = lifetime
+    }
+
+    nonisolated static func digest(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func directory(_ scope: String) -> URL { root.appendingPathComponent(Self.digest(scope), isDirectory: true) }
+    private func path(_ scope: String, _ account: String, _ emailID: String) -> URL {
+        directory(scope).appendingPathComponent(Self.digest("\(account.utf8.count):\(account)\(emailID)") + ".json")
+    }
+
+    func read(scope: String, account: String, emailID: String) -> EmailContent? {
+        let url = path(scope, account, emailID)
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size <= 16 * 1024 * 1024,
+              let data = try? Data(contentsOf: url),
+              let entry = try? JSONDecoder().decode(Entry.self, from: data),
+              Date().timeIntervalSince(entry.savedAt) < lifetime,
+              entry.content.account == account, entry.content.emailItemId == emailID else { return nil }
+        return entry.content
+    }
+
+    func write(_ content: EmailContent, scope: String, account: String, emailID: String) {
+        guard content.account == account, content.emailItemId == emailID,
+              let data = try? JSONEncoder().encode(Entry(savedAt: Date(), content: content)),
+              data.count <= min(maxBytes, 16 * 1024 * 1024) else { return }
+        do {
+            var folder = directory(scope)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            var values = URLResourceValues(); values.isExcludedFromBackup = true
+            try folder.setResourceValues(values)
+            try data.write(to: path(scope, account, emailID), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            let files = try FileManager.default.contentsOfDirectory(at: folder,
+                includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey])
+                .filter { $0.pathExtension == "json" }
+                .compactMap { url -> (URL, Int, Date)? in
+                    guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { return nil }
+                    return (url, values.fileSize ?? 0, values.contentModificationDate ?? .distantPast)
+                }.sorted { $0.2 > $1.2 }
+            var bytes = 0
+            for (index, file) in files.enumerated() {
+                bytes += file.1
+                if index >= maxEntries || bytes > maxBytes || Date().timeIntervalSince(file.2) > lifetime {
+                    try? FileManager.default.removeItem(at: file.0)
+                }
+            }
+        } catch { /* Cache storage is best effort, including locked-device cases. */ }
+    }
+
+    func remove(scope: String, account: String, emailID: String) {
+        try? FileManager.default.removeItem(at: path(scope, account, emailID))
+    }
+
+    func clear(scope: String) { try? FileManager.default.removeItem(at: directory(scope)) }
+}
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -47,6 +121,10 @@ final class AppModel: ObservableObject {
     private var contentCacheOrder: [String] = []
     private var contentRequests: [String: Task<EmailContentEnvelope, Error>] = [:]
     private var contentGeneration = 0
+    private let bodyDiskCache = EmailBodyDiskCache()
+    private var prefetchQueue: [String] = []
+    private var prefetchTask: Task<Void, Never>?
+    private static let readerLog = Logger(subsystem: "technology.37.winnow", category: "EmailReader")
     private var visibleMailbox: MailboxTab?
     private var sessionCutoffMailboxes: Set<MailboxTab> = []
     private var archivedSeenStateIsAuthoritative = false
@@ -84,32 +162,94 @@ final class AppModel: ObservableObject {
         contentCache[emailID]?.response
     }
 
-    func loadEmailContent(emailID: String, forceRefresh: Bool = false) async throws -> EmailContentEnvelope {
+    func restoreCachedEmailContent(emailID: String) async -> EmailContentEnvelope? {
+        if let cached = cachedEmailContent(emailID: emailID) { return cached }
+        guard apiSession == nil, let item = email(id: emailID) else { return nil }
         let generation = contentGeneration
-        if !forceRefresh, let cached = contentCache[emailID], Date().timeIntervalSince(cached.loadedAt) < 60 {
+        let scope = contentDiskScope
+        guard let content = await bodyDiskCache.read(scope: scope, account: item.account, emailID: emailID),
+              generation == contentGeneration else { return nil }
+        let response = EmailContentEnvelope(content: content, item: nil)
+        rememberContent(response, emailID: emailID, loadedAt: .distantPast)
+        return response
+    }
+
+    func loadEmailContent(emailID: String, forceRefresh: Bool = false, images: Bool = false) async throws -> EmailContentEnvelope {
+        let generation = contentGeneration
+        if !forceRefresh, let cached = contentCache[emailID], Date().timeIntervalSince(cached.loadedAt) < 60,
+           !images || cached.response.content.inlineImagesLoaded {
             return cached.response
         }
-        if let request = contentRequests[emailID] {
+        let requestKey = "\(emailID)|\(images)"
+        if let request = contentRequests[requestKey] {
             let response = try await request.value
             guard generation == contentGeneration else { throw CancellationError() }
             return response
         }
         let client = APIClient(configuration: configuration, session: apiSession)
-        let request = Task { try await client.emailContentEnvelope(emailID: emailID) }
-        contentRequests[emailID] = request
-        defer { if generation == contentGeneration { contentRequests.removeValue(forKey: emailID) } }
-        let response = try await request.value
+        let started = ContinuousClock.now
+        let request = Task { try await client.emailContentEnvelope(emailID: emailID, focused: true, images: images, refresh: forceRefresh) }
+        contentRequests[requestKey] = request
+        defer { if generation == contentGeneration { contentRequests.removeValue(forKey: requestKey) } }
+        let response: EmailContentEnvelope
+        do { response = try await request.value }
+        catch {
+            if generation == contentGeneration, case APIClientError.server(let status, _) = error, status == 404 || status == 410 {
+                contentCache.removeValue(forKey: emailID)
+                if let item = email(id: emailID) { await bodyDiskCache.remove(scope: contentDiskScope, account: item.account, emailID: emailID) }
+            }
+            throw error
+        }
         guard generation == contentGeneration else { throw CancellationError() }
-        contentCache[emailID] = (response, Date())
+        // A concurrent text prefetch must not replace already hydrated pictures.
+        let existing = contentCache[emailID]?.response
+        let retained = !forceRefresh && !images && existing?.content.inlineImagesLoaded == true
+            ? existing! : response
+        rememberContent(retained, emailID: emailID, loadedAt: Date())
+        Self.readerLog.info("Body request completed images=\(images) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
+        if apiSession == nil, let item = email(id: emailID), response.content.account == item.account {
+            await bodyDiskCache.write(retained.content, scope: contentDiskScope, account: item.account, emailID: emailID)
+        }
+        guard generation == contentGeneration else { throw CancellationError() }
+        return retained
+    }
+
+    private func rememberContent(_ response: EmailContentEnvelope, emailID: String, loadedAt: Date) {
+        contentCache[emailID] = (response, loadedAt)
         contentCacheOrder.removeAll { $0 == emailID }
         contentCacheOrder.append(emailID)
         // Embedded pictures can be large. Keep this private session cache small.
-        while contentCacheOrder.count > 8 || contentCacheBytes > 16 * 1024 * 1024 {
+        while contentCacheOrder.count > 32 || contentCacheBytes > 24 * 1024 * 1024 {
             guard let oldest = contentCacheOrder.first else { break }
             contentCacheOrder.removeFirst()
             contentCache.removeValue(forKey: oldest)
         }
-        return response
+    }
+
+    func prefetchEmailContent(_ item: EmailItem) {
+        guard isConfigured, !ProcessInfo.processInfo.isLowPowerModeEnabled,
+              !prefetchQueue.contains(item.id), prefetchQueue.count < 8 else { return }
+        prefetchQueue.append(item.id)
+        guard prefetchTask == nil else { return }
+        let generation = contentGeneration
+        prefetchTask = Task(priority: .utility) { [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard let self, self.contentGeneration == generation else { return }
+            while !Task.isCancelled, !self.prefetchQueue.isEmpty {
+                let id = self.prefetchQueue.removeFirst()
+                _ = await self.restoreCachedEmailContent(emailID: id)
+                guard !Task.isCancelled else { break }
+                _ = try? await self.loadEmailContent(emailID: id)
+            }
+            if self.contentGeneration == generation { self.prefetchTask = nil }
+        }
+    }
+
+    func cancelPrefetch(emailID: String) { prefetchQueue.removeAll { $0 == emailID } }
+
+    private var contentDiskScope: String {
+        let base = configuration.normalizedBaseURL?.absoluteString ?? ""
+        return EmailBodyDiskCache.digest("\(base.utf8.count):\(base)\(configuration.token)")
     }
 
     private var contentCacheBytes: Int {
@@ -121,6 +261,11 @@ final class AppModel: ObservableObject {
     }
 
     private func clearEmailContentCache() {
+        let scope = contentDiskScope
+        Task { await bodyDiskCache.clear(scope: scope) }
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        prefetchQueue.removeAll()
         contentGeneration &+= 1
         contentCache.removeAll()
         contentCacheOrder.removeAll()

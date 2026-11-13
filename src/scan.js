@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { emailBodyCache } from './email-body-cache.js';
 import { execFile, exec as execRaw, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { GogAdapter, normalizeGogMessage } from './adapters/gog.js';
@@ -196,6 +197,14 @@ export async function scan(account, opts = {}) {
       console.log(`[winnow] Classifying: ${msg.subject || '(no subject)'}`);
 
       const fullMessage = await getFullMessage(adapter, account, msg);
+      // Reuse the Gmail read already needed for triage; never add provider work
+      // or persist synthetic adapter fixtures in the production body cache.
+      if (!dryRun && fullMessage && adapter instanceof GogAdapter) {
+        const source = normalizeGogMessage(fullMessage, { includeHtml: true });
+        if (source.id && !source.labelIds.includes('DRAFT')) {
+          await emailBodyCache.write(emailBodyCache.key(account, source.id), source);
+        }
+      }
       const enrichedMsg = enrichMessageFromFull(msg, fullMessage);
       // Assistant-created rules are deterministic, confirmed user policy. Load
       // them only after full-message enrichment so sender and List-ID matching

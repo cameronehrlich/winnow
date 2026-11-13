@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { fetchReaderContent } from './email-reader.js';
 import { refreshMailboxes } from './mailbox-sync.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { loadConfig, getAccounts, getActiveAccounts, assertAccountWritable } from './config.js';
@@ -757,9 +758,17 @@ async function handleAuthed(req, res, url, dependencies = {}) {
       return;
     }
     try {
-      const getContent = dependencies.fetchEmailContent || fetchEmailContent;
-      const content = await getContent(item);
-      indexThreadContentMetadata(content);
+      const started = performance.now();
+      const focused = url.searchParams.get('view') === 'message' && Boolean(item.messageId);
+      const getContent = focused
+        ? (dependencies.fetchReaderContent || fetchReaderContent)
+        : (dependencies.fetchEmailContent || fetchEmailContent);
+      const content = await getContent(item, {
+        images: url.searchParams.get('images') === '1',
+        refresh: url.searchParams.get('refresh') === '1',
+      });
+      if (!focused) indexThreadContentMetadata(content);
+      res.setHeader('Server-Timing', `content;dur=${(performance.now() - started).toFixed(1)}`);
       if (Array.isArray(content?.attachments)) updateEmailItemAttachments(item.id, content.attachments);
       if (content?.unsubscribeLink) {
         setEmailItemUnsubscribeLinkIfMissing(item.id, content.unsubscribeLink);
@@ -770,7 +779,8 @@ async function handleAuthed(req, res, url, dependencies = {}) {
       });
     } catch (err) {
       console.error(`[winnow/api] email content fetch failed for ${item.id}: ${err.message}`);
-      sendJson(res, 502, { error: 'email_content_unavailable' });
+      const missing = err.status === 404 || isMissingGmailResource(err);
+      sendJson(res, missing ? 404 : 502, { error: missing ? 'email_not_found' : 'email_content_unavailable' });
     }
     return;
   }

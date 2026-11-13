@@ -5,6 +5,109 @@ import SwiftUI
 @testable import Winnow
 
 final class ModelDecodingTests: XCTestCase {
+    func testReaderDiskCachePersistsBodiesAndIsolatesAccountsAndServers() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("winnow-reader-test-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let content = try JSONDecoder().decode(EmailContent.self, from: Data(#"{"emailItemId":"e1","account":"me@example.com","threadId":"t1","readerMode":"message","inlineImagesLoaded":false,"messages":[{"id":"m1","body":"Hello","attachments":[{"attachmentId":"a1","messageId":"m1","filename":"picture.png","mimeType":"image/png","sizeBytes":123}]}]}"#.utf8))
+        let cache = EmailBodyDiskCache(root: root)
+        await cache.write(content, scope: "server-one", account: "me@example.com", emailID: "e1")
+        let reopened = EmailBodyDiskCache(root: root)
+        let loaded = await reopened.read(scope: "server-one", account: "me@example.com", emailID: "e1")
+        XCTAssertEqual(loaded, content)
+        let otherAccount = await reopened.read(scope: "server-one", account: "other@example.com", emailID: "e1")
+        let otherServer = await reopened.read(scope: "server-two", account: "me@example.com", emailID: "e1")
+        XCTAssertNil(otherAccount)
+        XCTAssertNil(otherServer)
+        await reopened.clear(scope: "server-one")
+        let cleared = await cache.read(scope: "server-one", account: "me@example.com", emailID: "e1")
+        XCTAssertNil(cleared)
+    }
+
+    func testReaderDiskCacheBoundsAndExpiry() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("winnow-reader-bounds-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = EmailBodyDiskCache(root: root, maxEntries: 1)
+        for id in ["e1", "e2"] {
+            let content = try JSONDecoder().decode(EmailContent.self, from: Data("{\"emailItemId\":\"\(id)\",\"account\":\"me@example.com\",\"messages\":[]}".utf8))
+            await cache.write(content, scope: "s", account: "me@example.com", emailID: id)
+        }
+        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)!.allObjects as! [URL]
+        XCTAssertEqual(files.filter { $0.pathExtension == "json" }.count, 1)
+        let expired = EmailBodyDiskCache(root: root, lifetime: -1)
+        let value = await expired.read(scope: "s", account: "me@example.com", emailID: "e2")
+        XCTAssertNil(value)
+    }
+
+    @MainActor
+    func testReaderProgressiveImagesUseSeparateRequestAndDoNotBlockBody() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let model = AppModel(configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "fixture"),
+                             session: URLSession(configuration: configuration))
+        var phases: [String] = []
+        MailRuleURLProtocol.handler = { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            XCTAssertEqual(query.first { $0.name == "view" }?.value, "message")
+            let images = query.first { $0.name == "images" }!.value!
+            phases.append(images)
+            return (200, "{\"content\":{\"emailItemId\":\"e1\",\"readerMode\":\"message\",\"inlineImagesLoaded\":\(images == "1"),\"messages\":[{\"id\":\"m1\",\"body\":\"Hello\"}]}}")
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+        let text = try await model.loadEmailContent(emailID: "e1")
+        XCTAssertFalse(text.content.inlineImagesLoaded)
+        XCTAssertEqual(phases, ["0"])
+        let images = try await model.loadEmailContent(emailID: "e1", images: true)
+        XCTAssertTrue(images.content.inlineImagesLoaded)
+        _ = try await model.loadEmailContent(emailID: "e1")
+        XCTAssertEqual(phases, ["0", "1"])
+    }
+
+    @MainActor
+    func testReaderMissingImagePhaseEvictsCachedBody() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let model = AppModel(configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "fixture"),
+                             session: URLSession(configuration: configuration))
+        MailRuleURLProtocol.handler = { request in
+            if request.url?.query?.contains("images=1") == true { return (404, #"{"error":"email_not_found"}"#) }
+            return (200, #"{"content":{"emailItemId":"e1","inlineImagesLoaded":false,"messages":[{"id":"m1","body":"Hello"}]}}"#)
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+        _ = try await model.loadEmailContent(emailID: "e1")
+        XCTAssertNotNil(model.cachedEmailContent(emailID: "e1"))
+        do { _ = try await model.loadEmailContent(emailID: "e1", images: true); XCTFail("Expected missing message") }
+        catch { XCTAssertNil(model.cachedEmailContent(emailID: "e1")) }
+    }
+
+    @MainActor
+    func testReaderPrefetchIsBoundedTextOnlyAndOffscreenRowsAreCancelled() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.isLowPowerModeEnabled, "Prefetch is deliberately disabled in Low Power Mode")
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MailRuleURLProtocol.self]
+        let model = AppModel(configuration: ServerConfiguration(serverURL: "https://winnow.test", token: "fixture"),
+                             session: URLSession(configuration: configuration))
+        let lock = NSLock()
+        var requests: [String] = []
+        MailRuleURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertTrue(request.url!.query!.contains("images=0"))
+            lock.withLock { requests.append(request.url!.path) }
+            return (200, #"{"content":{"messages":[]}}"#)
+        }
+        defer { MailRuleURLProtocol.handler = nil }
+        for index in 0..<20 {
+            let item = try JSONDecoder().decode(EmailItem.self, from: Data("{\"id\":\"e\(index)\",\"account\":\"me@example.com\"}".utf8))
+            model.prefetchEmailContent(item)
+        }
+        model.cancelPrefetch(emailID: "e0")
+        for _ in 0..<100 {
+            if lock.withLock({ requests.count }) == 7 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(lock.withLock { requests.count }, 7)
+        XCTAssertFalse(lock.withLock { requests.contains("/v1/emails/e0/content") })
+    }
+
     private func draftFixture() throws -> String {
         let value: [String: Any] = [
             "account": "me@example.com", "draftId": "s:stable-1", "messageId": "message-1", "threadId": "thread-1",

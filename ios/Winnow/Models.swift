@@ -139,7 +139,7 @@ struct EmailAttachmentListEnvelope: Decodable {
     let attachments: [EmailAttachment]
 }
 
-struct EmailContent: Decodable, Equatable {
+struct EmailContent: Codable, Equatable {
     let emailItemId: String
     let account: String
     let threadId: String
@@ -149,6 +149,8 @@ struct EmailContent: Decodable, Equatable {
     let attachments: [EmailAttachment]
     let truncated: Bool
     let fetchedAt: String
+    let readerMode: String?
+    let inlineImagesLoaded: Bool
 
     /// Gmail thread messages are returned oldest to newest and should remain in
     /// that order. Selection is presentation metadata, not a sorting rule.
@@ -156,7 +158,7 @@ struct EmailContent: Decodable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case emailItemId, account, threadId, focusedMessageId, subject, messages
-        case attachments, truncated, fetchedAt
+        case attachments, truncated, fetchedAt, readerMode, inlineImagesLoaded
     }
 
     init(from decoder: Decoder) throws {
@@ -170,10 +172,12 @@ struct EmailContent: Decodable, Equatable {
         attachments = try values.decodeIfPresent([EmailAttachment].self, forKey: .attachments) ?? []
         truncated = try values.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
         fetchedAt = try values.decodeIfPresent(String.self, forKey: .fetchedAt) ?? ""
+        readerMode = try values.decodeIfPresent(String.self, forKey: .readerMode)
+        inlineImagesLoaded = try values.decodeIfPresent(Bool.self, forKey: .inlineImagesLoaded) ?? true
     }
 }
 
-struct FullEmailMessage: Decodable, Equatable, Identifiable {
+struct FullEmailMessage: Codable, Equatable, Identifiable {
     let id: String
     let from: String
     let to: String
@@ -261,7 +265,7 @@ struct FullEmailMessage: Decodable, Equatable, Identifiable {
     }
 }
 
-enum EmailMessageDirection: String, Decodable, Equatable {
+enum EmailMessageDirection: String, Codable, Equatable {
     case sent
     case received
 }
@@ -380,7 +384,7 @@ struct EmailParticipant: Equatable {
     }
 }
 
-struct EmailAttachment: Decodable, Equatable, Identifiable {
+struct EmailAttachment: Codable, Equatable, Identifiable {
     let attachmentId: String
     let messageId: String
     let filename: String
@@ -406,6 +410,15 @@ struct EmailAttachment: Decodable, Equatable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case id, attachmentId, messageId, filename, name, mimeType, type, size, sizeBytes
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(attachmentId, forKey: .attachmentId)
+        try values.encode(messageId, forKey: .messageId)
+        try values.encode(filename, forKey: .filename)
+        try values.encode(mimeType, forKey: .mimeType)
+        try values.encodeIfPresent(sizeBytes, forKey: .sizeBytes)
     }
 
     init(from decoder: Decoder) throws {
