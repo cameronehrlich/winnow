@@ -69,6 +69,32 @@ it('does not permanently cache failed inline downloads', async t => {
   assert.equal((await fetchReaderContent(item, { cache, adapter, images: true })).inlineImagesLoaded, true);
 });
 
+it('retains supported illustrations even when the HTML also references a missing CID', async t => {
+  const cache = await fixture(t);
+  const message = { ...raw(), htmlBody: '<img src="cid:picture"><img src="cid:unknown">' };
+  let reads = 0;
+  const adapter = { getMessage: async () => message, getAttachment: async () => { reads++; return Buffer.from('png'); } };
+  for (let i = 0; i < 2; i++) {
+    const response = await fetchReaderContent(item, { cache, adapter, images: true });
+    assert.ok(response.inlineImagesLoaded);
+    assert.match(response.messages[0].htmlBody, /data:image\/png/);
+  }
+  const illustration = await cache.read(cache.key(item.account, item.messageId, 'images'));
+  assert.deepEqual(Object.keys(illustration).sort(), ['complete', 'htmlBody']);
+  assert.equal(reads, 1);
+});
+
+it('an explicit refresh never joins a concurrent disk hit', async t => {
+  const cache = await fixture(t);
+  const key = cache.key('a', 'm');
+  await cache.write(key, { version: 1 });
+  const loader = async () => ({ version: 2 });
+  const normal = cache.getOrLoad(key, loader);
+  assert.deepEqual(await cache.getOrLoad(key, loader, { refresh: true }), { version: 2 });
+  await normal;
+  assert.deepEqual(await cache.read(key), { version: 2 });
+});
+
 it('rejects mismatched provider identities and draft content', async t => {
   const cache = await fixture(t);
   for (const message of [{ ...raw(), id: 'wrong' }, { ...raw(), threadId: 'wrong' }, { ...raw(), labelIds: ['DRAFT'] }]) {
@@ -106,6 +132,7 @@ it('does not resurrect bodies after Gmail deletion, including an in-flight image
   await cache.markMissing(item.account, item.messageId);
   release();
   await assert.rejects(pending, { status: 404 });
+  assert.equal(await cache.read(cache.key(item.account, item.messageId, 'images')), null);
   await assert.rejects(fetchReaderContent(item, { cache, adapter }), { status: 404 });
 });
 

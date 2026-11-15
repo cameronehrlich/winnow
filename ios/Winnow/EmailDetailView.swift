@@ -18,7 +18,7 @@ struct EmailDetailView: View {
     @State private var emailContent: EmailContent?
     @State private var isLoadingEmail = true
     @State private var emailLoadError: String?
-    @State private var fetchedAttachments: [EmailAttachment]?
+    @State private var readerLoadID: UUID?
     @State private var downloadingAttachmentID: String?
     @State private var attachmentPreviewURL: URL?
     @State private var attachmentError: String?
@@ -57,7 +57,7 @@ struct EmailDetailView: View {
                                 content: emailContent,
                                 isLoading: isLoadingEmail,
                                 errorMessage: emailLoadError,
-                                attachments: fetchedAttachments ?? emailContent?.attachments ?? item.attachments,
+                                attachments: emailContent?.attachments ?? item.attachments,
                                 downloadingAttachmentID: downloadingAttachmentID,
                                 openAttachment: { openAttachment($0, from: item) },
                                 retry: { Task { await loadEmail(item, forceRefresh: true) } }
@@ -135,6 +135,7 @@ struct EmailDetailView: View {
             await loadEmail(item)
         }
         .onDisappear {
+            readerLoadID = nil
             if let attachmentPreviewURL {
                 AttachmentPreviewFile.remove(attachmentPreviewURL)
             }
@@ -148,22 +149,18 @@ struct EmailDetailView: View {
     private func loadEmail(_ item: EmailItem, forceRefresh: Bool = false) async {
         // iPad reuses the detail column. Never leave the previous message visible
         // while its replacement is loading, and ignore a cancelled old request.
-        if emailContent?.emailItemId != item.id {
-            emailContent = nil
-            fetchedAttachments = nil
-        }
-        if let cached = await model.restoreCachedEmailContent(emailID: item.id) {
-            guard !Task.isCancelled else { return }
-            emailContent = cached.content
-            fetchedAttachments = cached.content.attachments
-        }
+        let loadID = UUID()
+        readerLoadID = loadID
+        if emailContent?.emailItemId != item.id { emailContent = nil }
+        let cached = await model.restoreCachedEmailContent(emailID: item.id)
+        guard !Task.isCancelled, readerLoadID == loadID else { return }
+        if let cached { emailContent = cached.content }
         isLoadingEmail = emailContent == nil
         emailLoadError = nil
         do {
             let response = try await model.loadEmailContent(emailID: item.id, forceRefresh: forceRefresh)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, readerLoadID == loadID else { return }
             emailContent = response.content
-            fetchedAttachments = response.content.attachments
             if let updatedItem = response.item {
                 model.applyUnsubscribeCapability(from: updatedItem)
             }
@@ -173,9 +170,8 @@ struct EmailDetailView: View {
             if !response.content.inlineImagesLoaded {
                 do {
                     let illustrated = try await model.loadEmailContent(emailID: item.id, images: true)
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, readerLoadID == loadID else { return }
                     emailContent = illustrated.content
-                    fetchedAttachments = illustrated.content.attachments
                 } catch {
                     // Missing mail is authoritative even if text was cached;
                     // ordinary picture/network failures leave the text readable.
@@ -183,13 +179,13 @@ struct EmailDetailView: View {
                 }
             }
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, readerLoadID == loadID else { return }
             if case APIClientError.server(let status, _) = error, status == 404 || status == 410 {
                 emailContent = nil
             }
             emailLoadError = error.localizedDescription
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, readerLoadID == loadID else { return }
         isLoadingEmail = false
     }
 
@@ -2397,7 +2393,8 @@ struct SafeEmailHTMLView: UIViewRepresentable {
                 return
             }
 
-            if let url = navigationAction.request.url,
+            if navigationAction.navigationType == .linkActivated,
+               let url = navigationAction.request.url,
                let scheme = url.scheme?.lowercased(),
                ["http", "https", "mailto", "tel", "sms"].contains(scheme) {
                 DispatchQueue.main.async { [weak self] in

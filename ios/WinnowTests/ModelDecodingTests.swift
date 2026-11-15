@@ -5,6 +5,29 @@ import SwiftUI
 @testable import Winnow
 
 final class ModelDecodingTests: XCTestCase {
+    func testReaderRevalidationKeepsOnlyMatchingIllustratedHTML() throws {
+        func response(focus: String = "m1", html: String, loaded: Bool, body: String) throws -> EmailContentEnvelope {
+            let json: [String: Any] = ["content": [
+                "account": "me@example.com", "threadId": "t", "emailItemId": "e", "readerMode": "message",
+                "focusedMessageId": focus, "inlineImagesLoaded": loaded,
+                "messages": [["id": focus, "htmlBody": html, "body": body]]
+            ] as [String: Any], "item": ["id": "e", "account": "me@example.com"]]
+            return try JSONDecoder().decode(EmailContentEnvelope.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        let html = "<img src='data:image/png;base64,cG5n'>"
+        let cached = try response(html: html, loaded: true, body: "old").content
+        let fresh = try response(html: "<img src='cid:p'>", loaded: false, body: "fresh")
+        let merged = fresh.preservingIllustration(from: cached)
+        XCTAssertEqual(merged.content.messages[0].htmlBody, html)
+        XCTAssertTrue(merged.content.inlineImagesLoaded)
+        XCTAssertEqual(merged.content.messages[0].body, "fresh")
+        XCTAssertEqual(merged.item?.id, "e")
+        let different = try response(focus: "other", html: "other", loaded: false, body: "other")
+        XCTAssertEqual(different.preservingIllustration(from: cached).content, different.content)
+        let complete = try response(html: "new", loaded: true, body: "fresh")
+        XCTAssertEqual(complete.preservingIllustration(from: cached).content, complete.content)
+    }
+
     func testReaderDiskCachePersistsBodiesAndIsolatesAccountsAndServers() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("winnow-reader-test-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

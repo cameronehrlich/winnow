@@ -119,7 +119,7 @@ final class AppModel: ObservableObject {
     private let apiSession: URLSession?
     private var contentCache: [String: (response: EmailContentEnvelope, loadedAt: Date)] = [:]
     private var contentCacheOrder: [String] = []
-    private var contentRequests: [String: Task<EmailContentEnvelope, Error>] = [:]
+    private var contentRequests: [String: (task: Task<EmailContentEnvelope, Error>, refresh: Bool)] = [:]
     private var contentGeneration = 0
     private let bodyDiskCache = EmailBodyDiskCache()
     private var prefetchQueue: [String] = []
@@ -169,6 +169,7 @@ final class AppModel: ObservableObject {
         let scope = contentDiskScope
         guard let content = await bodyDiskCache.read(scope: scope, account: item.account, emailID: emailID),
               generation == contentGeneration else { return nil }
+        if let newer = cachedEmailContent(emailID: emailID) { return newer }
         let response = EmailContentEnvelope(content: content, item: nil)
         rememberContent(response, emailID: emailID, loadedAt: .distantPast)
         return response
@@ -182,36 +183,50 @@ final class AppModel: ObservableObject {
         }
         let requestKey = "\(emailID)|\(images)"
         if let request = contentRequests[requestKey] {
-            let response = try await request.value
+            let response = try await request.task.value
             guard generation == contentGeneration else { throw CancellationError() }
+            if forceRefresh && !request.refresh {
+                return try await loadEmailContent(emailID: emailID, forceRefresh: true, images: images)
+            }
             return response
         }
         let client = APIClient(configuration: configuration, session: apiSession)
         let started = ContinuousClock.now
-        let request = Task { try await client.emailContentEnvelope(emailID: emailID, focused: true, images: images, refresh: forceRefresh) }
-        contentRequests[requestKey] = request
-        defer { if generation == contentGeneration { contentRequests.removeValue(forKey: requestKey) } }
-        let response: EmailContentEnvelope
-        do { response = try await request.value }
-        catch {
-            if generation == contentGeneration, case APIClientError.server(let status, _) = error, status == 404 || status == 410 {
-                contentCache.removeValue(forKey: emailID)
-                if let item = email(id: emailID) { await bodyDiskCache.remove(scope: contentDiskScope, account: item.account, emailID: emailID) }
+        // All waiters receive the processed result, including late text prefetches
+        // that join a read while the foreground request is hydrating pictures.
+        let request = Task { () throws -> EmailContentEnvelope in
+            defer { if generation == contentGeneration { contentRequests.removeValue(forKey: requestKey) } }
+            let response: EmailContentEnvelope
+            do { response = try await client.emailContentEnvelope(emailID: emailID, focused: true, images: images, refresh: forceRefresh) }
+            catch {
+                if generation == contentGeneration, case APIClientError.server(let status, _) = error, status == 404 || status == 410 {
+                    contentRequests["\(emailID)|\(!images)"]?.task.cancel()
+                    contentCache.removeValue(forKey: emailID)
+                    contentCacheOrder.removeAll { $0 == emailID }
+                    if let item = email(id: emailID) { await bodyDiskCache.remove(scope: contentDiskScope, account: item.account, emailID: emailID) }
+                }
+                throw error
             }
-            throw error
+            try Task.checkCancellation()
+            guard generation == contentGeneration else { throw CancellationError() }
+            let result = !images && !forceRefresh
+                ? response.preservingIllustration(from: contentCache[emailID]?.response.content) : response
+            rememberContent(result, emailID: emailID, loadedAt: Date())
+            Self.readerLog.info("Body request completed images=\(images) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
+            if apiSession == nil, let item = email(id: emailID), result.content.account == item.account {
+                // Don't make first paint wait for JSON encoding, disk I/O or
+                // pruning. If superseded, persist only the current cached body.
+                Task {
+                    guard generation == contentGeneration, let current = contentCache[emailID] else { return }
+                    await bodyDiskCache.write(current.response.content, scope: contentDiskScope, account: item.account, emailID: emailID)
+                }
+            }
+            return result
         }
+        contentRequests[requestKey] = (request, forceRefresh)
+        let result = try await request.value
         guard generation == contentGeneration else { throw CancellationError() }
-        // A concurrent text prefetch must not replace already hydrated pictures.
-        let existing = contentCache[emailID]?.response
-        let retained = !forceRefresh && !images && existing?.content.inlineImagesLoaded == true
-            ? existing! : response
-        rememberContent(retained, emailID: emailID, loadedAt: Date())
-        Self.readerLog.info("Body request completed images=\(images) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
-        if apiSession == nil, let item = email(id: emailID), response.content.account == item.account {
-            await bodyDiskCache.write(retained.content, scope: contentDiskScope, account: item.account, emailID: emailID)
-        }
-        guard generation == contentGeneration else { throw CancellationError() }
-        return retained
+        return result
     }
 
     private func rememberContent(_ response: EmailContentEnvelope, emailID: String, loadedAt: Date) {
@@ -269,7 +284,7 @@ final class AppModel: ObservableObject {
         contentGeneration &+= 1
         contentCache.removeAll()
         contentCacheOrder.removeAll()
-        for request in contentRequests.values { request.cancel() }
+        for request in contentRequests.values { request.task.cancel() }
         contentRequests.removeAll()
         for request in backgroundReadTasks.values { request.cancel() }
         backgroundReadTasks.removeAll()
