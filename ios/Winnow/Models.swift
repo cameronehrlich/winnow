@@ -114,6 +114,23 @@ struct SentMessage: Decodable, Equatable, Hashable, Identifiable {
 struct EmailContentEnvelope: Decodable {
     let content: EmailContent
     let item: EmailItem?
+
+    // Gmail sent/received message bodies are immutable. Reuse only illustrated
+    // HTML for the exact message; capability, labels and attachment metadata
+    // always come from the current server response, never the disk snapshot.
+    func preservingIllustration(from previous: EmailContent?) -> Self {
+        guard !content.inlineImagesLoaded, content.readerMode == "message",
+              let previous, previous.readerMode == "message", previous.inlineImagesLoaded,
+              previous.account == content.account, previous.emailItemId == content.emailItemId,
+              previous.threadId == content.threadId, let focus = content.focusedMessageId,
+              content.messages.count == 1, previous.messages.count == 1,
+              previous.messages[0].id == focus, content.messages[0].id == focus,
+              previous.messages[0].htmlBody.localizedCaseInsensitiveContains("data:image/") else { return self }
+        var updated = content
+        updated.messages[0].htmlBody = previous.messages[0].htmlBody
+        updated.inlineImagesLoaded = true
+        return Self(content: updated, item: item)
+    }
 }
 
 struct ThreadContentResponse: Decodable {
@@ -145,12 +162,12 @@ struct EmailContent: Codable, Equatable {
     let threadId: String
     let focusedMessageId: String?
     let subject: String
-    let messages: [FullEmailMessage]
+    var messages: [FullEmailMessage]
     let attachments: [EmailAttachment]
     let truncated: Bool
     let fetchedAt: String
     let readerMode: String?
-    let inlineImagesLoaded: Bool
+    var inlineImagesLoaded: Bool
 
     /// Gmail thread messages are returned oldest to newest and should remain in
     /// that order. Selection is presentation metadata, not a sorting rule.
@@ -190,7 +207,7 @@ struct FullEmailMessage: Codable, Equatable, Identifiable {
     let labelIds: [String]
     let direction: EmailMessageDirection?
     let body: String
-    let htmlBody: String
+    var htmlBody: String
     let attachments: [EmailAttachment]
 
     var hasHTMLBody: Bool { !htmlBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

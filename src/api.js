@@ -769,7 +769,9 @@ async function handleAuthed(req, res, url, dependencies = {}) {
       });
       if (!focused) indexThreadContentMetadata(content);
       res.setHeader('Server-Timing', `content;dur=${(performance.now() - started).toFixed(1)}`);
-      if (Array.isArray(content?.attachments)) updateEmailItemAttachments(item.id, content.attachments);
+      // Stored attachments describe the thread. A focused read (including
+      // passive row prefetch) does not know which files its siblings contain.
+      if (!focused && Array.isArray(content?.attachments)) updateEmailItemAttachments(item.id, content.attachments);
       if (content?.unsubscribeLink) {
         setEmailItemUnsubscribeLinkIfMissing(item.id, content.unsubscribeLink);
       }

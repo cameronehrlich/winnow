@@ -47,11 +47,12 @@ export async function embedInlineImages(messages, sources, {
 }) {
   let remainingBytes = MAX_TOTAL_BYTES;
   let remainingImages = MAX_IMAGES;
+  let complete = true;
   const sourceById = new Map(sources.map(message => [message.id || message.messageId, message]));
   // The displayed message gets first use of the budget, even in a long thread.
   const ordered = [...messages].sort((a, b) => Number(b.id === focusedMessageId) - Number(a.id === focusedMessageId));
   for (const message of ordered) {
-    if (signal.aborted) break;
+    if (signal.aborted) return false;
     if (!message.htmlBody || remainingImages <= 0) continue;
     const references = new Map();
     for (const match of message.htmlBody.matchAll(CID_URL)) {
@@ -91,5 +92,8 @@ export async function embedInlineImages(messages, sources, {
       }));
     }
     message.htmlBody = message.htmlBody.replace(CID_URL, (url, id) => resolved.get(contentId(id)) || url);
+    if (resolved.size !== selected.length) complete = false;
   }
+  // Unknown CIDs and resources excluded by policy won't improve on retry.
+  return complete;
 }

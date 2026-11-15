@@ -52,10 +52,14 @@ export class EmailBodyCache {
   }
 
   async getOrLoad(key, loader, { refresh = false } = {}) {
-    // A refresh joins an existing provider read rather than racing it.
+    // Only provider reads are shared. A refresh must never join a disk hit.
     if (this.pending.has(key)) return this.pending.get(key);
+    if (!refresh) {
+      const cached = await this.read(key);
+      if (this.pending.has(key)) return this.pending.get(key);
+      if (cached) return cached;
+    }
     const request = (async () => {
-      if (!refresh) { const cached = await this.read(key); if (cached) return cached; }
       const value = await loader();
       await this.write(key, value);
       return value;

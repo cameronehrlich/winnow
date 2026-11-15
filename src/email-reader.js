@@ -36,28 +36,36 @@ export async function fetchReaderContent(item, {
     throw new Error('Invalid cached message identity');
   }
   const hasInlineImages = /\bcid:/i.test(source.htmlBody) && source.inlineImages?.length > 0;
-  let message = { ...source, body: emailBodyToText(source.body) };
+  const { inlineImages, headers, ...displayed } = source;
+  displayed.body = emailBodyToText(source.body || source.snippet);
+  let inlineImagesLoaded = !hasInlineImages;
   if (images && hasInlineImages) {
-    message = await cache.getOrLoad(imagesKey, async () => {
-      const hydrated = { ...message };
-      await embedInlineImages([hydrated], [source], {
+    const illustration = await cache.getOrLoad(imagesKey, async () => {
+      const hydrated = { id: source.id, htmlBody: source.htmlBody };
+      const complete = await embedInlineImages([hydrated], [source], {
         account: item.account, focusedMessageId: item.messageId, adapter,
       });
-      return hydrated;
+      return { htmlBody: hydrated.htmlBody, complete };
     }, { refresh });
-    // A temporary attachment failure must be retryable, not cached for a day.
-    if (/\bcid:/i.test(message.htmlBody)) await cache.remove(imagesKey);
+    displayed.htmlBody = illustration.htmlBody;
+    // Older cache entries contained an entire hydrated message, and were
+    // retained only when no CID references remained.
+    inlineImagesLoaded = illustration.complete ?? !/\bcid:/i.test(illustration.htmlBody);
+    if (!inlineImagesLoaded) await cache.remove(imagesKey);
   }
   // Never expose raw provider headers/resources or use cached labels to update
   // mailbox state. The accompanying item is read freshly from SQLite by the API.
-  const { inlineImages, headers, ...displayed } = message;
-  if (await cache.read(missingKey)) throw unavailable();
+  if (await cache.read(missingKey)) {
+    // A load can finish writing after markMissing removed the old files.
+    await Promise.all([cache.remove(sourceKey), cache.remove(imagesKey)]);
+    throw unavailable();
+  }
   return {
     emailItemId: item.id, account: item.account, threadId: source.threadId,
     focusedMessageId: item.messageId, subject: source.subject,
     messages: [displayed], attachments: source.attachments,
     unsubscribeLink: discoverUnsubscribeMethods(source).preferred?.url || '',
-    readerMode: 'message', inlineImagesLoaded: !hasInlineImages || (images && !/\bcid:/i.test(message.htmlBody)),
+    readerMode: 'message', inlineImagesLoaded,
     truncated: source.body.length >= 100_000 || source.htmlBody.length >= 500_000,
     fetchedAt: new Date().toISOString(),
   };

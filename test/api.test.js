@@ -14,6 +14,7 @@ import {
   getEmailItem,
   listEvents,
   listUserRuleRecords,
+  updateEmailItemAttachments,
   updateEmailItemState,
   upsertEmailItemFromResult,
   upsertGmailMessageMetadata,
@@ -476,6 +477,7 @@ describe('local API', () => {
     const headers = { Authorization: 'Bearer test-token' };
     const emails = await fetch(`${baseUrl}/v1/emails`, { headers }).then(response => response.json());
     const item = emails.items[0];
+    updateEmailItemAttachments(item.id, [{ messageId: 'sibling', attachmentId: 'other-file', filename: 'receipt.pdf' }]);
     const before = getEmailItem(item.id);
     let options;
     apiDependencies.fetchReaderContent = async (selected, requested) => {
@@ -495,6 +497,8 @@ describe('local API', () => {
     assert.deepEqual(options, { images: false, refresh: true });
     assert.equal(getEmailItem(item.id).mailboxState, before.mailboxState);
     assert.equal(getEmailItem(item.id).readState, before.readState);
+    assert.deepEqual(getEmailItem(item.id).attachments, before.attachments);
+    assert.equal(getEmailItem(item.id).updatedAt, before.updatedAt);
     assert.equal((await fetch(baseUrl + path)).status, 401);
     apiDependencies.fetchReaderContent = async () => { throw Object.assign(Error('Email not found'), { status: 404 }); };
     assert.equal((await fetch(baseUrl + path, { headers })).status, 404);
